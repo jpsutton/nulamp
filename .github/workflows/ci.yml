@@ -1,11 +1,10 @@
-# Build and test feature/fix branches, staging, and pull requests.
+# Build and test every pushed feature/fix branch and staging. Pull requests show the results of
+# the push run of their head commit, so there is no separate pull_request run.
 name: CI
 
 on:
   push:
-    branches: ["feat/**", "fix/**", "staging", "main"]
-  pull_request:
-    branches: ["staging", "release", "main"]
+    branches: ["feat/**", "fix/**", "staging"]
   workflow_dispatch:
 
 concurrency:
