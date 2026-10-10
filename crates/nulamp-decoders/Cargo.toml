@@ -19,12 +19,16 @@ thiserror = "2.0.21"
 webpki-roots = "1.0.9"
 
 [build-dependencies]
+cc = "1.7.0"
 pkg-config = "0.3.34"
 
 [features]
-default = ["openmpt"]
+default = ["openmpt", "ffmpeg"]
 # Tracker modules through the system libopenmpt (found with pkg-config).
 openmpt = []
+# WMA, WavPack, Monkey's Audio, Musepack and TTA (and a fallback for other files) through the
+# system FFmpeg libraries (found with pkg-config, or FFMPEG_DIR), linked dynamically.
+ffmpeg = []
 
 [lints]
 workspace = true

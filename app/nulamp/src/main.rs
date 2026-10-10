@@ -54,6 +54,10 @@ fn install_skin(path: &str, skins_dir: &std::path::Path) -> String {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    nulamp_meta::set_external_reader(titles::external_tags);
+    if let Some(license) = nulamp_decoders::ffmpeg_license() {
+        log::debug!("FFmpeg libraries: {license}");
+    }
     let mut inv = nulamp_remote::parse_args(std::env::args().skip(1));
     if inv.help {
         println!("{}", nulamp_remote::args::HELP);
