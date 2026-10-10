@@ -308,6 +308,19 @@ pub enum Assignable {
 }
 
 impl Assignable {
+    /// The settings-file name (snake case, as in the JSON protocol).
+    pub fn name(self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default()
+    }
+
+    /// Parses a name written by [`Assignable::name`].
+    pub fn from_name(name: &str) -> Option<Self> {
+        serde_json::from_value(serde_json::Value::String(name.trim().to_string())).ok()
+    }
+
     /// The remote-control request with the same effect, when there is one. The other actions
     /// are handled by the user interface itself.
     pub fn to_request(self) -> Option<Request> {
@@ -419,6 +432,15 @@ impl HotkeySettings {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn action_names_round_trip() {
+        assert_eq!(Assignable::PlayPause.name(), "play_pause");
+        for b in default_bindings() {
+            assert_eq!(Assignable::from_name(&b.action.name()), Some(b.action));
+        }
+        assert_eq!(Assignable::from_name("nope"), None);
+    }
+
     use super::*;
 
     fn hk(s: &str) -> Hotkey {

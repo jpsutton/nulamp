@@ -64,6 +64,10 @@ fn page_options(page: usize) -> Vec<CheckOpt> {
             opt!("Auto-scroll the song title", p.autoscroll),
             opt!("Always on top", p.always_on_top),
             opt!("Show icon in the system tray", p.show_tray),
+            opt!(
+                "Global hotkeys (Ctrl+Alt+Insert/Home/End...)",
+                p.hotkeys.enabled
+            ),
         ],
         1 => vec![
             opt!("Show numbers", o.show_numbers),

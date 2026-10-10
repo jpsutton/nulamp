@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use nulamp_core::{Command, PlayState};
-use nulamp_remote::{EqValues, Flag, NumberedCommand as N, Request, Response};
+use nulamp_remote::{Assignable, EqValues, Flag, NumberedCommand as N, Request, Response};
 use winit::event_loop::ActiveEventLoop;
 
 use super::{Kind, PlayerHandle, Shell};
@@ -33,6 +33,14 @@ impl<P: PlayerHandle> Shell<P> {
         while let Ok(req) = self.tray_rx.try_recv() {
             self.handle_request(el, req);
         }
+        let pressed = self
+            .global_hotkeys
+            .as_ref()
+            .map(|h| h.poll())
+            .unwrap_or_default();
+        for action in pressed {
+            self.hotkey_action(el, action);
+        }
         loop {
             let Some((req, reply)) = self.remote.as_ref().and_then(|s| s.try_recv()) else {
                 break;
@@ -58,6 +66,84 @@ impl<P: PlayerHandle> Shell<P> {
             if let Err(e) = m.update(&snap) {
                 log::debug!("MPRIS update failed: {e}");
             }
+        }
+    }
+
+    /// Runs the action of a global hotkey (11 §5).
+    fn hotkey_action(&mut self, el: &ActiveEventLoop, action: Assignable) {
+        use Assignable as A;
+        if let Some(req) = action.to_request() {
+            self.handle_request(el, req);
+            return;
+        }
+        let current = self
+            .player
+            .engine()
+            .playlist
+            .get(self.last_status.position)
+            .map(|e| (e.title.clone(), e.location.clone()));
+        let rating = |loc: &str| {
+            nulamp_meta::read(loc)
+                .ok()
+                .and_then(|m| m.get("rating"))
+                .and_then(|r| r.trim().parse::<u8>().ok())
+                .unwrap_or(0)
+        };
+        match action {
+            A::CopyTitle | A::CopyPath => {
+                let Some((title, location)) = current else {
+                    return;
+                };
+                let text = if action == A::CopyTitle {
+                    title
+                } else {
+                    location
+                };
+                if self.clipboard.is_none() {
+                    self.clipboard = arboard::Clipboard::new().ok();
+                }
+                if let Some(c) = &mut self.clipboard
+                    && let Err(e) = c.set_text(text)
+                {
+                    log::info!("clipboard not available: {e}");
+                }
+            }
+            A::ShowInFolder => {
+                if let Some((_, loc)) = current {
+                    super::show_in_folder(&loc);
+                }
+            }
+            A::Rate0
+            | A::Rate1
+            | A::Rate2
+            | A::Rate3
+            | A::Rate4
+            | A::Rate5
+            | A::RateUp
+            | A::RateDown => {
+                let Some((_, loc)) = current else {
+                    return;
+                };
+                let stars = match action {
+                    A::Rate0 => 0,
+                    A::Rate1 => 1,
+                    A::Rate2 => 2,
+                    A::Rate3 => 3,
+                    A::Rate4 => 4,
+                    A::Rate5 => 5,
+                    A::RateUp => (rating(&loc) + 1).min(5),
+                    _ => rating(&loc).saturating_sub(1),
+                };
+                self.rate_files(&[loc], stars);
+            }
+            A::Hide => self.minimize_to_tray(),
+            A::VisConfigure => {
+                if let Some(id) = self.ids.get(&Kind::Main).copied() {
+                    self.key_action(id, KeyAction::Preferences, el);
+                }
+            }
+            // The classic visualizer has no presets and no full-screen mode.
+            _ => log::debug!("hotkey action {action:?} does nothing here"),
         }
     }
 
