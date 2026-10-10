@@ -25,19 +25,82 @@ fn load_skin(path: Option<&str>) -> Skin {
     }
 }
 
+fn absolutize(p: &str) -> String {
+    if p.contains("://") {
+        return p.to_string();
+    }
+    std::path::absolute(p)
+        .map(|a| a.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| p.to_string())
+}
+
+/// Copies a skin archive into the skins folder and returns its new path (01 §1.4).
+fn install_skin(path: &str, skins_dir: &std::path::Path) -> String {
+    let src = std::path::Path::new(path);
+    let Some(name) = src.file_name() else {
+        return path.to_string();
+    };
+    let dst = skins_dir.join(name);
+    if std::fs::create_dir_all(skins_dir)
+        .and_then(|_| std::fs::copy(src, &dst))
+        .is_ok()
+    {
+        dst.to_string_lossy().into_owned()
+    } else {
+        path.to_string()
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let config = nulamp_ui::shell::config_dir();
-    let (mut prefs, state) = settings::load(&config);
-
-    let mut files = Vec::new();
-    let mut args = std::env::args().skip(1);
-    while let Some(a) = args.next() {
-        match a.as_str() {
-            "--skin" => prefs.skin_path = args.next(),
-            _ => files.push(a),
-        }
+    let mut inv = nulamp_remote::parse_args(std::env::args().skip(1));
+    if inv.help {
+        println!("{}", nulamp_remote::args::HELP);
+        return Ok(());
     }
+    inv.files = inv.files.iter().map(|f| absolutize(f)).collect();
+    inv.skins = inv.skins.iter().map(|f| absolutize(f)).collect();
+    inv.skin = inv.skin.as_deref().map(absolutize);
+    inv.bookmark = inv.bookmark.as_deref().map(absolutize);
+    if let Some(dir) = inv.ini_dir.as_ref().or(inv.config.as_ref()) {
+        // SAFETY: set before any other thread is started.
+        unsafe { std::env::set_var("NULAMP_CONFIG_DIR", dir) };
+    }
+    let config = nulamp_ui::shell::config_dir();
+    if inv.delete_m3u {
+        let _ = std::fs::remove_file(settings::playlist_path(&config));
+        return Ok(());
+    }
+
+    // Single instance (11 §4.1): hand the request to a running instance and exit.
+    let server = if inv.new_instance {
+        None
+    } else {
+        match nulamp_remote::connect_or_serve(inv.class()) {
+            Ok(nulamp_remote::Role::Secondary(mut client)) => {
+                for r in inv.requests() {
+                    if let Err(e) = client.send(&r) {
+                        log::error!("cannot reach the running instance: {e}");
+                    }
+                }
+                return Ok(());
+            }
+            Ok(nulamp_remote::Role::Primary(s)) => Some(s),
+            Err(e) => {
+                log::warn!("single-instance check failed: {e}");
+                None
+            }
+        }
+    };
+
+    let (mut prefs, state) = settings::load(&config);
+    for s in &inv.skins {
+        prefs.skin_path = Some(install_skin(s, &prefs.skins_dir));
+    }
+    if let Some(s) = &inv.skin {
+        prefs.skin_path = Some(s.clone());
+    }
+    let files = inv.files.clone();
     let skin = load_skin(prefs.skin_path.as_deref());
 
     let registry = Arc::new(Registry::with_defaults());
@@ -59,7 +122,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let supported = |ext: &str| registry.is_supported_extension(ext);
     let start = !files.is_empty();
-    if start {
+    if inv.enqueue {
+        if let Ok(entries) =
+            nulamp_ui::files::load_playlist(&settings::playlist_path(&config).to_string_lossy())
+        {
+            player.engine.append(entries);
+            player.engine.playlist.set_current(state.position);
+        }
+        let mut entries = Vec::new();
+        for f in &files {
+            entries.extend(nulamp_ui::files::add_anything(f, true, false, &supported));
+        }
+        player.engine.append(entries);
+    } else if start {
         let mut entries = Vec::new();
         for f in &files {
             entries.extend(nulamp_ui::files::add_anything(f, true, false, &supported));
@@ -76,7 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let titles = titles::TitleReader::new(nulamp_tf::DEFAULT_FORMAT);
-    let (prefs, app) = Shell::new(
+    let mut shell = Shell::new(
         player::AppPlayer {
             player,
             titles,
@@ -84,8 +159,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         prefs,
         skin,
-    )
-    .run()?;
+    );
+    if let Some(server) = server {
+        // Commands given on the first launch run once the windows exist.
+        let sender = server.sender();
+        if let Some(b) = &inv.bookmark {
+            sender.post(nulamp_remote::Request::Bookmark(b.clone()));
+        }
+        if let Some(c) = inv.effective_command() {
+            sender.post(c.clone());
+        }
+        shell = shell.with_remote(server);
+    }
+    let (prefs, app) = shell.run()?;
 
     let status = app.status();
     let state = settings::PlayerState {

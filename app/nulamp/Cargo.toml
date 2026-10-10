@@ -14,6 +14,7 @@ nulamp-core = { version = "0.1.0", path = "../../crates/nulamp-core" }
 nulamp-decoders = { version = "0.1.0", path = "../../crates/nulamp-decoders" }
 nulamp-eq = { version = "0.1.0", path = "../../crates/nulamp-eq" }
 nulamp-meta = { version = "0.1.0", path = "../../crates/nulamp-meta" }
+nulamp-remote = { version = "0.1.0", path = "../../crates/nulamp-remote" }
 nulamp-skin = { version = "0.1.0", path = "../../crates/nulamp-skin" }
 nulamp-tf = { version = "0.1.0", path = "../../crates/nulamp-tf" }
 nulamp-ui = { version = "0.1.0", path = "../../crates/nulamp-ui" }
