@@ -66,7 +66,7 @@ impl<P: PlayerHandle> Shell<P> {
             bookmarks: Vec::new(),
             eq_enabled: self.prefs.eq.enabled,
             eq_auto: self.prefs.eq.auto_load,
-            eq_presets: Vec::new(),
+            eq_presets: self.eq_library().into_iter().map(|p| p.name).collect(),
             app_name: super::APP_NAME.into(),
         }
     }
@@ -319,6 +319,74 @@ impl<P: PlayerHandle> Shell<P> {
                 self.eq_changed();
             }
             MenuCmd::SetTimeRemaining(on) => self.prefs.time_remaining = on,
+            MenuCmd::EqLoadPreset(name) => {
+                let lib = self.eq_library();
+                if let Some(p) = nulamp_eq::preset::find(&lib, &name) {
+                    self.apply_preset(p.bands, p.preamp);
+                }
+            }
+            MenuCmd::EqLoadDefault => {
+                let lib = self.eq_library();
+                if let Some(p) =
+                    nulamp_eq::preset::find(&lib, nulamp_eq::preset::DEFAULT_PRESET_NAME)
+                {
+                    self.apply_preset(p.bands, p.preamp);
+                }
+            }
+            MenuCmd::EqLoadAutoPreset => {
+                let q2 = nulamp_eq::preset::read_library_or_empty(&self.eq_auto_path());
+                let file = self.current_file_name();
+                if let Some(p) = nulamp_eq::preset::find(&q2, &file) {
+                    self.apply_preset(p.bands, p.preamp);
+                }
+            }
+            MenuCmd::EqSavePreset => {
+                let names = self.eq_library().into_iter().map(|p| p.name).collect();
+                self.pending_dialog = Some(Box::new(crate::dialogs::PresetSaveDialog::new(
+                    names, "", false,
+                )));
+            }
+            MenuCmd::EqSaveAutoPreset => {
+                let names = nulamp_eq::preset::read_library_or_empty(&self.eq_auto_path())
+                    .into_iter()
+                    .map(|p| p.name)
+                    .collect();
+                let file = self.current_file_name();
+                self.pending_dialog = Some(Box::new(crate::dialogs::PresetSaveDialog::new(
+                    names, &file, true,
+                )));
+            }
+            MenuCmd::EqSaveDefault => self.eq_save(nulamp_eq::preset::DEFAULT_PRESET_NAME, false),
+            MenuCmd::EqDeletePreset(name) => {
+                if let Err(e) = nulamp_eq::preset::delete_preset(&self.eq_library_path(), &name) {
+                    log::error!("cannot delete preset: {e}");
+                }
+            }
+            MenuCmd::EqImportEqf => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("EQ preset", &["eqf", "EQF"])
+                    .pick_file()
+                {
+                    match nulamp_eq::preset::import_eqf(&path) {
+                        Ok(p) => self.apply_preset(p.bands, p.preamp),
+                        Err(e) => log::error!("cannot import {}: {e}", path.display()),
+                    }
+                }
+            }
+            MenuCmd::EqExportEqf => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_file_name("preset.eqf")
+                    .add_filter("EQ preset", &["eqf"])
+                    .save_file()
+                    && let Err(e) = nulamp_eq::preset::export_eqf(
+                        &path,
+                        self.prefs.eq.bands,
+                        self.prefs.eq.preamp,
+                    )
+                {
+                    log::error!("cannot export {}: {e}", path.display());
+                }
+            }
             MenuCmd::SetVisMode(m) => {
                 let mode = match m {
                     1 => nulamp_vis::VisMode::Spectrum,

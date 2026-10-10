@@ -16,6 +16,11 @@ pub enum DialogResult {
     PlayEntry(EntryId),
     EnqueueEntry(EntryId),
     LoadSkin(Option<String>),
+    /// Save the current EQ under a name, in the preset or auto-load library.
+    EqSave {
+        name: String,
+        auto: bool,
+    },
 }
 
 pub enum Outcome {
@@ -562,6 +567,102 @@ impl Dialog for SkinBrowser {
                 Outcome::Do(vec![DialogResult::LoadSkin(path)], false)
             }
             FormEvent::Clicked(CANCEL) | FormEvent::Cancel | FormEvent::Submit => Outcome::Close,
+            _ => Outcome::Keep,
+        }
+    }
+}
+
+// ----- EQ preset save -----
+
+pub struct PresetSaveDialog {
+    form: Form,
+    names: Vec<String>,
+    auto: bool,
+}
+
+impl PresetSaveDialog {
+    /// `initial` prefills the name (the current file name for auto-load presets, 03 §5.3).
+    pub fn new(names: Vec<String>, initial: &str, auto: bool) -> Self {
+        let (w, h) = (300, 261);
+        let (cw, ch) = (cw(w), h - 34);
+        let mut form = Form::new(vec![
+            Widget::Edit {
+                rect: Rect::new(6, 6, cw - 12, 18),
+                id: EDIT,
+                text: String::new(),
+                cursor: 0,
+            },
+            Widget::List {
+                rect: Rect::new(6, 30, cw - 12, ch - 62),
+                id: LIST,
+                rows: vec![],
+                selected: None,
+                first: 0,
+            },
+            Widget::Button {
+                rect: Rect::new(cw - 128, ch - 26, 58, 18),
+                id: OK,
+                label: "Save".into(),
+                default: true,
+            },
+            Widget::Button {
+                rect: Rect::new(cw - 64, ch - 26, 58, 18),
+                id: CANCEL,
+                label: "Cancel".into(),
+                default: false,
+            },
+        ]);
+        form.set_rows(LIST, names.clone(), None);
+        form.set_text(EDIT, initial);
+        form.focus_id(EDIT);
+        Self { form, names, auto }
+    }
+}
+
+impl Dialog for PresetSaveDialog {
+    fn title(&self) -> String {
+        if self.auto {
+            "Save auto-load preset".into()
+        } else {
+            "Save EQ preset".into()
+        }
+    }
+
+    fn size(&self) -> (i32, i32) {
+        (300, 261)
+    }
+
+    fn form(&mut self) -> &mut Form {
+        &mut self.form
+    }
+
+    fn kind(&self) -> &'static str {
+        "eqsave"
+    }
+
+    fn handle(&mut self, ev: FormEvent) -> Outcome {
+        match ev {
+            FormEvent::Selected(LIST, i) => {
+                if let Some(n) = self.names.get(i) {
+                    let n = n.clone();
+                    self.form.set_text(EDIT, &n);
+                }
+                Outcome::Keep
+            }
+            FormEvent::Clicked(OK) | FormEvent::Submit | FormEvent::Activated(LIST, _) => {
+                let name = self.form.text(EDIT).trim().to_string();
+                if name.is_empty() {
+                    return Outcome::Keep;
+                }
+                Outcome::Do(
+                    vec![DialogResult::EqSave {
+                        name,
+                        auto: self.auto,
+                    }],
+                    true,
+                )
+            }
+            FormEvent::Clicked(CANCEL) | FormEvent::Cancel => Outcome::Close,
             _ => Outcome::Keep,
         }
     }
