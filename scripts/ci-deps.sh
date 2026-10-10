@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Installs the system libraries needed to build and test nulamp on CI runners.
 set -euo pipefail
+# Containers run as root without sudo.
+sudo=""
+if [ "$(id -u)" != 0 ]; then sudo=sudo; fi
 case "$(uname -s)" in
   Linux)
-    sudo apt-get update
-    sudo apt-get install -y --no-install-recommends \
+    $sudo apt-get update
+    DEBIAN_FRONTEND=noninteractive $sudo apt-get install -y --no-install-recommends \
       pkg-config cmake \
       libfreetype-dev libfontconfig1-dev \
       libx11-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
