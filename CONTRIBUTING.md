@@ -14,15 +14,15 @@ Flow:
 1. Create `feat/<topic>` or `fix/<topic>` from `staging`, commit, and push it.
 2. Run `./scripts/check.sh` (format, clippy, tests) before pushing. `./scripts/fix.sh` applies
    clippy suggestions and formats.
-3. Open a pull request into `staging`. CI builds and tests it on Linux, macOS and Windows. Merge it
-   when CI passes. One pull request may carry one change or gather several.
+3. Open a pull request into `staging`. CI runs a quick compile check on Linux. Merge it when it
+   passes. One pull request may carry one change or gather several.
 4. To release, bump `version` in the root `Cargo.toml` under `[workspace.package]` (through a pull
-   request into `staging`), then open a pull request from `staging` into `release`. CI tests it
-   again; merging it runs the release workflow, which refuses to run when the tag `v<version>`
-   already exists.
+   request into `staging`), then open a pull request from `staging` into `release`. CI builds and
+   tests it on Linux, macOS and Windows; merging it runs the release workflow, which refuses to
+   run when the tag `v<version>` already exists.
 
-CI runs only for pull requests, never on plain pushes, so each change is built once per pull
-request.
+CI runs only for pull requests, never on plain pushes. The full cross-platform build and tests
+run once per release, on the `staging` → `release` pull request.
 
 ## Clean-room rule
 
