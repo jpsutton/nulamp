@@ -5,7 +5,7 @@ use nulamp_core::EntryId;
 use nulamp_skinui::{Form, FormEvent, Rect, Widget};
 
 /// What a dialog asks the application to do.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum DialogResult {
     /// Open (replace and play) or add a location.
     OpenLocation {
@@ -18,6 +18,8 @@ pub enum DialogResult {
     LoadSkin(Option<String>),
     /// Tags of a file were written: refresh entries with this location.
     TagsWritten(String),
+    /// New preferences from the preferences dialog.
+    Prefs(Box<(crate::shell::UiPrefs, crate::prefs_dialog::PlaylistOptions)>),
     /// Save the current EQ under a name, in the preset or auto-load library.
     EqSave {
         name: String,

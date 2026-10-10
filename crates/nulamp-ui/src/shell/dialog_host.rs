@@ -166,6 +166,10 @@ impl<P: PlayerHandle> Shell<P> {
             }
             DialogResult::LoadSkin(path) => self.load_skin(path),
             DialogResult::EqSave { name, auto } => self.eq_save(&name, auto),
+            DialogResult::Prefs(b) => {
+                let (prefs, pl) = *b;
+                self.apply_prefs(prefs, pl);
+            }
             DialogResult::TagsWritten(location) => {
                 // Re-read titles of every entry with this file (10 §8).
                 for e in self
