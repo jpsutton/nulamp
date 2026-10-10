@@ -6,6 +6,7 @@
 pub mod eq_window;
 pub mod frame;
 pub mod main_window;
+pub mod playlist_window;
 pub mod probe;
 pub mod region;
 

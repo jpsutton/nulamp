@@ -8,6 +8,7 @@ pub mod keys;
 pub mod main_input;
 pub mod marquee;
 pub mod platform;
+pub mod playlist;
 pub mod shell;
 pub mod title;
 
