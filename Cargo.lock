@@ -1297,6 +1297,11 @@ dependencies = [
 [[package]]
 name = "nulamp-skinui"
 version = "0.1.0"
+dependencies = [
+ "nulamp-render",
+ "nulamp-skin",
+ "nulamp-text",
+]
 
 [[package]]
 name = "nulamp-text"
@@ -1326,6 +1331,7 @@ dependencies = [
  "nulamp-playlist",
  "nulamp-render",
  "nulamp-skin",
+ "nulamp-skinui",
  "nulamp-text",
  "nulamp-vis",
  "rand",

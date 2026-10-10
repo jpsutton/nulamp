@@ -13,6 +13,7 @@ nulamp-eq = { version = "0.1.0", path = "../nulamp-eq" }
 nulamp-playlist = { version = "0.1.0", path = "../nulamp-playlist" }
 nulamp-render = { version = "0.1.0", path = "../nulamp-render" }
 nulamp-skin = { version = "0.1.0", path = "../nulamp-skin" }
+nulamp-skinui = { version = "0.1.0", path = "../nulamp-skinui" }
 nulamp-text = { version = "0.1.0", path = "../nulamp-text" }
 nulamp-vis = { version = "0.1.0", path = "../nulamp-vis" }
 rand = "0.9"
