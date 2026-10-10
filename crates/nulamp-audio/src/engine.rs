@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use nulamp_decoders::{Decoder, Registry, StreamInfo};
+use nulamp_decoders::{Decoder, ReadStatus, Registry, StreamInfo};
 
 use crate::chain::{Stage, VIS_BLOCK, VisBlock, VisTap, map_channels};
 use crate::mixer::{MixCmd, Shared};
@@ -565,23 +565,24 @@ impl Worker {
             }
             self.decoded.clear();
             let cur = self.current.as_mut().expect("current track");
-            match cur.decoder.read(&mut self.decoded) {
-                Ok(0) => {
-                    cur.eos = true;
-                    continue;
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    log::warn!("decode error: {e}");
-                    cur.eos = true;
-                    continue;
-                }
+            let status = cur.decoder.read(&mut self.decoded).unwrap_or_else(|e| {
+                log::warn!("decode error: {e}");
+                ReadStatus::End
+            });
+            let title = cur.decoder.take_title();
+            let token = cur.token;
+            if status == ReadStatus::End {
+                cur.eos = true;
             }
-            if let Some(t) = cur.decoder.take_title() {
-                let token = cur.token;
-                self.emit(Event::Title { token, title: t });
+            if let Some(title) = title {
+                self.emit(Event::Title { token, title });
             }
-            self.process_block();
+            match status {
+                ReadStatus::Frames(_) => self.process_block(),
+                // A network stream is buffering: try again on the next round.
+                ReadStatus::Pending => return,
+                ReadStatus::End => {}
+            }
         }
     }
 

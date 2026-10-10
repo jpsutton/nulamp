@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, Weak};
 use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
 
 use crate::symphonia_decoder::local_path;
-use crate::{DecodeError, Decoder, DecoderFactory, StreamInfo};
+use crate::{DecodeError, Decoder, DecoderFactory, ReadStatus, StreamInfo};
 
 /// Environment variable naming a SoundFont, consulted after [`MidiOptions::soundfont`].
 pub const SOUNDFONT_ENV: &str = "NULAMP_SOUNDFONT";
@@ -736,7 +736,40 @@ impl Decoder for MidiDecoder {
         &self.info
     }
 
-    fn read(&mut self, out: &mut Vec<f32>) -> Result<usize, DecodeError> {
+    fn read(&mut self, out: &mut Vec<f32>) -> Result<ReadStatus, DecodeError> {
+        self.read_frames(out).map(ReadStatus::from_frames)
+    }
+
+    fn seek(&mut self, ms: u64) -> Result<u64, DecodeError> {
+        let mut f = ms * self.rate as u64 / 1000;
+        if let Some(total) = self.plan.total() {
+            f = f.min(total);
+        }
+        let (pos, jumps, tail_done) = self.plan.locate(f);
+        self.synth.reset();
+        match self.plan.section {
+            Some((s, e)) if jumps > 0 => {
+                self.replay_state(0, e);
+                self.replay_state(s, pos);
+            }
+            _ => self.replay_state(0, pos),
+        }
+        self.pos = pos;
+        self.idx = self.frames.partition_point(|&x| x < pos);
+        self.jumps_done = jumps;
+        self.in_tail = self.plan.body().is_some_and(|b| f >= b);
+        self.tail_done = tail_done;
+        Ok(f * 1000 / self.rate as u64)
+    }
+
+    fn kbps(&self) -> Option<u32> {
+        None
+    }
+}
+
+impl MidiDecoder {
+    /// Appends the next block; zero frames means the end.
+    fn read_frames(&mut self, out: &mut Vec<f32>) -> Result<usize, DecodeError> {
         loop {
             if self.in_tail {
                 let n = (self.plan.tail - self.tail_done).min(BLOCK as u64) as usize;
@@ -779,32 +812,6 @@ impl Decoder for MidiDecoder {
             self.pos += n as u64;
             return Ok(n);
         }
-    }
-
-    fn seek(&mut self, ms: u64) -> Result<u64, DecodeError> {
-        let mut f = ms * self.rate as u64 / 1000;
-        if let Some(total) = self.plan.total() {
-            f = f.min(total);
-        }
-        let (pos, jumps, tail_done) = self.plan.locate(f);
-        self.synth.reset();
-        match self.plan.section {
-            Some((s, e)) if jumps > 0 => {
-                self.replay_state(0, e);
-                self.replay_state(s, pos);
-            }
-            _ => self.replay_state(0, pos),
-        }
-        self.pos = pos;
-        self.idx = self.frames.partition_point(|&x| x < pos);
-        self.jumps_done = jumps;
-        self.in_tail = self.plan.body().is_some_and(|b| f >= b);
-        self.tail_done = tail_done;
-        Ok(f * 1000 / self.rate as u64)
-    }
-
-    fn kbps(&self) -> Option<u32> {
-        None
     }
 }
 
@@ -1089,7 +1096,7 @@ pub(crate) mod tests {
 
     fn decode_all(d: &mut dyn Decoder) -> Vec<f32> {
         let mut out = Vec::new();
-        while d.read(&mut out).unwrap() > 0 {}
+        while d.read(&mut out).unwrap().frames() > 0 {}
         out
     }
 

@@ -8,7 +8,7 @@ use std::ptr::NonNull;
 use std::sync::OnceLock;
 
 use crate::symphonia_decoder::local_path;
-use crate::{DecodeError, Decoder, DecoderFactory, StreamInfo};
+use crate::{DecodeError, Decoder, DecoderFactory, ReadStatus, StreamInfo};
 
 mod ffi {
     use std::ffi::{c_char, c_int, c_void};
@@ -466,7 +466,49 @@ impl Decoder for ModuleDecoder {
         &self.info
     }
 
-    fn read(&mut self, out: &mut Vec<f32>) -> Result<usize, DecodeError> {
+    fn read(&mut self, out: &mut Vec<f32>) -> Result<ReadStatus, DecodeError> {
+        self.read_frames(out).map(ReadStatus::from_frames)
+    }
+
+    fn seek(&mut self, ms: u64) -> Result<u64, DecodeError> {
+        if self.pass == 0 {
+            return Err(DecodeError::Seek("unknown module length".into()));
+        }
+        let rate = self.options.sample_rate as u64;
+        let mut target = ms * rate / 1000;
+        let repeats = u32::try_from(self.options.repeat_count).ok();
+        let endless = repeats.is_none() || self.options.end == EndBehaviour::Continue;
+        let body = self.pass * (repeats.unwrap_or(0) as u64 + 1);
+        if !endless {
+            target = target.min(body);
+        }
+        let mut pass_no = target / self.pass;
+        if !endless && target == body {
+            pass_no -= 1;
+        }
+        let within = (target - pass_no * self.pass) as f64 / rate as f64;
+        // The library seeks to row starts; start early and render up to the exact frame.
+        let mut reached = self.module.set_position(within).max(0.0);
+        if reached > within {
+            reached = self.module.set_position((within - 1.0).max(0.0)).max(0.0);
+        }
+        let start = pass_no * self.pass + (reached * rate as f64).round() as u64;
+        self.skip = target.saturating_sub(start);
+        self.pos = start + self.skip;
+        self.passes_left = repeats.map(|r| r.saturating_sub(pass_no as u32));
+        self.fading = None;
+        self.ended = false;
+        Ok(self.pos * 1000 / rate)
+    }
+
+    fn kbps(&self) -> Option<u32> {
+        None
+    }
+}
+
+impl ModuleDecoder {
+    /// Appends the next block; zero frames means the end.
+    fn read_frames(&mut self, out: &mut Vec<f32>) -> Result<usize, DecodeError> {
         let ch = self.options.channels.count();
         let mut ends_in_a_row = 0;
         while !self.ended {
@@ -521,41 +563,6 @@ impl Decoder for ModuleDecoder {
         }
         Ok(0)
     }
-
-    fn seek(&mut self, ms: u64) -> Result<u64, DecodeError> {
-        if self.pass == 0 {
-            return Err(DecodeError::Seek("unknown module length".into()));
-        }
-        let rate = self.options.sample_rate as u64;
-        let mut target = ms * rate / 1000;
-        let repeats = u32::try_from(self.options.repeat_count).ok();
-        let endless = repeats.is_none() || self.options.end == EndBehaviour::Continue;
-        let body = self.pass * (repeats.unwrap_or(0) as u64 + 1);
-        if !endless {
-            target = target.min(body);
-        }
-        let mut pass_no = target / self.pass;
-        if !endless && target == body {
-            pass_no -= 1;
-        }
-        let within = (target - pass_no * self.pass) as f64 / rate as f64;
-        // The library seeks to row starts; start early and render up to the exact frame.
-        let mut reached = self.module.set_position(within).max(0.0);
-        if reached > within {
-            reached = self.module.set_position((within - 1.0).max(0.0)).max(0.0);
-        }
-        let start = pass_no * self.pass + (reached * rate as f64).round() as u64;
-        self.skip = target.saturating_sub(start);
-        self.pos = start + self.skip;
-        self.passes_left = repeats.map(|r| r.saturating_sub(pass_no as u32));
-        self.fading = None;
-        self.ended = false;
-        Ok(self.pos * 1000 / rate)
-    }
-
-    fn kbps(&self) -> Option<u32> {
-        None
-    }
 }
 
 #[cfg(test)]
@@ -602,7 +609,7 @@ mod tests {
 
     fn decode_all(d: &mut dyn Decoder) -> Vec<f32> {
         let mut out = Vec::new();
-        while d.read(&mut out).unwrap() > 0 {}
+        while d.read(&mut out).unwrap().frames() > 0 {}
         out
     }
 
@@ -626,7 +633,7 @@ mod tests {
         let frames = pcm.len() / 2;
         assert!((84_000..=85_400).contains(&frames), "{frames}");
         assert!(peak(&pcm) > 0.05);
-        assert_eq!(d.read(&mut Vec::new()).unwrap(), 0);
+        assert_eq!(d.read(&mut Vec::new()).unwrap(), crate::ReadStatus::End);
 
         assert_eq!(d.seek(1000).unwrap(), 1000);
         let rest = decode_all(&mut d);
@@ -681,7 +688,7 @@ mod tests {
         let mut out = Vec::new();
         let mut frames = 0;
         while frames < 44_100 * 5 {
-            let n = d.read(&mut out).unwrap();
+            let n = d.read(&mut out).unwrap().frames();
             assert!(n > 0);
             frames += n;
         }

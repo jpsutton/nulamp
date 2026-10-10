@@ -14,7 +14,7 @@ use ogg::reading::PacketReader;
 use opusic_sys as ffi;
 
 use crate::symphonia_decoder::local_path;
-use crate::{DecodeError, Decoder, DecoderFactory, StreamInfo};
+use crate::{DecodeError, Decoder, DecoderFactory, ReadStatus, StreamInfo};
 
 /// Output sample rate (Opus granule positions always count 48 kHz samples).
 pub const RATE: u32 = 48_000;
@@ -662,7 +662,41 @@ impl Decoder for OpusDecoder {
         &self.info
     }
 
-    fn read(&mut self, out: &mut Vec<f32>) -> Result<usize, DecodeError> {
+    fn read(&mut self, out: &mut Vec<f32>) -> Result<ReadStatus, DecodeError> {
+        self.read_frames(out).map(ReadStatus::from_frames)
+    }
+
+    fn seek(&mut self, ms: u64) -> Result<u64, DecodeError> {
+        let t = (ms * RATE as u64 / 1000).min(self.total_samples());
+        let target = self.base_gp + self.head.pre_skip as u64 + t;
+        let serr = |e: std::io::Error| DecodeError::Seek(e.to_string());
+        let page = self
+            .page_before(target.saturating_sub(PREROLL))
+            .map_err(serr)?;
+        self.reader
+            .seek_bytes(SeekFrom::Start(page.offset))
+            .map_err(serr)?;
+        self.dec = MsDecoder::new(&self.head).map_err(|e| DecodeError::Seek(e.to_string()))?;
+        self.queue.clear();
+        self.recent.clear();
+        self.next_gp = None;
+        self.eos = false;
+        self.skip_to = target;
+        Ok(t * 1000 / RATE as u64)
+    }
+
+    fn kbps(&self) -> Option<u32> {
+        let (bytes, samples) = self
+            .recent
+            .iter()
+            .fold((0, 0), |(b, s), (pb, ps)| (b + pb, s + ps));
+        (samples > 0).then(|| (bytes as u64 * 8 * RATE as u64 / samples / 1000) as u32)
+    }
+}
+
+impl OpusDecoder {
+    /// Appends the next block; zero frames means the end.
+    fn read_frames(&mut self, out: &mut Vec<f32>) -> Result<usize, DecodeError> {
         loop {
             let Some((packet, start)) = self.queue.pop_front() else {
                 if self.eos || !self.fill_batch()? {
@@ -698,33 +732,6 @@ impl Decoder for OpusDecoder {
             self.write_frames(range, out);
             return Ok(frames);
         }
-    }
-
-    fn seek(&mut self, ms: u64) -> Result<u64, DecodeError> {
-        let t = (ms * RATE as u64 / 1000).min(self.total_samples());
-        let target = self.base_gp + self.head.pre_skip as u64 + t;
-        let serr = |e: std::io::Error| DecodeError::Seek(e.to_string());
-        let page = self
-            .page_before(target.saturating_sub(PREROLL))
-            .map_err(serr)?;
-        self.reader
-            .seek_bytes(SeekFrom::Start(page.offset))
-            .map_err(serr)?;
-        self.dec = MsDecoder::new(&self.head).map_err(|e| DecodeError::Seek(e.to_string()))?;
-        self.queue.clear();
-        self.recent.clear();
-        self.next_gp = None;
-        self.eos = false;
-        self.skip_to = target;
-        Ok(t * 1000 / RATE as u64)
-    }
-
-    fn kbps(&self) -> Option<u32> {
-        let (bytes, samples) = self
-            .recent
-            .iter()
-            .fold((0, 0), |(b, s), (pb, ps)| (b + pb, s + ps));
-        (samples > 0).then(|| (bytes as u64 * 8 * RATE as u64 / samples / 1000) as u32)
     }
 }
 
@@ -768,7 +775,7 @@ mod tests {
 
     fn decode_all(d: &mut dyn Decoder) -> Vec<f32> {
         let mut out = Vec::new();
-        while d.read(&mut out).unwrap() > 0 {}
+        while d.read(&mut out).unwrap().frames() > 0 {}
         out
     }
 
