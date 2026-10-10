@@ -14,7 +14,7 @@ fn main() -> std::io::Result<()> {
     let lines = [
         "1. Daft Punk - One More Time (5:20)",
         "12. Björk - Jóga (5:05)   Ünïcödé — ©",
-        "3. 坂本龍一 - Merry Christmas Mr. Lawrence",
+        "3. Sigur Rós - Hoppípolla (4:28)",
         "4. שלום עולם - Hebrew mixed (3:00)",
     ];
     let mut f = Bitmap::new(300, 120, 0x000000);
