@@ -19,6 +19,20 @@ impl PlayerHandle for AppPlayer {
         self.player.command(command);
     }
 
+    fn vis_blocks_since(&self, frame: u64) -> Vec<(u64, u32, usize, Vec<f32>)> {
+        self.player
+            .audio()
+            .vis
+            .since(frame)
+            .into_iter()
+            .map(|b| (b.frame, b.rate, b.channels, b.samples))
+            .collect()
+    }
+
+    fn heard_frame(&self) -> u64 {
+        self.player.engine_status().frames_played
+    }
+
     fn is_supported_extension(&self, ext: &str) -> bool {
         self.player.registry.is_supported_extension(ext)
     }

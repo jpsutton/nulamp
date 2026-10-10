@@ -14,6 +14,7 @@ nulamp-playlist = { version = "0.1.0", path = "../nulamp-playlist" }
 nulamp-render = { version = "0.1.0", path = "../nulamp-render" }
 nulamp-skin = { version = "0.1.0", path = "../nulamp-skin" }
 nulamp-text = { version = "0.1.0", path = "../nulamp-text" }
+nulamp-vis = { version = "0.1.0", path = "../nulamp-vis" }
 rand = "0.9"
 raw-window-handle = "0.6"
 rfd = "0.17.2"

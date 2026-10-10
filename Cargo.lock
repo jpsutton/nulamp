@@ -1262,6 +1262,7 @@ dependencies = [
  "nulamp-render",
  "nulamp-skin",
  "nulamp-text",
+ "nulamp-vis",
  "rand",
  "raw-window-handle",
  "rfd",
