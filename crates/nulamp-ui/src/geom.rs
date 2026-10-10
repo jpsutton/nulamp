@@ -43,6 +43,16 @@ impl Rect {
     pub fn overlaps_y(&self, o: &Rect) -> bool {
         self.y <= o.bottom() && o.y <= self.bottom()
     }
+
+    /// Horizontal ranges share at least one pixel column (corners alone do not count).
+    pub fn shares_x(&self, o: &Rect) -> bool {
+        self.x < o.right() && o.x < self.right()
+    }
+
+    /// Vertical ranges share at least one pixel row (corners alone do not count).
+    pub fn shares_y(&self, o: &Rect) -> bool {
+        self.y < o.bottom() && o.y < self.bottom()
+    }
 }
 
 /// Inclusive hit box `x1..=x2 × y1..=y2` (01 conventions).
