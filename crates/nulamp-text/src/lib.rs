@@ -607,11 +607,7 @@ mod tests {
         let mut f = Bitmap::new(200, 20, 0x000000);
         for px in [9, 10, 12, 14] {
             let spec = FontSpec::new("Arial", px);
-            let l = fs.layout(
-                "Hello, World! Ünïcödé — עברית",
-                &spec,
-                Direction::Auto,
-            );
+            let l = fs.layout("Hello, World! Ünïcödé — עברית", &spec, Direction::Auto);
             assert!(l.width > 0);
             fs.draw(&mut f, &l, 2, 14, 0x00FF00, (0, 0, 200, 20));
         }
