@@ -1255,6 +1255,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nulamp-pixelfont"
+version = "0.1.0"
+dependencies = [
+ "nulamp-skin",
+]
+
+[[package]]
 name = "nulamp-playlist"
 version = "0.1.0"
 dependencies = [
