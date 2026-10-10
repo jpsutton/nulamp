@@ -20,6 +20,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHan
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{Cursor, CursorIcon, CustomCursor, Window, WindowId, WindowLevel};
 
+mod dialog_host;
 mod dialogs;
 mod popup;
 
@@ -99,6 +100,8 @@ pub struct UiPrefs {
     /// Current skin: a path, or `None` for the built-in skin.
     pub skin_path: Option<String>,
     pub last_dir: Option<std::path::PathBuf>,
+    /// Most recently opened URLs, newest first.
+    pub recent_urls: Vec<String>,
     pub pl_size: (i32, i32),
     pub pl_shade: bool,
     pub pl_font_px: u32,
@@ -136,6 +139,7 @@ impl Default for UiPrefs {
             skins_dir: default_skins_dir(),
             skin_path: None,
             last_dir: None,
+            recent_urls: Vec::new(),
             pl_size: (275, 116),
             pl_shade: false,
             pl_font_px: 12,
@@ -191,6 +195,9 @@ pub struct Shell<P: PlayerHandle> {
     pl: PlaylistUi,
     middle_held: bool,
     menus: Vec<popup::MenuWin>,
+    dialogs: HashMap<WindowId, dialog_host::DialogWin>,
+    /// A dialog requested by code without an event-loop handle; opened in `about_to_wait`.
+    pending_dialog: Option<Box<dyn crate::dialogs::Dialog>>,
     menu_focus_check: Option<Instant>,
     /// A menu requested by code that has no event loop handle; opened in `about_to_wait`.
     pending_menu: Option<(Kind, Vec<crate::menu::Item>, i32, i32)>,
@@ -244,6 +251,8 @@ impl<P: PlayerHandle> Shell<P> {
             pl,
             middle_held: false,
             menus: Vec::new(),
+            dialogs: HashMap::new(),
+            pending_dialog: None,
             menu_focus_check: None,
             pending_menu: None,
             marquee: Marquee::new(),
@@ -883,7 +892,12 @@ impl<P: PlayerHandle> Shell<P> {
             Action::OpenFiles => self.dialog_open_files(true),
             Action::OpenFolder => self.dialog_open_folder(true),
             Action::OpenUrl => {
-                log::info!("open URL needs the text-input dialog (not implemented yet)")
+                let d = crate::dialogs::UrlDialog::new(false, &self.prefs.recent_urls);
+                self.open_dialog(el, Box::new(d));
+            }
+            Action::About => {
+                let d = crate::dialogs::AboutDialog::new(APP_NAME, env!("CARGO_PKG_VERSION"));
+                self.open_dialog(el, Box::new(d));
             }
             Action::ToggleTimeMode => self.prefs.time_remaining = !self.prefs.time_remaining,
             Action::CycleVisMode => {
@@ -1189,6 +1203,12 @@ impl<P: PlayerHandle> Shell<P> {
             PlMenuChoice::RemoveAll | PlMenuChoice::NewList => e.clear(),
             PlMenuChoice::AddFile => self.dialog_open_files(false),
             PlMenuChoice::AddFolder => self.dialog_open_folder(false),
+            PlMenuChoice::AddUrl => {
+                self.pending_dialog = Some(Box::new(crate::dialogs::UrlDialog::new(
+                    true,
+                    &self.prefs.recent_urls,
+                )));
+            }
             PlMenuChoice::LoadList => self.dialog_load_playlist(),
             PlMenuChoice::SaveList => self.dialog_save_playlist(),
             PlMenuChoice::Sort => {
@@ -1207,7 +1227,6 @@ impl<P: PlayerHandle> Shell<P> {
                 let items = crate::menus::remove_misc();
                 self.pending_menu = Some((Kind::Playlist, items, 64, self.pl.h - 84));
             }
-            other => log::info!("playlist menu choice not implemented yet: {other:?}"),
         }
         let n = self.player.engine().playlist.len();
         self.pl.clamp_scroll(n);
@@ -1489,6 +1508,35 @@ impl<P: PlayerHandle> Shell<P> {
                 self.marquee.show_message(msg, now);
                 self.poll_player();
             }
+            KeyAction::JumpToFile => {
+                let e = self.player.engine();
+                let entries = e
+                    .playlist
+                    .entries()
+                    .iter()
+                    .map(|x| (x.id, x.location.clone(), x.title.clone()))
+                    .collect();
+                let d = crate::dialogs::JumpFileDialog::new(entries, e.playlist.current_id());
+                self.open_dialog(el, Box::new(d));
+            }
+            KeyAction::JumpToTime => {
+                let s = &self.last_status;
+                if s.seekable && s.state != PlayState::Stopped {
+                    let d = crate::dialogs::JumpTimeDialog::new(
+                        s.position_ms,
+                        s.length_ms.unwrap_or(0),
+                    );
+                    self.open_dialog(el, Box::new(d));
+                }
+            }
+            KeyAction::SkinBrowser => {
+                let skins = nulamp_skin::list_skins(&self.prefs.skins_dir)
+                    .into_iter()
+                    .map(|e| (e.name, e.path.map(|p| p.to_string_lossy().into_owned())))
+                    .collect();
+                let d = crate::dialogs::SkinBrowser::new(skins, self.prefs.skin_path.as_deref());
+                self.open_dialog(el, Box::new(d));
+            }
             KeyAction::OpenPlaylist => self.dialog_load_playlist(),
             KeyAction::SavePlaylist => self.dialog_save_playlist(),
             KeyAction::ReloadSkin => {
@@ -1747,11 +1795,22 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         self.create_window(el, Kind::Main, p.main_pos, true);
         self.poll_player();
         self.refresh_title();
+        // Development aid: open a dialog at start-up (NULAMP_OPEN_DIALOG=about|url|jumpfile|skins).
+        if let Ok(which) = std::env::var("NULAMP_OPEN_DIALOG") {
+            let id = self.ids[&Kind::Main];
+            match which.as_str() {
+                "about" => self.handle_action(id, Action::About, el),
+                "url" => self.handle_action(id, Action::OpenUrl, el),
+                "jumpfile" => self.key_action(id, KeyAction::JumpToFile, el),
+                "skins" => self.key_action(id, KeyAction::SkinBrowser, el),
+                _ => {}
+            }
+        }
         el.set_control_flow(ControlFlow::WaitUntil(Instant::now() + TICK));
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.menu_event(el, id, &event) {
+        if self.menu_event(el, id, &event) || self.dialog_event(el, id, &event) {
             return;
         }
         if let WindowEvent::MouseInput {
