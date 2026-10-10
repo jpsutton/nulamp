@@ -1128,6 +1128,10 @@ dependencies = [
 [[package]]
 name = "nulamp-eq"
 version = "0.1.0"
+dependencies = [
+ "encoding_rs",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "nulamp-library"
