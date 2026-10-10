@@ -46,6 +46,8 @@ pub struct UiPrefs {
     pub keep_on_screen: bool,
     pub dim_inactive: bool,
     pub clutterbar_always: bool,
+    /// Skinned bitmap font for the main-window title. Default on (docs/decisions.md D14);
+    /// titles with characters the bitmap font cannot draw use the system font.
     pub bitmap_title: bool,
     pub show_number_in_title: bool,
     pub autoscroll: bool,
@@ -67,7 +69,7 @@ impl Default for UiPrefs {
             keep_on_screen: true,
             dim_inactive: true,
             clutterbar_always: true,
-            bitmap_title: false,
+            bitmap_title: true,
             show_number_in_title: true,
             autoscroll: true,
             time_remaining: false,
@@ -135,6 +137,7 @@ pub struct Shell<P: PlayerHandle> {
     easter_egg: bool,
     last_status: PlayerStatus,
     marquee_dragging: bool,
+    marquee_title_text: String,
     wheel_accum: f32,
     last_marquee_step: u64,
     last_blink: u64,
@@ -166,6 +169,7 @@ impl<P: PlayerHandle> Shell<P> {
             egg_typed: String::new(),
             easter_egg: false,
             marquee_dragging: false,
+            marquee_title_text: String::new(),
             wheel_accum: 0.0,
             last_marquee_step: 0,
             last_blink: 0,
@@ -270,8 +274,17 @@ impl<P: PlayerHandle> Shell<P> {
         )
     }
 
+    /// Bitmap font when enabled and every character of the title is in `text.bmp`.
+    fn use_bitmap_title(&self) -> bool {
+        self.prefs.bitmap_title
+            && self
+                .marquee_title_text
+                .chars()
+                .all(nulamp_skin::fonts::text_can_draw)
+    }
+
     fn measure_title(&mut self, text: &str) -> i32 {
-        if self.prefs.bitmap_title {
+        if self.use_bitmap_title() {
             text.chars().count() as i32 * 5
         } else {
             let spec = title::title_font(&self.skin, self.prefs.user_font.as_deref());
@@ -281,6 +294,7 @@ impl<P: PlayerHandle> Shell<P> {
 
     fn refresh_title(&mut self) {
         let text = self.title_text();
+        self.marquee_title_text = text.clone();
         let now = self.now_ms();
         let w_title = self.measure_title(&text);
         let w_sep = self.measure_title(marquee::SEPARATOR);
@@ -329,7 +343,7 @@ impl<P: PlayerHandle> Shell<P> {
             }
         };
         let (text, offset) = self.marquee.visible();
-        let title = if self.prefs.bitmap_title {
+        let title = if self.use_bitmap_title() {
             TitleArea::Bitmap { text, offset }
         } else {
             let spec = title::title_font(&self.skin, self.prefs.user_font.as_deref());

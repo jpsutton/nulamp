@@ -88,6 +88,11 @@ pub fn text_cell(c: char) -> Cell {
     SPACE_CELL
 }
 
+/// Whether `text.bmp` can draw a character (directly or after accent folding).
+pub fn text_can_draw(c: char) -> bool {
+    c == ' ' || text_cell(c) != SPACE_CELL
+}
+
 /// Colours for system-font text on the main window, from `text.bmp` (01 §6.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TitleColors {
