@@ -22,7 +22,8 @@ case "$(uname -s)" in
     brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
     ;;
   *)
-    # Windows: freetype-sys builds a bundled FreeType with CMake (preinstalled on runners).
+    # Windows: FreeType is built from the bundled sources (nulamp-text enables freetype-rs
+    # "bundled"); run scripts/windows-zlib.sh after this for the zlib headers it needs.
     # libopenmpt and FFmpeg are not installed; their decoders are left out of the build.
     ;;
 esac

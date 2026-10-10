@@ -60,6 +60,7 @@ impl<P: PlayerHandle> Shell<P> {
             .and_then(|id| self.windows.get(id))
             .map(|m| (m.rect.x + (m.rect.w - w) / 2, m.rect.y + m.rect.h))
             .unwrap_or((100, 100));
+        #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(unused_mut))]
         let mut attrs = Window::default_attributes()
             .with_title(format!("{} - {}", dialog.title(), super::APP_NAME))
             .with_decorations(false)

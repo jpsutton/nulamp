@@ -185,7 +185,9 @@ pub(crate) fn write_end_tags(path: &Path, layout: &Layout, edit: &EndTagsEdit) -
     } else {
         pad_id3v2(tag, tag.len() + ID3V2_PADDING)
     };
-    replace_file(path, |tmp| {
+    // `move`: the original is closed when the copy is done, before the rename (Windows
+    // refuses to replace a file that is open).
+    replace_file(path, move |tmp| {
         tmp.write_all(&new_front)?;
         file.seek(SeekFrom::Start(layout.front_len))?;
         io::copy(
@@ -217,13 +219,16 @@ pub(crate) fn replace_file(
 ) -> io::Result<()> {
     let tmp = temp_path(path);
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
-        fill(&mut file)?;
-        file.sync_all()?;
+        {
+            let mut file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
+            fill(&mut file)?;
+            file.sync_all()?;
+            // Closed before the rename: Windows refuses to rename a file that is open.
+        }
         fs::set_permissions(&tmp, fs::metadata(path)?.permissions())?;
         fs::rename(&tmp, path)
     })();

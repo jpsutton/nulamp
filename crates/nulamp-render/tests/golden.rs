@@ -270,7 +270,7 @@ fn region_mask() {
 #[test]
 fn png_round_trip() {
     let f = draw_main(&skin(), &fixed());
-    let path = common::root().join("target/golden-diff/round-trip.png");
+    let path = common::diff_dir().join("round-trip.png");
     common::write_png(&path, &f);
     let (w, h, px) = common::read_png(&path).expect("readable");
     assert_eq!((w, h), (275, 116));

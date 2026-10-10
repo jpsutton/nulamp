@@ -294,6 +294,8 @@ mod tests {
         assert_eq!(read_file(&path), Err(Error::UnknownFormat));
     }
 
+    // Case fallback exists for case-sensitive file systems; Windows needs none.
+    #[cfg(unix)]
     #[test]
     fn nested_on_disk_with_case_fallback() {
         let t = TempDir::new("nested");

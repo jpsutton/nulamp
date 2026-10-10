@@ -119,6 +119,7 @@ impl<P: PlayerHandle> Shell<P> {
                 pos.1 = (pos.1 - layout.h).max(mp.y);
             }
         }
+        #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(unused_mut))]
         let mut attrs = Window::default_attributes()
             .with_title("menu")
             .with_decorations(false)
