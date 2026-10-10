@@ -1724,6 +1724,7 @@ dependencies = [
  "nulamp-decoders",
  "nulamp-eq",
  "nulamp-meta",
+ "nulamp-plugin-api",
  "nulamp-remote",
  "nulamp-skin",
  "nulamp-tf",

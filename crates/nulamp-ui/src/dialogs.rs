@@ -33,6 +33,8 @@ pub enum DialogResult {
         name: String,
         auto: bool,
     },
+    /// An action on the n-th module of the plugin list.
+    Plugin(usize, crate::plugins_dialog::PluginAction),
 }
 
 pub enum Outcome {

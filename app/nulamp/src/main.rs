@@ -1,6 +1,7 @@
 //! nulamp: a cross-platform player for classic skins.
 
 mod player;
+mod plugins;
 mod settings;
 mod titles;
 
@@ -111,7 +112,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     streams.set_credential_prompt(Arc::new(player::LoginPrompt(std::sync::Mutex::new(
         login_tx,
     ))));
-    let registry = Arc::new(Registry::with_stream(streams.clone()));
+    let plugins = plugins::PluginRuntime::load(&config, inv.safe);
+    let mut registry = Registry::with_stream(streams.clone());
+    plugins.plugins.register_decoders(&mut registry);
+    let registry = Arc::new(registry);
     let mut player = Player::new(Engine::default(), registry.clone());
     let replaygain = std::sync::Arc::new(std::sync::Mutex::new(prefs.replaygain));
     let rg = replaygain.clone();
@@ -122,6 +126,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         nulamp_eq::replaygain::gain_factor(&settings, &titles::replaygain_tags(loc))
     });
+    if let Some(dsp) = plugins.active_dsp_stage() {
+        player.set_dsp(Some(dsp));
+    }
     player.command(Command::SetVolume(state.volume));
     player.command(Command::SetBalance(state.balance));
     player.engine.shuffle_on = state.shuffle;
@@ -166,6 +173,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             replaygain,
             streams,
             logins: login_rx,
+            requests: Vec::new(),
+            plugins,
         },
         prefs,
         skin,

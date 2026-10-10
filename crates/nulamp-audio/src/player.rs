@@ -303,6 +303,14 @@ impl Player {
         self.eq.set(s);
     }
 
+    /// Puts an effect after the equalizer (08 §5), or removes it.
+    pub fn set_dsp(&mut self, dsp: Option<Box<dyn crate::chain::Stage>>) {
+        let mut stages: Vec<Box<dyn crate::chain::Stage>> =
+            vec![Box::new(crate::eq_stage::EqStage::new(self.eq.clone()))];
+        stages.extend(dsp);
+        self.audio.send(Control::SetStages(stages));
+    }
+
     pub fn volume(&self) -> u8 {
         self.volume
     }

@@ -460,6 +460,13 @@ impl<P: PlayerHandle> Shell<P> {
                 self.handle_pl_actions(pl, vec![PlAction::FileInfoSelected], el);
             }
             MenuCmd::Bookmark(loc) => self.play_bookmark(&loc),
+            MenuCmd::Plugins => {
+                let (rows, errors) = self.player.plugins();
+                self.open_dialog(
+                    el,
+                    Box::new(crate::plugins_dialog::PluginsDialog::new(rows, errors)),
+                );
+            }
             MenuCmd::Rate(r) => {
                 let loc = self
                     .player
