@@ -44,6 +44,15 @@ impl VisTap {
         self.blocks.lock().expect("vis tap lock").clear();
     }
 
+    /// All blocks stamped after `frame`, oldest first.
+    pub fn since(&self, frame: u64) -> Vec<VisBlock> {
+        let b = self.blocks.lock().expect("vis tap lock");
+        b.iter()
+            .filter(|v| v.frame > frame || frame == u64::MAX)
+            .cloned()
+            .collect()
+    }
+
     /// The block whose time stamp is closest to `frame`, if within `max_frames`.
     pub fn closest(&self, frame: u64, max_frames: u64) -> Option<VisBlock> {
         let b = self.blocks.lock().expect("vis tap lock");

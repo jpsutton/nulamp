@@ -49,18 +49,18 @@ impl<P: PlayerHandle> Shell<P> {
             time_remaining: self.prefs.time_remaining,
             autoscroll: self.prefs.autoscroll,
             playing: s.state == nulamp_core::PlayState::Playing,
-            vis_mode: match self.vis_mode {
-                super::VisMode::Off => 0,
-                super::VisMode::Spectrum => 1,
-                super::VisMode::Oscilloscope => 2,
+            vis_mode: match self.prefs.vis.mode {
+                nulamp_vis::VisMode::Off => 0,
+                nulamp_vis::VisMode::Spectrum => 1,
+                nulamp_vis::VisMode::Oscilloscope => 2,
             },
-            analyzer_style: 0,
-            thick_bands: true,
-            peaks: true,
-            scope_style: 1,
-            refresh: 1,
-            falloff: 2,
-            peak_falloff: 1,
+            analyzer_style: self.prefs.vis.style as u8,
+            thick_bands: self.prefs.vis.thick_bands,
+            peaks: self.prefs.vis.peaks,
+            scope_style: self.prefs.vis.scope as u8,
+            refresh: self.prefs.vis.refresh as u8,
+            falloff: self.prefs.vis.falloff as u8,
+            peak_falloff: self.prefs.vis.peak_falloff as u8,
             skins,
             current_skin: self.prefs.skin_path.clone(),
             bookmarks: Vec::new(),
@@ -320,11 +320,43 @@ impl<P: PlayerHandle> Shell<P> {
             }
             MenuCmd::SetTimeRemaining(on) => self.prefs.time_remaining = on,
             MenuCmd::SetVisMode(m) => {
-                self.vis_mode = match m {
-                    1 => super::VisMode::Spectrum,
-                    2 => super::VisMode::Oscilloscope,
-                    _ => super::VisMode::Off,
+                let mode = match m {
+                    1 => nulamp_vis::VisMode::Spectrum,
+                    2 => nulamp_vis::VisMode::Oscilloscope,
+                    _ => nulamp_vis::VisMode::Off,
                 };
+                self.set_vis_mode(mode);
+            }
+            MenuCmd::SetAnalyzerStyle(i) => {
+                use nulamp_vis::AnalyzerStyle::*;
+                self.prefs.vis.style = [Normal, Fire, Line][i.min(2) as usize];
+                self.visualizer.set_settings(self.prefs.vis);
+            }
+            MenuCmd::SetBands(thick) => {
+                self.prefs.vis.thick_bands = thick;
+                self.visualizer.set_settings(self.prefs.vis);
+            }
+            MenuCmd::TogglePeaks => {
+                self.prefs.vis.peaks = !self.prefs.vis.peaks;
+                self.visualizer.set_settings(self.prefs.vis);
+            }
+            MenuCmd::SetScopeStyle(i) => {
+                use nulamp_vis::ScopeStyle::*;
+                self.prefs.vis.scope = [Dots, Lines, Solid][i.min(2) as usize];
+                self.visualizer.set_settings(self.prefs.vis);
+            }
+            MenuCmd::SetRefresh(i) => {
+                use nulamp_vis::RefreshRate::*;
+                self.prefs.vis.refresh = [Full, Half, Quarter, Eighth][i.min(3) as usize];
+                self.visualizer.set_settings(self.prefs.vis);
+            }
+            MenuCmd::SetFalloff(i) => {
+                self.prefs.vis.falloff = nulamp_vis::Speed::ALL[i.min(4) as usize];
+                self.visualizer.set_settings(self.prefs.vis);
+            }
+            MenuCmd::SetPeakFalloff(i) => {
+                self.prefs.vis.peak_falloff = nulamp_vis::Speed::ALL[i.min(4) as usize];
+                self.visualizer.set_settings(self.prefs.vis);
             }
             MenuCmd::LoadSkin(path) => self.load_skin(path),
             MenuCmd::PlSortTitle => self.player.engine_mut().playlist.sort_by_title(),

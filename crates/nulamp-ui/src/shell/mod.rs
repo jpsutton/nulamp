@@ -46,6 +46,14 @@ pub trait PlayerHandle {
     /// The play-order engine and playlist.
     fn engine(&self) -> &nulamp_core::Engine;
     fn engine_mut(&mut self) -> &mut nulamp_core::Engine;
+    /// Visualizer blocks heard after `frame`: (frame, rate, channels, interleaved samples).
+    fn vis_blocks_since(&self, _frame: u64) -> Vec<(u64, u32, usize, Vec<f32>)> {
+        Vec::new()
+    }
+    /// Output frames heard so far (the visualizer clock).
+    fn heard_frame(&self) -> u64 {
+        0
+    }
     /// Whether some decoder handles a file extension.
     fn is_supported_extension(&self, _ext: &str) -> bool {
         true
@@ -85,6 +93,7 @@ pub struct UiPrefs {
     pub user_font: Option<String>,
     pub easter_egg_word: String,
     pub eq: EqSettings,
+    pub vis: nulamp_vis::VisSettings,
     /// User skins folder (01 §1.4).
     pub skins_dir: std::path::PathBuf,
     /// Current skin: a path, or `None` for the built-in skin.
@@ -118,6 +127,7 @@ impl Default for UiPrefs {
             user_font: None,
             easter_egg_word: "NULAMP".into(),
             eq: EqSettings::default(),
+            vis: nulamp_vis::VisSettings::default(),
             skins_dir: default_skins_dir(),
             skin_path: None,
             last_dir: None,
@@ -156,14 +166,6 @@ struct WindowDrag {
     group: Vec<WindowId>,
 }
 
-/// Visualizer mode (06 §6.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VisMode {
-    Off,
-    Spectrum,
-    Oscilloscope,
-}
-
 pub struct Shell<P: PlayerHandle> {
     player: P,
     prefs: UiPrefs,
@@ -188,8 +190,11 @@ pub struct Shell<P: PlayerHandle> {
     start: Instant,
     cursors: HashMap<CursorRole, CustomCursor>,
     current_cursor: HashMap<WindowId, CursorRole>,
-    vis_mode: VisMode,
-    prev_vis_mode: VisMode,
+    prev_vis_mode: nulamp_vis::VisMode,
+    analyzer: nulamp_vis::Analyzer,
+    visualizer: nulamp_vis::Visualizer,
+    vis_frame: u64,
+    vis_was_running: bool,
     egg_typed: String,
     easter_egg: bool,
     last_status: PlayerStatus,
@@ -228,8 +233,11 @@ impl<P: PlayerHandle> Shell<P> {
             start: Instant::now(),
             cursors: HashMap::new(),
             current_cursor: HashMap::new(),
-            vis_mode: VisMode::Spectrum,
-            prev_vis_mode: VisMode::Spectrum,
+            prev_vis_mode: nulamp_vis::VisMode::Spectrum,
+            analyzer: nulamp_vis::Analyzer::new(),
+            visualizer: nulamp_vis::Visualizer::new(nulamp_vis::VisSettings::default()),
+            vis_frame: 0,
+            vis_was_running: false,
             egg_typed: String::new(),
             easter_egg: false,
             marquee_dragging: false,
@@ -536,7 +544,9 @@ impl<P: PlayerHandle> Shell<P> {
         let frame = match kind {
             Kind::Main => {
                 let view = self.main_view();
-                scale(&mw::draw_main(&self.skin, &view), s)
+                let mut f = scale(&mw::draw_main(&self.skin, &view), s);
+                self.draw_vis(&mut f);
+                f
             }
             Kind::Equalizer => scale(&ew::draw_eq(&self.skin, &self.eq_view()), s),
             Kind::Playlist => self.draw_playlist(),
@@ -826,20 +836,17 @@ impl<P: PlayerHandle> Shell<P> {
             }
             Action::ToggleTimeMode => self.prefs.time_remaining = !self.prefs.time_remaining,
             Action::CycleVisMode => {
-                self.prev_vis_mode = self.vis_mode;
-                self.vis_mode = match self.vis_mode {
-                    VisMode::Off => VisMode::Spectrum,
-                    VisMode::Spectrum => VisMode::Oscilloscope,
-                    VisMode::Oscilloscope => VisMode::Off,
-                };
+                self.prev_vis_mode = self.prefs.vis.mode;
+                self.set_vis_mode(self.prefs.vis.mode.next());
             }
-            Action::UndoVisMode => self.vis_mode = self.prev_vis_mode,
+            Action::UndoVisMode => self.set_vis_mode(self.prev_vis_mode),
             Action::ToggleVisOffSpectrum => {
-                self.vis_mode = if self.vis_mode == VisMode::Off {
-                    VisMode::Spectrum
+                let m = if self.prefs.vis.mode == nulamp_vis::VisMode::Off {
+                    nulamp_vis::VisMode::Spectrum
                 } else {
-                    VisMode::Off
+                    nulamp_vis::VisMode::Off
                 };
+                self.set_vis_mode(m);
             }
             Action::ToggleAlwaysOnTop => {
                 self.prefs.always_on_top = !self.prefs.always_on_top;
@@ -897,6 +904,71 @@ impl<P: PlayerHandle> Shell<P> {
             other => log::info!("action not implemented yet: {other:?}"),
         }
         self.request_redraw_all();
+    }
+
+    fn set_vis_mode(&mut self, m: nulamp_vis::VisMode) {
+        self.prefs.vis.mode = m;
+        self.visualizer.set_settings(self.prefs.vis);
+        self.visualizer.reset();
+        self.request_redraw(Kind::Main);
+    }
+
+    fn vis_size(&self) -> nulamp_vis::VisSize {
+        use nulamp_vis::VisSize::*;
+        match (self.prefs.shade, self.prefs.double_size) {
+            (false, false) => Main,
+            (false, true) => MainDouble,
+            (true, false) => Shade,
+            (true, true) => ShadeDouble,
+        }
+    }
+
+    /// Draws the classic visualizer into the (already scaled) main-window frame.
+    fn draw_vis(&mut self, f: &mut Frame) {
+        if self.prefs.vis.mode == nulamp_vis::VisMode::Off {
+            return;
+        }
+        let s = self.scale_of(Kind::Main);
+        let (x, y, _, _) = mw::vis_rect(self.prefs.shade, s);
+        let size = self.vis_size();
+        if self.visualizer.size() != size {
+            self.visualizer.set_size(size);
+        }
+        let colors = self.skin.vis_colors;
+        if self.last_status.state == PlayState::Stopped {
+            nulamp_vis::draw_background(size, &colors, f, x, y);
+        } else {
+            self.visualizer.draw(&colors, f, x, y);
+        }
+    }
+
+    /// Feeds new audio to the analyzer and advances the visualizer. Returns true to redraw.
+    fn tick_vis(&mut self) -> bool {
+        let running = self.prefs.vis.mode != nulamp_vis::VisMode::Off
+            && self.last_status.state == PlayState::Playing
+            && self.is_visible(Kind::Main);
+        if !running {
+            let changed = self.vis_was_running;
+            if changed {
+                self.visualizer.reset();
+                self.analyzer.reset();
+            }
+            self.vis_was_running = false;
+            return changed;
+        }
+        self.vis_was_running = true;
+        for (frame, rate, ch, samples) in self.player.vis_blocks_since(self.vis_frame) {
+            self.analyzer.push(frame, rate, ch, &samples);
+            self.vis_frame = self.vis_frame.max(frame);
+        }
+        let heard = self.player.heard_frame();
+        let data = self.analyzer.at(heard);
+        log::trace!(
+            "vis: heard {heard}, last block {}, data {:?}",
+            self.vis_frame,
+            data.as_ref().map(|d| d.bars.iter().copied().max())
+        );
+        self.visualizer.tick(data.as_ref())
     }
 
     fn pl_font(&self) -> nulamp_text::FontSpec {
@@ -1716,6 +1788,9 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
                 self.handle_actions(id, acts, el);
                 dirty = true;
             }
+        }
+        if self.tick_vis() {
+            self.request_redraw(Kind::Main);
         }
         if self.last_status.state == PlayState::Paused && now / 1200 != self.last_blink {
             self.last_blink = now / 1200;
