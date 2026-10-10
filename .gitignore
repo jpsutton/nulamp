@@ -2,3 +2,6 @@
 *.swp
 /tests/output/
 /.claude/worktrees/
+/appimage-deps/
+/appimage-tools/
+/dist/

@@ -1,0 +1,36 @@
+# Maintainer: Jared Sutton <jpsutton@protonmail.com>
+#
+# Builds nulamp from the source tree this file is in (release CI). It links the system FFmpeg
+# and libopenmpt.
+pkgname=nulamp
+pkgver=0
+pkgrel=1
+pkgdesc="Audio player for classic Winamp 2.x skins"
+arch=('x86_64')
+url="https://github.com/jpsutton/nulamp"
+license=('MIT OR Apache-2.0')
+depends=('glibc' 'gcc-libs' 'freetype2' 'fontconfig' 'alsa-lib' 'ffmpeg' 'libopenmpt'
+         'libx11' 'libxcursor' 'libxrandr' 'libxi' 'libxkbcommon-x11')
+makedepends=('rust' 'cargo' 'pkgconf' 'cmake')
+optdepends=('ttf-dejavu: default font for titles the skin font cannot draw')
+options=('!lto' '!debug')
+_root="$(realpath "${startdir}/../..")"
+
+pkgver() {
+  sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' "${_root}/Cargo.toml"
+}
+
+build() {
+  cd "${_root}"
+  CARGO_TARGET_DIR="${srcdir}/target" cargo build --release --locked -p nulamp
+}
+
+package() {
+  cd "${_root}"
+  install -Dm755 "${srcdir}/target/release/nulamp" "${pkgdir}/usr/bin/nulamp"
+  install -Dm644 assets/linux/nulamp.desktop "${pkgdir}/usr/share/applications/nulamp.desktop"
+  install -Dm644 assets/linux/nulamp.png "${pkgdir}/usr/share/icons/hicolor/256x256/apps/nulamp.png"
+  install -Dm644 include/nulamp_plugin.h "${pkgdir}/usr/include/nulamp_plugin.h"
+  install -Dm644 README.md docs/plugins.md -t "${pkgdir}/usr/share/doc/nulamp/"
+  install -Dm644 LICENSE-MIT LICENSE-APACHE -t "${pkgdir}/usr/share/licenses/nulamp/"
+}
