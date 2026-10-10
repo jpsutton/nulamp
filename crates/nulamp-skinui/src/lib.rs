@@ -39,6 +39,66 @@ pub trait UiText {
     }
 }
 
+/// [`UiText`] using nulamp's pixel font, with the FreeType 1-bit renderer as a fallback for
+/// strings containing characters the pixel font does not have.
+pub struct PixelText<'a> {
+    pub fonts: &'a mut nulamp_text::FontSystem,
+    pub bold: bool,
+}
+
+impl PixelText<'_> {
+    fn font(&self) -> &'static nulamp_pixelfont::PixelFont {
+        if self.bold {
+            nulamp_pixelfont::PixelFont::bold()
+        } else {
+            nulamp_pixelfont::PixelFont::regular()
+        }
+    }
+
+    fn covered(&self, text: &str) -> bool {
+        let f = self.font();
+        text.chars().all(|c| f.has_char(c))
+    }
+
+    fn fallback(&mut self) -> FreeTypeText<'_> {
+        FreeTypeText {
+            fonts: self.fonts,
+            spec: nulamp_text::FontSpec::new("", 11),
+        }
+    }
+}
+
+impl UiText for PixelText<'_> {
+    fn line_height(&self) -> i32 {
+        self.font().line_height() + 1
+    }
+
+    fn measure(&mut self, text: &str) -> i32 {
+        if self.covered(text) {
+            self.font().measure(text)
+        } else {
+            self.fallback().measure(text)
+        }
+    }
+
+    fn draw(
+        &mut self,
+        frame: &mut Frame,
+        text: &str,
+        x: i32,
+        y: i32,
+        color: u32,
+        clip: (i32, i32, i32, i32),
+    ) {
+        if self.covered(text) {
+            let f = self.font();
+            f.draw(frame, text, x, y + 1 + f.ascent(), color, clip);
+        } else {
+            self.fallback().draw(frame, text, x, y, color, clip);
+        }
+    }
+}
+
 /// [`UiText`] backed by the FreeType 1-bit renderer.
 pub struct FreeTypeText<'a> {
     pub fonts: &'a mut nulamp_text::FontSystem,
