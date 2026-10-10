@@ -1,5 +1,6 @@
 //! nulamp: a cross-platform player for classic skins.
 
+mod import;
 mod player;
 mod plugins;
 mod settings;
@@ -94,7 +95,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let (mut prefs, state) = settings::load(&config);
+    let first_run = !settings::settings_path(&config).exists();
+    let import_dir = inv
+        .import_winamp
+        .as_ref()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            first_run
+                .then(import::candidates)
+                .and_then(|c| c.into_iter().next())
+        });
+    let (mut prefs, state) = match import_dir.map(|d| (import::import(&d, &config), d)) {
+        Some((Ok((prefs, state, report)), dir)) => {
+            log::info!(
+                "imported settings from {} ({})",
+                dir.display(),
+                report.files.join(", ")
+            );
+            let _ = settings::save(&config, &prefs, &state);
+            (prefs, state)
+        }
+        Some((Err(e), dir)) => {
+            log::warn!("cannot import {}: {e}", dir.display());
+            settings::load(&config)
+        }
+        None => settings::load(&config),
+    };
     for s in &inv.skins {
         prefs.skin_path = Some(install_skin(s, &prefs.skins_dir));
     }

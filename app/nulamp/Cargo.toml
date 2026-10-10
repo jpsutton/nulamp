@@ -7,6 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+encoding_rs = "0.8"
 env_logger = "0.11.11"
 log = "0.4.34"
 nulamp-audio = { version = "0.1.0", path = "../../crates/nulamp-audio" }
@@ -14,6 +15,7 @@ nulamp-core = { version = "0.1.0", path = "../../crates/nulamp-core" }
 nulamp-decoders = { version = "0.1.0", path = "../../crates/nulamp-decoders" }
 nulamp-eq = { version = "0.1.0", path = "../../crates/nulamp-eq" }
 nulamp-meta = { version = "0.1.0", path = "../../crates/nulamp-meta" }
+nulamp-playlist = { version = "0.1.0", path = "../../crates/nulamp-playlist" }
 nulamp-plugin-api = { version = "0.1.0", path = "../../crates/nulamp-plugin-api" }
 nulamp-remote = { version = "0.1.0", path = "../../crates/nulamp-remote" }
 nulamp-skin = { version = "0.1.0", path = "../../crates/nulamp-skin" }

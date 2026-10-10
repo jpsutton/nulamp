@@ -50,6 +50,8 @@ pub struct Invocation {
     pub help: bool,
     /// `--skin <path>`
     pub skin: Option<String>,
+    /// `--import-winamp <dir>`: import an original settings folder (11 §1.4).
+    pub import_winamp: Option<String>,
     /// Switches that were not understood (unknown `--name`, bad values).
     pub unknown: Vec<String>,
 }
@@ -131,6 +133,7 @@ Switches (case-insensitive, before files; /NAME or --name):
   /DELM3U              delete the saved default playlist, then exit
   /COMMAND=<id>        send a numbered command
   --skin <path>        use a skin
+  --import-winamp <dir> import settings, presets, bookmarks and playlist
   /?                   show this help
 ";
 
@@ -208,6 +211,7 @@ fn lookup(name: &str) -> Option<Switch> {
         "class" => Value(|i, v| set(&mut i.class, v)),
         "bookmark" => Value(|i, v| set(&mut i.bookmark, v)),
         "skin" => Value(|i, v| set(&mut i.skin, v)),
+        "import-winamp" => Value(|i, v| set(&mut i.import_winamp, v)),
         _ => return None,
     })
 }
@@ -364,6 +368,10 @@ mod tests {
         assert_eq!(parse(&["/STARTMIN"]).start, StartMode::Minimized);
         assert_eq!(parse(&["/StartMax"]).start, StartMode::Maximized);
         assert!(parse(&["/SAFE"]).safe);
+        assert_eq!(
+            parse(&["--import-winamp", "/w"]).import_winamp.as_deref(),
+            Some("/w")
+        );
         assert!(parse(&["/DELM3U"]).delete_m3u);
         assert!(parse(&["/?"]).help);
         assert!(parse(&["--help"]).help);

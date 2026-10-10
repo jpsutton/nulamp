@@ -1717,6 +1717,7 @@ dependencies = [
 name = "nulamp"
 version = "0.1.0"
 dependencies = [
+ "encoding_rs",
  "env_logger",
  "log",
  "nulamp-audio",
@@ -1724,6 +1725,7 @@ dependencies = [
  "nulamp-decoders",
  "nulamp-eq",
  "nulamp-meta",
+ "nulamp-playlist",
  "nulamp-plugin-api",
  "nulamp-remote",
  "nulamp-skin",
