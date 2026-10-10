@@ -3,6 +3,10 @@
 //! Decoders use a pull model: the host asks for audio, seeks and closes. Decoders contain no
 //! threading code.
 
+pub mod midi_decoder;
+#[cfg(feature = "openmpt")]
+pub mod module_decoder;
+pub mod opus_decoder;
 pub mod symphonia_decoder;
 
 use std::fmt;
@@ -120,6 +124,10 @@ impl Registry {
     pub fn with_defaults() -> Self {
         let mut r = Self::empty();
         r.add(Box::new(symphonia_decoder::SymphoniaFactory));
+        r.add(Box::new(opus_decoder::OpusFactory));
+        r.add(Box::new(midi_decoder::MidiFactory::default()));
+        #[cfg(feature = "openmpt")]
+        r.add(Box::new(module_decoder::ModuleFactory::default()));
         r
     }
 
