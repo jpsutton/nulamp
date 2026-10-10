@@ -33,6 +33,17 @@ export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PAT
 cargo build --release --locked -p nulamp ${CARGO_TARGET:+--target "$CARGO_TARGET"}
 bin="target/${CARGO_TARGET:+$CARGO_TARGET/}release/nulamp"
 
+# The binary must need exactly the bundled libraries (a distribution FFmpeg or libopenmpt on the
+# build machine could otherwise win the link).
+for lib in libavformat libavcodec libavutil libswresample libopenmpt; do
+  soname=$(readelf -d "$PREFIX/lib/$lib.so" | sed -n 's/.*SONAME.*\[\(.*\)\]/\1/p')
+  readelf -d "$bin" | grep -q "NEEDED.*\[$soname\]" || {
+    echo "nulamp does not link the bundled $soname:" >&2
+    readelf -d "$bin" | grep NEEDED >&2
+    exit 1
+  }
+done
+
 appdir="$(mktemp -d)/nulamp.AppDir"
 mkdir -p "$appdir/usr/share/doc/nulamp/third-party"
 cp README.md LICENSE-MIT LICENSE-APACHE "$appdir/usr/share/doc/nulamp/"

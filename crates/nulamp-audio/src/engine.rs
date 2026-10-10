@@ -1070,7 +1070,11 @@ impl Worker {
             self.add_marker(marker);
             self.current = Some(next);
             self.asked_next = false;
-            self.update_hold_cap(true);
+            // Not a restart: the output buffer is already in steady state, so the next track's
+            // first blocks may be held at once. Resetting the hold here released them whenever
+            // the buffer was not quite full at the change, which shortened a following
+            // crossfade by one decoded block.
+            self.update_hold_cap(false);
             return true;
         }
         let buffered_ms = self
