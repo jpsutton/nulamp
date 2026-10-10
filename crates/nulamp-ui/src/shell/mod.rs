@@ -198,6 +198,8 @@ pub struct Shell<P: PlayerHandle> {
     dialogs: HashMap<WindowId, dialog_host::DialogWin>,
     /// A dialog requested by code without an event-loop handle; opened in `about_to_wait`.
     pending_dialog: Option<Box<dyn crate::dialogs::Dialog>>,
+    /// Files dropped during this event batch, and the window they were dropped on.
+    dropped: Vec<(Kind, String)>,
     menu_focus_check: Option<Instant>,
     /// A menu requested by code that has no event loop handle; opened in `about_to_wait`.
     pending_menu: Option<(Kind, Vec<crate::menu::Item>, i32, i32)>,
@@ -253,6 +255,7 @@ impl<P: PlayerHandle> Shell<P> {
             menus: Vec::new(),
             dialogs: HashMap::new(),
             pending_dialog: None,
+            dropped: Vec::new(),
             menu_focus_check: None,
             pending_menu: None,
             marquee: Marquee::new(),
@@ -1105,6 +1108,49 @@ impl<P: PlayerHandle> Shell<P> {
         self.visualizer.tick(data.as_ref())
     }
 
+    /// Files dropped on a window (04 §7.4): the main window replaces the list and plays
+    /// (Shift appends); the playlist inserts at the row under the pointer.
+    fn handle_drop(&mut self) {
+        let dropped = std::mem::take(&mut self.dropped);
+        let kind = dropped[0].0;
+        let items: Vec<String> = dropped.into_iter().map(|(_, p)| p).collect();
+        // Skin archives dropped on any window are applied (01 §1.4).
+        if items.len() == 1 && items[0].to_lowercase().ends_with(".wsz") {
+            self.load_skin(Some(items[0].clone()));
+            return;
+        }
+        match kind {
+            Kind::Playlist => {
+                let entries: Vec<_> = items
+                    .iter()
+                    .flat_map(|i| {
+                        crate::files::add_anything(i, true, false, &|e| {
+                            self.player.is_supported_extension(e)
+                        })
+                    })
+                    .collect();
+                let (_, y) = self
+                    .ids
+                    .get(&Kind::Playlist)
+                    .and_then(|id| self.windows.get(id))
+                    .map(|w| w.cursor)
+                    .unwrap_or((0, 0));
+                let n = self.player.engine().playlist.len();
+                let row = if self.pl.shade || y < 20 {
+                    n
+                } else {
+                    ((y - 20).max(0) / self.pl.row_h.max(1)) as usize + self.pl.first
+                };
+                self.player.engine_mut().insert(row.min(n), entries);
+                let n = self.player.engine().playlist.len();
+                self.pl.clamp_scroll(n);
+            }
+            _ => self.add_items(items, !self.mods.shift),
+        }
+        self.poll_player();
+        self.request_redraw_all();
+    }
+
     fn pl_font(&self) -> nulamp_text::FontSpec {
         let family = self
             .prefs
@@ -1951,6 +1997,12 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
                 self.mouse_input(id, state, button, el)
             }
             WindowEvent::MouseWheel { delta, .. } => self.wheel(id, delta, el),
+            WindowEvent::DroppedFile(path) => {
+                if let Some(kind) = self.kind_of(id) {
+                    self.dropped
+                        .push((kind, path.to_string_lossy().into_owned()));
+                }
+            }
             WindowEvent::KeyboardInput {
                 event,
                 is_synthetic: false,
@@ -1965,6 +2017,12 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
             return;
         }
         self.check_menu_focus();
+        if !self.dropped.is_empty() {
+            self.handle_drop();
+        }
+        if let Some(d) = self.pending_dialog.take() {
+            self.open_dialog(el, d);
+        }
         if let Some((kind, items, x, y)) = self.pending_menu.take()
             && let Some(&id) = self.ids.get(&kind)
         {
