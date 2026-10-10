@@ -99,6 +99,11 @@ pub struct UiPrefs {
     /// Current skin: a path, or `None` for the built-in skin.
     pub skin_path: Option<String>,
     pub last_dir: Option<std::path::PathBuf>,
+    pub pl_size: (i32, i32),
+    pub pl_shade: bool,
+    pub pl_font_px: u32,
+    pub pl_bitmap_font: bool,
+    pub pl_bitmap_scale: i32,
 }
 
 impl Default for UiPrefs {
@@ -131,6 +136,11 @@ impl Default for UiPrefs {
             skins_dir: default_skins_dir(),
             skin_path: None,
             last_dir: None,
+            pl_size: (275, 116),
+            pl_shade: false,
+            pl_font_px: 12,
+            pl_bitmap_font: true,
+            pl_bitmap_scale: 1,
         }
     }
 }
@@ -209,6 +219,15 @@ pub struct Shell<P: PlayerHandle> {
 impl<P: PlayerHandle> Shell<P> {
     pub fn new(mut player: P, prefs: UiPrefs, skin: Skin) -> Self {
         player.set_eq(&prefs.eq);
+        let mut pl = PlaylistUi::default();
+        pl.w = prefs.pl_size.0.max(275);
+        pl.h = prefs.pl_size.1.max(116);
+        pl.unshaded_h = pl.h;
+        pl.shade = prefs.pl_shade;
+        pl.font_px = prefs.pl_font_px;
+        pl.bitmap_font = prefs.pl_bitmap_font;
+        pl.bitmap_scale = prefs.pl_bitmap_scale;
+        let visualizer = nulamp_vis::Visualizer::new(prefs.vis);
         Self {
             last_status: player.status(),
             player,
@@ -222,7 +241,7 @@ impl<P: PlayerHandle> Shell<P> {
             mods: Mods::NONE,
             main_input: MainInput::new(),
             eq_input: EqInput::new(),
-            pl: PlaylistUi::default(),
+            pl,
             middle_held: false,
             menus: Vec::new(),
             menu_focus_check: None,
@@ -235,7 +254,7 @@ impl<P: PlayerHandle> Shell<P> {
             current_cursor: HashMap::new(),
             prev_vis_mode: nulamp_vis::VisMode::Spectrum,
             analyzer: nulamp_vis::Analyzer::new(),
-            visualizer: nulamp_vis::Visualizer::new(nulamp_vis::VisSettings::default()),
+            visualizer,
             vis_frame: 0,
             vis_was_running: false,
             egg_typed: String::new(),
@@ -249,11 +268,43 @@ impl<P: PlayerHandle> Shell<P> {
         }
     }
 
-    /// Runs the event loop until the user exits.
-    pub fn run(mut self) -> Result<(), Box<dyn std::error::Error>> {
+    /// Runs the event loop until the user exits. Returns the final preferences and the player.
+    pub fn run(mut self) -> Result<(UiPrefs, P), Box<dyn std::error::Error>> {
         let event_loop = build_event_loop()?;
         event_loop.run_app(&mut self)?;
-        Ok(())
+        self.sync_prefs();
+        Ok((self.prefs, self.player))
+    }
+
+    /// Copies window positions and playlist geometry into the preferences.
+    fn sync_prefs(&mut self) {
+        let pos = |k: Kind| {
+            self.ids
+                .get(&k)
+                .and_then(|id| self.windows.get(id))
+                .map(|w| (w.rect.x, w.rect.y))
+        };
+        if let Some(p) = pos(Kind::Main) {
+            self.prefs.main_pos = p;
+        }
+        if let Some(p) = pos(Kind::Equalizer) {
+            self.prefs.eq_pos = p;
+        }
+        if let Some(p) = pos(Kind::Playlist) {
+            self.prefs.pl_pos = p;
+        }
+        self.prefs.pl_size = (
+            self.pl.w,
+            if self.pl.shade {
+                self.pl.unshaded_h
+            } else {
+                self.pl.h
+            },
+        );
+        self.prefs.pl_shade = self.pl.shade;
+        self.prefs.pl_font_px = self.pl.font_px;
+        self.prefs.pl_bitmap_font = self.pl.bitmap_font;
+        self.prefs.pl_bitmap_scale = self.pl.bitmap_scale;
     }
 
     fn now_ms(&self) -> u64 {
