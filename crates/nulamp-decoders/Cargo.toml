@@ -7,6 +7,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+log = "0.4.34"
+symphonia = { version = "0.6.1", features = ["all-codecs", "all-formats", "opt-simd"] }
+thiserror = "2.0.21"
 
 [lints]
 workspace = true
