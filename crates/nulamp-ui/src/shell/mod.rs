@@ -59,6 +59,10 @@ pub trait PlayerHandle {
     fn heard_frame(&self) -> u64 {
         0
     }
+    /// Changes when visualizer blocks already handed out were replaced (an EQ change, a seek).
+    fn vis_revision(&self) -> u64 {
+        0
+    }
     /// Whether some decoder handles a file extension.
     fn is_supported_extension(&self, _ext: &str) -> bool {
         true
@@ -343,6 +347,7 @@ pub struct Shell<P: PlayerHandle> {
     analyzer: nulamp_vis::Analyzer,
     visualizer: nulamp_vis::Visualizer,
     vis_frame: u64,
+    vis_revision: u64,
     vis_was_running: bool,
     egg_typed: String,
     easter_egg: bool,
@@ -418,6 +423,7 @@ impl<P: PlayerHandle> Shell<P> {
             analyzer: nulamp_vis::Analyzer::new(),
             visualizer,
             vis_frame: 0,
+            vis_revision: 0,
             vis_was_running: false,
             egg_typed: String::new(),
             easter_egg: false,
@@ -1281,6 +1287,16 @@ impl<P: PlayerHandle> Shell<P> {
             return changed;
         }
         self.vis_was_running = true;
+        let revision = self.player.vis_revision();
+        if revision != self.vis_revision {
+            // Blocks already read were replaced: read again from the one being heard.
+            self.vis_revision = revision;
+            let from = self
+                .player
+                .heard_frame()
+                .saturating_sub(nulamp_vis::BLOCK_FRAMES as u64 + 1);
+            self.vis_frame = self.vis_frame.min(from);
+        }
         for (frame, rate, ch, samples) in self.player.vis_blocks_since(self.vis_frame) {
             self.analyzer.push(frame, rate, ch, &samples);
             self.vis_frame = self.vis_frame.max(frame);

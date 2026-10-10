@@ -17,6 +17,10 @@ pub enum MixCmd {
     Prebuffer(u32),
     /// No more data will be written for now (end of the last track); stop waiting to prebuffer.
     EndOfData,
+    /// Keep the buffered audio up to output frame `frame` and discard the rest, which the
+    /// engine writes again (decision EQ12); acknowledged through `Shared::truncate_ack`.
+    /// Handled by the output, not the mixer.
+    Truncate { frame: u64, generation: u64 },
 }
 
 /// State shared between the engine thread and the callback.
@@ -30,6 +34,8 @@ pub struct Shared {
     pub frames_played: AtomicU64,
     /// Last acknowledged flush generation.
     pub flush_ack: AtomicU64,
+    /// Last answered truncation: generation × 2, plus 1 when it was carried out.
+    pub truncate_ack: AtomicU64,
     /// Current fade gain, f32 bits.
     pub fade_gain: AtomicU32,
     pub paused: AtomicBool,
@@ -122,6 +128,7 @@ impl Mixer {
             MixCmd::Flush(g) => return Some(g),
             MixCmd::Prebuffer(f) => self.prebuffer = f,
             MixCmd::EndOfData => self.prebuffer = 0,
+            MixCmd::Truncate { .. } => {}
         }
         None
     }

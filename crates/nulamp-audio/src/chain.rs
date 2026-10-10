@@ -1,7 +1,12 @@
 //! Processing stages between the decoder and the output (07 §4), and the visualization tap.
 
+use std::any::Any;
 use std::collections::VecDeque;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// A stage's internal state, saved with [`Stage::save`].
+pub type StageState = Box<dyn Any + Send>;
 
 /// A processing stage (equalizer, DSP effect). Runs on the audio engine thread.
 pub trait Stage: Send {
@@ -16,6 +21,14 @@ pub trait Stage: Send {
     }
     /// Clears internal state after a seek.
     fn reset(&mut self) {}
+    /// A copy of the internal state, so that the audio processed from here on can be processed
+    /// again after a settings change (decision EQ12). `None` (the default): the stage cannot
+    /// do that, and audio it has processed plays as it is.
+    fn save(&self) -> Option<StageState> {
+        None
+    }
+    /// Returns to a state from [`Stage::save`].
+    fn restore(&mut self, _state: StageState) {}
 }
 
 /// Runs a block through the stages in order. Each stage sees the previous stage's output,
@@ -39,6 +52,7 @@ pub struct VisBlock {
 #[derive(Debug, Default)]
 pub struct VisTap {
     blocks: Mutex<VecDeque<VisBlock>>,
+    revision: AtomicU64,
 }
 
 /// Frames per visualizer block (06 §2.1).
@@ -55,6 +69,36 @@ impl VisTap {
 
     pub fn clear(&self) {
         self.blocks.lock().expect("vis tap lock").clear();
+        self.revision.fetch_add(1, Ordering::Release);
+    }
+
+    /// Removes the blocks holding audio of output frame `frame` or later, which is processed
+    /// again. Returns the removed block that starts before `frame`, if any.
+    pub fn rewind(&self, frame: u64) -> Option<VisBlock> {
+        let mut b = self.blocks.lock().expect("vis tap lock");
+        let mut removed = false;
+        let mut straddling = None;
+        while let Some(last) = b.back() {
+            let end = last.frame + (last.samples.len() / last.channels.max(1)) as u64;
+            if end <= frame {
+                break;
+            }
+            let last = b.pop_back().expect("vis block");
+            removed = true;
+            if last.frame < frame {
+                straddling = Some(last);
+                break;
+            }
+        }
+        if removed {
+            self.revision.fetch_add(1, Ordering::Release);
+        }
+        straddling
+    }
+
+    /// Changes whenever blocks are removed: blocks already read may have been replaced.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
     }
 
     /// All blocks stamped after `frame`, oldest first.
@@ -161,6 +205,27 @@ mod tests {
         let mut v = vec![1.0, -3.0];
         run_stages(&mut stages, &mut v);
         assert_eq!(v, [1.0, 1.0, -3.0, -3.0]);
+    }
+
+    #[test]
+    fn rewind_returns_the_straddling_block() {
+        let t = VisTap::default();
+        for f in [0u64, 576, 1152] {
+            t.push(VisBlock {
+                frame: f,
+                rate: 44_100,
+                channels: 2,
+                samples: vec![0.0; 576 * 2],
+            });
+        }
+        let r0 = t.revision();
+        assert!(t.rewind(1728).is_none());
+        assert_eq!(t.revision(), r0);
+        assert_eq!(t.rewind(700).map(|b| b.frame), Some(576));
+        assert_eq!(t.since(u64::MAX).len(), 1);
+        assert_ne!(t.revision(), r0);
+        assert!(t.rewind(0).is_none());
+        assert!(t.since(u64::MAX).is_empty());
     }
 
     #[test]

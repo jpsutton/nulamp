@@ -153,6 +153,10 @@ impl PlayerHandle for AppPlayer {
         self.player.engine_status().frames_played
     }
 
+    fn vis_revision(&self) -> u64 {
+        self.player.audio().vis.revision()
+    }
+
     fn is_supported_extension(&self, ext: &str) -> bool {
         self.player.registry.is_supported_extension(ext)
     }
