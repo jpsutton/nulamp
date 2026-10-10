@@ -177,6 +177,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nulamp-skingen"
+version = "0.1.0"
+dependencies = [
+ "nulamp-skin",
+]
+
+[[package]]
 name = "nulamp-skinui"
 version = "0.1.0"
 

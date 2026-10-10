@@ -2,6 +2,7 @@
 
 pub mod bitmap;
 pub mod bmp;
+pub mod builtin;
 pub mod container;
 pub mod cursor;
 pub mod fonts;

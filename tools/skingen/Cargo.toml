@@ -1,0 +1,14 @@
+[package]
+name = "nulamp-skingen"
+description = "Generates nulamp's original built-in skin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+nulamp-skin = { path = "../../crates/nulamp-skin" }
+
+[lints]
+workspace = true
