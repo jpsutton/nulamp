@@ -43,18 +43,12 @@ impl Read for RingSource {
                 self.shared.cv.notify_all();
                 return Ok(n);
             }
-            if st.ring.is_empty() {
-                if st.net_done {
-                    st.apply_meta(true);
-                    return Ok(0);
-                }
-                if st.phase == Phase::Playing {
-                    // Underrun.
-                    let p = st.rebuffer_percent;
-                    st.start_buffering(p);
-                    self.shared.cv.notify_all();
-                }
+            if st.ring.is_empty() && st.net_done {
+                st.apply_meta(true);
+                return Ok(0);
             }
+            // An empty ring is not an underrun by itself: a server sending in real time
+            // keeps it near empty. The reader decides (see `StreamDecoder::read`).
             st = self.shared.wait(st);
         }
     }
