@@ -107,6 +107,18 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
         ("vis_peak_falloff", (v.peak_falloff as u8).to_string()),
         ("vis_scope", (v.scope as u8).to_string()),
         ("vis_refresh", (v.refresh as u8).to_string()),
+        ("rg_enabled", b(p.replaygain.enabled)),
+        (
+            "rg_album",
+            b(p.replaygain.source == nulamp_eq::replaygain::Source::Album),
+        ),
+        ("rg_mode", (p.replaygain.mode as u8).to_string()),
+        ("rg_preferred_only", b(p.replaygain.preferred_only)),
+        ("rg_preamp_db", p.replaygain.preamp_db.to_string()),
+        ("rg_no_tag_db", p.replaygain.no_tag_db.to_string()),
+        ("fade_pause_stop", b(p.fade_pause_stop)),
+        ("fade_seek", b(p.fade_seek)),
+        ("buffer_ms", p.buffer_ms.to_string()),
         ("volume", st.volume.to_string()),
         ("balance", st.balance.to_string()),
         ("shuffle", b(st.shuffle)),
@@ -228,6 +240,32 @@ pub fn from_ini(text: &str) -> (UiPrefs, PlayerState) {
             RefreshRate::Quarter,
             RefreshRate::Eighth,
         ][i];
+    }
+    p.replaygain.enabled = flag("rg_enabled", p.replaygain.enabled);
+    if flag("rg_album", false) {
+        p.replaygain.source = nulamp_eq::replaygain::Source::Album;
+    }
+    if let Some(i) = pick("rg_mode", 4) {
+        use nulamp_eq::replaygain::Mode::*;
+        p.replaygain.mode = [
+            ApplyGain,
+            ApplyGainPreventClipping,
+            Normalize,
+            PreventClipping,
+        ][i];
+    }
+    p.replaygain.preferred_only = flag("rg_preferred_only", p.replaygain.preferred_only);
+    let fnum = |k: &str| get(k).and_then(|v| v.trim().parse::<f32>().ok());
+    if let Some(v) = fnum("rg_preamp_db") {
+        p.replaygain.preamp_db = v.clamp(-14.0, 6.0);
+    }
+    if let Some(v) = fnum("rg_no_tag_db") {
+        p.replaygain.no_tag_db = v.clamp(-14.0, 6.0);
+    }
+    p.fade_pause_stop = flag("fade_pause_stop", p.fade_pause_stop);
+    p.fade_seek = flag("fade_seek", p.fade_seek);
+    if let Some(n) = num("buffer_ms") {
+        p.buffer_ms = n.clamp(200, 20_000) as u32;
     }
     if let Some(n) = num("volume") {
         st.volume = n.clamp(0, 255) as u8;

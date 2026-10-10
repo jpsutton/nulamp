@@ -7,6 +7,8 @@ use nulamp_ui::PlayerHandle;
 pub struct AppPlayer {
     pub player: Player,
     pub titles: crate::titles::TitleReader,
+    /// ReplayGain settings read by the player's gain hook.
+    pub replaygain: std::sync::Arc<std::sync::Mutex<nulamp_eq::ReplayGainSettings>>,
 }
 
 impl PlayerHandle for AppPlayer {
@@ -46,6 +48,18 @@ impl PlayerHandle for AppPlayer {
 
     fn engine_mut(&mut self) -> &mut nulamp_core::Engine {
         &mut self.player.engine
+    }
+
+    fn set_playback_prefs(&mut self, prefs: &nulamp_ui::UiPrefs) {
+        if let Ok(mut rg) = self.replaygain.lock() {
+            *rg = prefs.replaygain;
+        }
+        self.player.set_output_prefs(nulamp_audio::OutputPrefs {
+            buffer_ms: prefs.buffer_ms,
+            fade_pause_stop: prefs.fade_pause_stop,
+            fade_seek: prefs.fade_seek,
+            ..nulamp_audio::OutputPrefs::default()
+        });
     }
 
     fn set_eq(&mut self, settings: &nulamp_eq::EqSettings) {

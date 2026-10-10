@@ -16,9 +16,10 @@ pub struct PlaylistOptions {
     pub old_school_buttons: bool,
 }
 
-const PAGES: [&str; 5] = [
+const PAGES: [&str; 6] = [
     "Classic skins",
     "Playlist",
+    "Playback",
     "Equalizer",
     "Visualization",
     "Skins",
@@ -71,12 +72,42 @@ fn page_options(page: usize) -> Vec<CheckOpt> {
             opt!("Old-school playlist buttons", o.old_school_buttons),
         ],
         2 => vec![
+            opt!("Fade on pause and stop", p.fade_pause_stop),
+            opt!("Fade on seek", p.fade_seek),
+            opt!("Use ReplayGain", p.replaygain.enabled),
+            CheckOpt {
+                label: "Use album gain (instead of track gain)",
+                get: |p, _| p.replaygain.source == nulamp_eq::replaygain::Source::Album,
+                set: |p, _, v| {
+                    p.replaygain.source = if v {
+                        nulamp_eq::replaygain::Source::Album
+                    } else {
+                        nulamp_eq::replaygain::Source::Track
+                    }
+                },
+            },
+            CheckOpt {
+                label: "Prevent clipping",
+                get: |p, _| {
+                    p.replaygain.mode == nulamp_eq::replaygain::Mode::ApplyGainPreventClipping
+                },
+                set: |p, _, v| {
+                    p.replaygain.mode = if v {
+                        nulamp_eq::replaygain::Mode::ApplyGainPreventClipping
+                    } else {
+                        nulamp_eq::replaygain::Mode::ApplyGain
+                    }
+                },
+            },
+            opt!("Use only the preferred source", p.replaygain.preferred_only),
+        ],
+        3 => vec![
             opt!("Enable equalizer", p.eq.enabled),
             opt!("Auto-load presets", p.eq.auto_load),
             opt!("ISO band frequencies", p.eq.iso),
             opt!("Use limiter", p.eq.limiter),
         ],
-        3 => vec![
+        4 => vec![
             opt!("Show peaks", p.vis.peaks),
             opt!("Thick bands", p.vis.thick_bands),
         ],
@@ -149,7 +180,27 @@ impl PrefsDialog {
                 NUM,
                 &mut widgets,
             ),
-            4 => {
+            2 => {
+                num(
+                    "ReplayGain preamp (dB):",
+                    format!("{:.1}", self.prefs.replaygain.preamp_db),
+                    NUM,
+                    &mut widgets,
+                );
+                num(
+                    "Gain without tags (dB):",
+                    format!("{:.1}", self.prefs.replaygain.no_tag_db),
+                    NUM + 1,
+                    &mut widgets,
+                );
+                num(
+                    "Buffer length (ms):",
+                    self.prefs.buffer_ms.to_string(),
+                    NUM + 2,
+                    &mut widgets,
+                );
+            }
+            5 => {
                 widgets.push(Widget::Label {
                     rect: Rect::new(x, 8, cw - x - 6, 14),
                     text: "Skins folder:".into(),
@@ -203,7 +254,24 @@ impl PrefsDialog {
                     self.pl.page_lines = v.clamp(1, 16);
                 }
             }
-            4 if !text.trim().is_empty() => {
+            2 => {
+                let db = |s: String| {
+                    s.trim()
+                        .parse::<f32>()
+                        .ok()
+                        .map(|v| (v.clamp(-14.0, 6.0) * 10.0).round() / 10.0)
+                };
+                if let Some(v) = db(text.clone()) {
+                    self.prefs.replaygain.preamp_db = v;
+                }
+                if let Some(v) = db(self.form.text(NUM + 1)) {
+                    self.prefs.replaygain.no_tag_db = v;
+                }
+                if let Ok(v) = self.form.text(NUM + 2).trim().parse::<u32>() {
+                    self.prefs.buffer_ms = v.clamp(200, 20_000);
+                }
+            }
+            5 if !text.trim().is_empty() => {
                 self.prefs.skins_dir = std::path::PathBuf::from(text.trim());
             }
             _ => {}
