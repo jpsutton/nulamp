@@ -1195,7 +1195,9 @@ dependencies = [
  "nulamp-core",
  "nulamp-decoders",
  "nulamp-eq",
+ "nulamp-meta",
  "nulamp-skin",
+ "nulamp-tf",
  "nulamp-ui",
 ]
 

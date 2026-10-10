@@ -1,6 +1,7 @@
 //! nulamp: a cross-platform player for classic skins.
 
 mod player;
+mod titles;
 
 use std::sync::Arc;
 
@@ -33,11 +34,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let registry = Arc::new(Registry::with_defaults());
     let mut player = Player::new(Engine::default(), registry.clone());
+    let rg_settings = nulamp_eq::ReplayGainSettings::default();
+    player.gain_for = Box::new(move |loc| {
+        if !rg_settings.enabled {
+            return 1.0;
+        }
+        nulamp_eq::replaygain::gain_factor(&rg_settings, &titles::replaygain_tags(loc))
+    });
     let entries = player::expand(&files, &|ext| registry.is_supported_extension(ext));
     let start = !entries.is_empty();
     player.engine.append(entries);
     if start {
         player.command(nulamp_core::Command::Play);
     }
-    Shell::new(player::AppPlayer { player }, UiPrefs::default(), skin).run()
+    let titles = titles::TitleReader::new(nulamp_tf::DEFAULT_FORMAT);
+    Shell::new(
+        player::AppPlayer { player, titles },
+        UiPrefs::default(),
+        skin,
+    )
+    .run()
 }
