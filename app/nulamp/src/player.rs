@@ -19,6 +19,14 @@ impl PlayerHandle for AppPlayer {
         self.player.command(command);
     }
 
+    fn is_supported_extension(&self, ext: &str) -> bool {
+        self.player.registry.is_supported_extension(ext)
+    }
+
+    fn extensions(&self) -> Vec<(String, String)> {
+        self.player.registry.all_extensions()
+    }
+
     fn engine(&self) -> &nulamp_core::Engine {
         &self.player.engine
     }
