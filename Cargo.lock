@@ -1259,6 +1259,7 @@ dependencies = [
  "nulamp-render",
  "nulamp-skin",
  "nulamp-text",
+ "rand",
  "raw-window-handle",
  "softbuffer",
  "winit",

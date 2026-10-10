@@ -19,6 +19,14 @@ impl PlayerHandle for AppPlayer {
         self.player.command(command);
     }
 
+    fn engine(&self) -> &nulamp_core::Engine {
+        &self.player.engine
+    }
+
+    fn engine_mut(&mut self) -> &mut nulamp_core::Engine {
+        &mut self.player.engine
+    }
+
     fn set_eq(&mut self, settings: &nulamp_eq::EqSettings) {
         self.player.set_eq(settings);
     }

@@ -28,7 +28,9 @@ use crate::keys::{self, Focus, KeyAction};
 use crate::main_input::{self, MainContext, MainInput};
 use crate::marquee::{self, Marquee};
 use crate::platform::shape;
+use crate::playlist::{self as pl, PlAction, PlMenuChoice, PlaylistUi};
 use crate::title;
+use nulamp_render::playlist_window::{self as pw, MiniTime, PlFrameView};
 
 /// The player as seen by the user interface.
 pub trait PlayerHandle {
@@ -38,6 +40,9 @@ pub trait PlayerHandle {
     fn tick(&mut self) {}
     /// Equalizer settings changed.
     fn set_eq(&mut self, _settings: &EqSettings) {}
+    /// The play-order engine and playlist.
+    fn engine(&self) -> &nulamp_core::Engine;
+    fn engine_mut(&mut self) -> &mut nulamp_core::Engine;
 }
 
 /// User-interface preferences (subset of 11 §1.3).
@@ -110,6 +115,7 @@ const TICK: Duration = Duration::from_millis(16);
 pub enum Kind {
     Main,
     Equalizer,
+    Playlist,
 }
 
 struct Win {
@@ -151,6 +157,8 @@ pub struct Shell<P: PlayerHandle> {
     mods: Mods,
     main_input: MainInput,
     eq_input: EqInput,
+    pl: PlaylistUi,
+    middle_held: bool,
     marquee: Marquee,
     drag: Option<WindowDrag>,
     last_click: Option<(WindowId, Instant, i32, i32)>,
@@ -186,6 +194,8 @@ impl<P: PlayerHandle> Shell<P> {
             mods: Mods::NONE,
             main_input: MainInput::new(),
             eq_input: EqInput::new(),
+            pl: PlaylistUi::default(),
+            middle_held: false,
             marquee: Marquee::new(),
             drag: None,
             last_click: None,
@@ -225,6 +235,7 @@ impl<P: PlayerHandle> Shell<P> {
         let doubled = match kind {
             Kind::Main => self.prefs.double_size,
             Kind::Equalizer => self.prefs.double_size && self.prefs.eq_double,
+            Kind::Playlist => false,
         };
         if doubled { 2 } else { 1 }
     }
@@ -235,6 +246,10 @@ impl<P: PlayerHandle> Shell<P> {
             Kind::Main => mw::MAIN_SIZE,
             Kind::Equalizer if self.prefs.eq_shade => ew::EQ_SHADE_SIZE,
             Kind::Equalizer => ew::EQ_SIZE,
+            Kind::Playlist => (
+                self.pl.w as u32,
+                if self.pl.shade { 14 } else { self.pl.h as u32 },
+            ),
         };
         let s = self.scale_of(kind);
         (w as i32 * s, h as i32 * s)
@@ -246,6 +261,7 @@ impl<P: PlayerHandle> Shell<P> {
         let title = match kind {
             Kind::Main => APP_NAME.to_string(),
             Kind::Equalizer => format!("{APP_NAME} Equalizer"),
+            Kind::Playlist => format!("{APP_NAME} Playlist Editor"),
         };
         let mut attrs = Window::default_attributes()
             .with_title(title)
@@ -468,7 +484,7 @@ impl<P: PlayerHandle> Shell<P> {
             shuffle: s.shuffle,
             repeat: s.repeat,
             eq_visible: self.is_visible(Kind::Equalizer),
-            pl_visible: self.prefs.pl_visible,
+            pl_visible: self.is_visible(Kind::Playlist),
             title,
         }
     }
@@ -497,6 +513,7 @@ impl<P: PlayerHandle> Shell<P> {
                 scale(&mw::draw_main(&self.skin, &view), s)
             }
             Kind::Equalizer => scale(&ew::draw_eq(&self.skin, &self.eq_view()), s),
+            Kind::Playlist => self.draw_playlist(),
         };
         let mask = self.shape_for(kind, &frame);
         let Some(w) = self.windows.get_mut(&id) else {
@@ -519,6 +536,7 @@ impl<P: PlayerHandle> Shell<P> {
             Kind::Main => r.normal.as_ref(),
             Kind::Equalizer if self.prefs.eq_shade => r.equalizer_ws.as_ref(),
             Kind::Equalizer => r.equalizer.as_ref(),
+            Kind::Playlist => None,
         }?;
         Some(region::rasterize(
             polys,
@@ -612,6 +630,7 @@ impl<P: PlayerHandle> Shell<P> {
         }
         match kind {
             Kind::Equalizer => self.prefs.eq_visible = visible,
+            Kind::Playlist => self.prefs.pl_visible = visible,
             Kind::Main => {}
         }
         self.request_redraw(Kind::Main);
@@ -754,6 +773,10 @@ impl<P: PlayerHandle> Shell<P> {
                 let v = !self.is_visible(Kind::Equalizer);
                 self.set_visible(Kind::Equalizer, v);
             }
+            Action::TogglePlaylistWindow => {
+                let v = !self.is_visible(Kind::Playlist);
+                self.set_visible(Kind::Playlist, v);
+            }
             Action::ToggleTimeMode => self.prefs.time_remaining = !self.prefs.time_remaining,
             Action::CycleVisMode => {
                 self.prev_vis_mode = self.vis_mode;
@@ -788,6 +811,7 @@ impl<P: PlayerHandle> Shell<P> {
                 self.resize_window(Kind::Equalizer);
             }
             Action::ToggleShade => match self.kind_of(id) {
+                Some(Kind::Playlist) => self.toggle_pl_shade(),
                 Some(Kind::Equalizer) => {
                     self.prefs.eq_shade = !self.prefs.eq_shade;
                     self.resize_window(Kind::Equalizer);
@@ -828,6 +852,159 @@ impl<P: PlayerHandle> Shell<P> {
         self.request_redraw_all();
     }
 
+    fn pl_font(&self) -> nulamp_text::FontSpec {
+        let family = self
+            .prefs
+            .user_font
+            .clone()
+            .filter(|f| !f.is_empty())
+            .unwrap_or_else(|| self.skin.pledit.font.clone());
+        nulamp_text::FontSpec::new(family, self.pl.font_px)
+    }
+
+    fn update_pl_font(&mut self) {
+        let spec = self.pl_font();
+        self.pl.row_h = self.fonts.metrics(&spec).line_height.max(1);
+        let n = self.player.engine().playlist.len();
+        self.pl.clamp_scroll(n);
+    }
+
+    fn draw_playlist(&mut self) -> Frame {
+        let s = &self.last_status;
+        let time = match s.state {
+            PlayState::Stopped => MiniTime::Hidden,
+            _ => {
+                let remaining = self.prefs.time_remaining && s.seekable && s.length_ms.is_some();
+                let secs = if remaining {
+                    s.length_ms.unwrap_or(0).saturating_sub(s.position_ms) / 1000
+                } else {
+                    s.position_ms / 1000
+                };
+                MiniTime::Time {
+                    minutes: (secs / 60) as u32,
+                    seconds: (secs % 60) as u32,
+                    remaining,
+                }
+            }
+        };
+        let engine = self.player.engine();
+        let view = PlFrameView {
+            w: self.pl.w,
+            h: if self.pl.shade { 14 } else { self.pl.h },
+            active: self.is_active(Kind::Playlist),
+            shade: self.pl.shade,
+            pressed: self.pl.pressed,
+            thumb: self.pl.thumb_offset(engine.playlist.len()),
+            thumb_pressed: self.pl.thumb_pressed,
+            info: pl::info_string(&engine.playlist),
+            time,
+            popup: self.pl.popup,
+        };
+        let mut f = pw::draw_playlist_frame(&self.skin, &view);
+        if self.pl.shade {
+            let i = self.last_status.position;
+            let title = if engine.playlist.is_empty() {
+                "<no file>".to_string()
+            } else {
+                format!(
+                    "{}. {}",
+                    i + 1,
+                    engine
+                        .playlist
+                        .get(i)
+                        .map(|e| e.title.as_str())
+                        .unwrap_or("")
+                )
+            };
+            let len = engine.playlist.get(i).and_then(|e| e.length_ms);
+            let time = len
+                .map(|l| marquee::format_length(l / 1000))
+                .unwrap_or_default();
+            pw::draw_shade_text_bitmap(&mut f, &self.skin, self.pl.w, &title, &time);
+        } else {
+            let spec = self.pl_font();
+            pl::draw_rows(
+                &mut f,
+                &mut self.fonts,
+                &self.skin,
+                &spec,
+                &self.pl,
+                self.player.engine(),
+            );
+        }
+        f
+    }
+
+    fn toggle_pl_shade(&mut self) {
+        if self.pl.shade {
+            self.pl.shade = false;
+            self.pl.h = self.pl.unshaded_h.max(116);
+        } else {
+            self.pl.unshaded_h = self.pl.h;
+            self.pl.shade = true;
+        }
+        self.resize_window(Kind::Playlist);
+    }
+
+    fn handle_pl_actions(&mut self, id: WindowId, actions: Vec<PlAction>, el: &ActiveEventLoop) {
+        for a in actions {
+            match a {
+                PlAction::Do(a) => self.handle_action(id, a, el),
+                PlAction::Close => self.set_visible(Kind::Playlist, false),
+                PlAction::ToggleShade => self.toggle_pl_shade(),
+                PlAction::Resize { w, h } => {
+                    let (sw, sh) = pw::snap_size(w, if self.pl.shade { self.pl.h } else { h });
+                    if (sw, sh) != (self.pl.w, self.pl.h) {
+                        self.pl.w = sw;
+                        if !self.pl.shade {
+                            self.pl.h = sh;
+                        }
+                        let n = self.player.engine().playlist.len();
+                        self.pl.clamp_scroll(n);
+                        self.resize_window(Kind::Playlist);
+                    }
+                }
+                PlAction::FontBigger => {
+                    self.pl.font_px += 1;
+                    self.update_pl_font();
+                }
+                PlAction::FontSmaller => {
+                    self.pl.font_px = (self.pl.font_px - 1).max(2);
+                    self.update_pl_font();
+                }
+                PlAction::FontReset => {
+                    self.pl.font_px = 12;
+                    self.update_pl_font();
+                }
+                PlAction::Menu(choice) => self.pl_menu_choice(choice),
+                other => log::info!("playlist action not implemented yet: {other:?}"),
+            }
+        }
+        self.poll_player();
+        self.request_redraw_all();
+    }
+
+    fn pl_menu_choice(&mut self, choice: PlMenuChoice) {
+        let e = self.player.engine_mut();
+        match choice {
+            PlMenuChoice::SelectAll => e.playlist.select_all(true),
+            PlMenuChoice::SelectNone => e.playlist.select_all(false),
+            PlMenuChoice::InvertSelection => e.playlist.invert_selection(),
+            PlMenuChoice::RemoveSelected => {
+                e.remove_where(|_, x| x.selected);
+            }
+            PlMenuChoice::Crop => {
+                if e.playlist.selected_count() > 0 {
+                    e.remove_where(|_, x| !x.selected);
+                }
+            }
+            PlMenuChoice::RemoveAll | PlMenuChoice::NewList => e.clear(),
+            other => log::info!("playlist menu choice not implemented yet: {other:?}"),
+        }
+        let n = self.player.engine().playlist.len();
+        self.pl.clamp_scroll(n);
+    }
+
     fn poll_player(&mut self) {
         self.player.tick();
         let s = self.player.status();
@@ -849,6 +1026,7 @@ impl<P: PlayerHandle> Shell<P> {
         Some(match w.kind {
             Kind::Main => main_input::cursor(x, y, self.prefs.shade),
             Kind::Equalizer => eq_cursor(x, y, self.prefs.eq_shade),
+            Kind::Playlist => pl_cursor(x, y, self.pl.w, self.pl.h, self.pl.shade),
         })
     }
 
@@ -935,6 +1113,18 @@ impl<P: PlayerHandle> Shell<P> {
                             };
                         self.handle_eq_actions(id, actions, el);
                     }
+                    Kind::Playlist => {
+                        let dbl = if double {
+                            self.pl.double_click(x, y, self.player.engine_mut())
+                        } else {
+                            None
+                        };
+                        let actions = match dbl {
+                            Some(a) => a,
+                            None => self.pl.mouse_down(x, y, mods, self.player.engine_mut()),
+                        };
+                        self.handle_pl_actions(id, actions, el);
+                    }
                 }
             }
             (MouseButton::Left, ElementState::Released) => {
@@ -948,6 +1138,10 @@ impl<P: PlayerHandle> Shell<P> {
                     Kind::Equalizer => {
                         let actions = self.eq_input.mouse_up(x, y, mods);
                         self.handle_eq_actions(id, actions, el);
+                    }
+                    Kind::Playlist => {
+                        let actions = self.pl.mouse_up(x, y, mods, self.player.engine_mut());
+                        self.handle_pl_actions(id, actions, el);
                     }
                 }
             }
@@ -963,7 +1157,12 @@ impl<P: PlayerHandle> Shell<P> {
                     let a = self.eq_input.right_click(x, y, &ctx);
                     self.handle_eq_actions(id, vec![a], el);
                 }
+                Kind::Playlist => {
+                    let actions = self.pl.right_click(x, y, mods, self.player.engine_mut());
+                    self.handle_pl_actions(id, actions, el);
+                }
             },
+            (MouseButton::Middle, st) => self.middle_held = st == ElementState::Pressed,
             _ => {}
         }
         self.request_redraw_all();
@@ -991,6 +1190,13 @@ impl<P: PlayerHandle> Shell<P> {
                 let acts = self.eq_input.mouse_move(x, y, mods, &ctx);
                 if !acts.is_empty() || self.eq_input.is_dragging() {
                     self.handle_eq_actions(id, acts, el);
+                }
+            }
+            Kind::Playlist => {
+                let dragging = self.pl.is_dragging() || self.pl.popup.is_some();
+                let acts = self.pl.mouse_move(x, y, mods, self.player.engine_mut());
+                if !acts.is_empty() || dragging {
+                    self.handle_pl_actions(id, acts, el);
                 }
             }
         }
@@ -1025,10 +1231,18 @@ impl<P: PlayerHandle> Shell<P> {
             self.request_redraw_all();
             return;
         }
+        if kind == Kind::Playlist {
+            let mods = self.mods;
+            if let Some(acts) = self.pl.key(code, mods, self.player.engine_mut()) {
+                self.handle_pl_actions(id, acts, el);
+                return;
+            }
+        }
         let playing = self.last_status.state == PlayState::Playing;
         let focus = match kind {
             Kind::Main => Focus::Main,
             Kind::Equalizer => Focus::Equalizer,
+            Kind::Playlist => Focus::Playlist,
         };
         match keys::resolve(focus, code, self.mods, playing) {
             Some(KeyAction::Do(a)) => self.handle_action(id, a, el),
@@ -1127,6 +1341,13 @@ impl<P: PlayerHandle> Shell<P> {
         }
         self.wheel_accum += notches;
         let whole = self.wheel_accum.trunc() as i32;
+        if whole != 0 && self.kind_of(id) == Some(Kind::Playlist) {
+            self.wheel_accum -= whole as f32;
+            let middle = self.middle_held;
+            let acts = self.pl.wheel(whole, middle, self.player.engine_mut());
+            self.handle_pl_actions(id, acts, el);
+            return;
+        }
         if whole != 0 {
             self.wheel_accum -= whole as f32;
             self.handle_action(id, Action::Player(Command::VolumeBy(whole * 8)), el);
@@ -1152,6 +1373,27 @@ fn eq_cursor(x: i32, y: i32, shade: bool) -> CursorRole {
             CursorRole::EqSlid
         }
         _ => CursorRole::EqNormal,
+    }
+}
+
+/// Playlist cursor areas (04 §7.5).
+fn pl_cursor(x: i32, y: i32, w: i32, h: i32, shade: bool) -> CursorRole {
+    use crate::geom::hit;
+    if shade {
+        return match () {
+            _ if hit(x, y, w - 21, w - 13, 3, 12) => CursorRole::PWinBut,
+            _ if hit(x, y, w - 11, w - 3, 3, 12) => CursorRole::PClose,
+            _ if x >= w - 29 && x <= w - 20 => CursorRole::PwsSize,
+            _ => CursorRole::PwsNorm,
+        };
+    }
+    match () {
+        _ if hit(x, y, w - 21, w - 13, 3, 12) => CursorRole::PWinBut,
+        _ if hit(x, y, w - 11, w - 3, 3, 12) => CursorRole::PClose,
+        _ if y <= 13 => CursorRole::PtBar,
+        _ if hit(x, y, w - 15, w - 7, 20, h - 38) => CursorRole::PvScroll,
+        _ if x >= w - 20 && y >= h - 20 => CursorRole::PSize,
+        _ => CursorRole::PNormal,
     }
 }
 
@@ -1214,6 +1456,8 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
             return;
         }
         let p = self.prefs.clone();
+        self.update_pl_font();
+        self.create_window(el, Kind::Playlist, p.pl_pos, p.pl_visible);
         self.create_window(el, Kind::Equalizer, p.eq_pos, p.eq_visible);
         self.create_window(el, Kind::Main, p.main_pos, true);
         self.poll_player();
@@ -1300,6 +1544,7 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         }
         if dirty {
             self.request_redraw(Kind::Main);
+            self.request_redraw(Kind::Playlist);
             if self.prefs.eq_shade {
                 self.request_redraw(Kind::Equalizer);
             }
