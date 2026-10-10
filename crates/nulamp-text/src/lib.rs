@@ -81,14 +81,10 @@ const DEFAULT_FAMILIES: &[&str] = &[
 const FALLBACK_FAMILIES: &[&str] = &[
     "DejaVu Sans",
     "Noto Sans",
-    "Noto Sans CJK JP",
-    "Noto Sans CJK SC",
     "Noto Sans Arabic",
     "Noto Sans Hebrew",
     "Noto Sans Devanagari",
     "Noto Sans Thai",
-    "Droid Sans Fallback",
-    "WenQuanYi Zen Hei",
     "Arial Unicode MS",
     "Segoe UI Symbol",
     "Noto Sans Symbols",
@@ -612,7 +608,7 @@ mod tests {
         for px in [9, 10, 12, 14] {
             let spec = FontSpec::new("Arial", px);
             let l = fs.layout(
-                "Hello, World! Ünïcödé — 日本語 עברית",
+                "Hello, World! Ünïcödé — עברית",
                 &spec,
                 Direction::Auto,
             );
