@@ -57,6 +57,8 @@ pub fn global(key: KeyCode, m: Mods) -> Option<KeyAction> {
         (KeyW, false, true, false) => Some(KeyAction::ToggleMainWindow),
         (KeyG, false, true, false) => Some(Do(Action::ToggleEqWindow)),
         (KeyE, false, true, false) => Some(Do(Action::TogglePlaylistWindow)),
+        // Not in the spec (decision MLUI6).
+        (KeyL, false, true, false) => Some(Do(Action::ToggleLibraryWindow)),
         (KeyV, false, true, false) => Some(KeyAction::ToggleVideoWindow),
         (KeyF, false, true, false) => Some(Do(Action::Menu {
             kind: MenuKind::Main,
@@ -171,6 +173,18 @@ mod tests {
         assert_eq!(
             resolve(Focus::Main, KeyCode::KeyS, Mods::CTRL, false),
             Some(KeyAction::SavePlaylist)
+        );
+        let alt = Mods {
+            alt: true,
+            ..Mods::NONE
+        };
+        assert_eq!(
+            resolve(Focus::Other, KeyCode::KeyL, alt, false),
+            Some(Do(Action::ToggleLibraryWindow))
+        );
+        assert_eq!(
+            resolve(Focus::Main, KeyCode::KeyL, Mods::NONE, false),
+            Some(Do(Action::OpenFiles))
         );
     }
 }

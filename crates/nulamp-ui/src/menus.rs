@@ -2,9 +2,11 @@
 
 use crate::input::{Action, MenuKind};
 use crate::keys::KeyAction;
+use crate::library::LibCmd;
 use crate::menu::{Item, MenuCmd};
 use crate::playlist::PlMenuChoice;
 use nulamp_core::Command;
+use nulamp_library::Capabilities;
 use nulamp_render::playlist_window::PopupMenu;
 
 /// State shown by check marks and lists in menus.
@@ -13,6 +15,9 @@ pub struct MenuState {
     pub main_visible: bool,
     pub eq_visible: bool,
     pub pl_visible: bool,
+    /// The media library exists (and the menu offers its window).
+    pub has_library: bool,
+    pub lib_visible: bool,
     pub always_on_top: bool,
     pub double_size: bool,
     pub easymove: bool,
@@ -290,7 +295,15 @@ pub fn main_menu(s: &MenuState) -> Vec<Item> {
         Item::Sep,
     ];
     bookmarks.extend(bookmark_items(s));
-    vec![
+    let library = s.has_library.then(|| {
+        Item::check(
+            "Media Library",
+            "Alt+L",
+            s.lib_visible,
+            act(Action::ToggleLibraryWindow),
+        )
+    });
+    let mut items = vec![
         Item::key(
             &format!("About {}...", s.app_name),
             "Ctrl+F1",
@@ -343,7 +356,82 @@ pub fn main_menu(s: &MenuState) -> Vec<Item> {
         Item::key("Help", "F1", MenuCmd::Key(KeyAction::Help)),
         Item::Sep,
         Item::key("Exit", "Alt+F4", act(Action::Exit)),
-    ]
+    ];
+    if let Some(lib) = library {
+        // After "Video", with the other window toggles.
+        let at = items
+            .iter()
+            .position(|i| matches!(i, Item::Cmd { label, .. } if label == "Video"))
+            .map_or(items.len(), |p| p + 1);
+        items.insert(at, lib);
+    }
+    items
+}
+
+/// Track-list menu of the media library. `playlists` are the stored playlists of the
+/// listing's provider (id, name); `caps` its capabilities.
+pub fn library_context(playlists: &[(String, String)], caps: Capabilities) -> Vec<Item> {
+    use crate::library::Purpose::*;
+    let sel = |p| MenuCmd::Lib(LibCmd::Selection(p));
+    let mut items = vec![
+        Item::key("Play", "Enter", sel(Play)),
+        Item::key("Enqueue", "Shift+Enter", sel(Enqueue)),
+        Item::key("Play next", "Q", sel(PlayNext)),
+    ];
+    if caps.contains(Capabilities::PLAYLISTS) {
+        let mut sub = vec![
+            Item::cmd("New playlist...", sel(AddToPlaylist(None))),
+            Item::Sep,
+        ];
+        if playlists.is_empty() {
+            sub.push(Item::disabled("(no playlists)"));
+        }
+        sub.extend(
+            playlists
+                .iter()
+                .map(|(id, name)| Item::cmd(name, sel(AddToPlaylist(Some(id.clone()))))),
+        );
+        items.push(Item::sub("Add to playlist", sub));
+    }
+    items.push(Item::Sep);
+    items.push(Item::key("View file info...", "Alt+3", sel(FileInfo)));
+    if caps.contains(Capabilities::WRITE_RATING) {
+        items.push(Item::sub(
+            "Rate",
+            (0..=5)
+                .rev()
+                .map(|r| Item::cmd(&rating_label(r), sel(Rate(r))))
+                .collect(),
+        ));
+    }
+    if !caps.contains(Capabilities::REMOTE) {
+        items.push(Item::key("Show in folder", "Ctrl+F", sel(ShowInFolder)));
+    }
+    items.push(Item::Sep);
+    items.push(Item::key(
+        "Select all",
+        "Ctrl+A",
+        MenuCmd::Lib(LibCmd::SelectAll),
+    ));
+    if caps.contains(Capabilities::REMOVE) {
+        items.push(Item::key("Remove from library", "Del", sel(Remove)));
+    }
+    items
+}
+
+/// Menu of a media-library tree node: act on everything the node lists.
+pub fn library_tree_menu(caps: Capabilities) -> Vec<Item> {
+    use crate::library::Purpose::*;
+    let all = |p| MenuCmd::Lib(LibCmd::All(p));
+    let mut items = vec![
+        Item::cmd("Play all", all(Play)),
+        Item::cmd("Enqueue all", all(Enqueue)),
+    ];
+    if caps.contains(Capabilities::SCAN) {
+        items.push(Item::Sep);
+        items.push(Item::cmd("Rescan library", MenuCmd::Lib(LibCmd::Rescan)));
+    }
+    items
 }
 
 /// Menus opened from main-window areas (02 §12.7).
@@ -661,5 +749,53 @@ pub fn eq_toggle_menu(auto: bool, s: &MenuState) -> Vec<Item> {
             s.eq_enabled,
             MenuCmd::EqEnabled,
         )]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn labels(items: &[Item]) -> Vec<String> {
+        items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Cmd { label, .. } | Item::Sub { label, .. } => Some(label.clone()),
+                Item::Sep => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn library_items() {
+        let mut s = MenuState::default();
+        assert!(!labels(&main_menu(&s)).contains(&"Media Library".to_string()));
+        s.has_library = true;
+        s.lib_visible = true;
+        let main = main_menu(&s);
+        let l = labels(&main);
+        let at = l.iter().position(|x| x == "Media Library").unwrap();
+        assert_eq!(l[at - 1], "Video");
+        let local = Capabilities::SCAN
+            | Capabilities::WRITE_RATING
+            | Capabilities::PLAYLISTS
+            | Capabilities::REMOVE;
+        let ctx = labels(&library_context(&[("1".into(), "Mix".into())], local));
+        for want in [
+            "Play",
+            "Enqueue",
+            "Play next",
+            "Add to playlist",
+            "Rate",
+            "Show in folder",
+            "Remove from library",
+        ] {
+            assert!(ctx.contains(&want.to_string()), "{want}");
+        }
+        let remote = labels(&library_context(&[], Capabilities::REMOTE));
+        assert!(!remote.contains(&"Rate".to_string()));
+        assert!(!remote.contains(&"Show in folder".to_string()));
+        assert!(!remote.contains(&"Remove from library".to_string()));
+        assert_eq!(labels(&library_tree_menu(local)).len(), 3);
     }
 }

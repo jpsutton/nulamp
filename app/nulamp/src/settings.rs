@@ -120,6 +120,31 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
         ("fade_seek", b(p.fade_seek)),
         ("buffer_ms", p.buffer_ms.to_string()),
         ("show_tray", b(p.show_tray)),
+        ("lib_x", p.lib_pos.0.to_string()),
+        ("lib_y", p.lib_pos.1.to_string()),
+        ("lib_width", p.lib_size.0.to_string()),
+        ("lib_height", p.lib_size.1.to_string()),
+        ("lib_visible", b(p.lib_visible)),
+        ("lib_tree_width", p.lib_tree_w.to_string()),
+        (
+            "lib_columns",
+            p.lib_columns
+                .iter()
+                .map(i32::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+        (
+            "library_folders",
+            p.library
+                .folders
+                .iter()
+                .map(|(path, rec)| format!("{}|{path}", b(*rec)))
+                .collect::<Vec<_>>()
+                .join("\t"),
+        ),
+        ("library_rescan_on_start", b(p.library.rescan_on_start)),
+        ("library_watch", b(p.library.watch)),
         ("volume", st.volume.to_string()),
         ("balance", st.balance.to_string()),
         ("shuffle", b(st.shuffle)),
@@ -275,6 +300,36 @@ pub fn from_ini(text: &str) -> (UiPrefs, PlayerState) {
     p.fade_pause_stop = flag("fade_pause_stop", p.fade_pause_stop);
     p.fade_seek = flag("fade_seek", p.fade_seek);
     p.show_tray = flag("show_tray", p.show_tray);
+    set_i!(p.lib_pos.0, "lib_x", i32);
+    set_i!(p.lib_pos.1, "lib_y", i32);
+    if let Some(n) = num("lib_width") {
+        p.lib_size.0 = n.clamp(275, 10_000) as i32;
+    }
+    if let Some(n) = num("lib_height") {
+        p.lib_size.1 = n.clamp(116, 10_000) as i32;
+    }
+    p.lib_visible = flag("lib_visible", p.lib_visible);
+    set_i!(p.lib_tree_w, "lib_tree_width", i32);
+    if let Some(c) = get("lib_columns") {
+        p.lib_columns = c
+            .split(',')
+            .filter_map(|w| w.trim().parse::<i32>().ok())
+            .map(|w| w.clamp(1, 2000))
+            .collect();
+    }
+    if let Some(f) = get("library_folders") {
+        // Each folder is `<0|1>|<path>` (include subfolders, path); folders are separated
+        // by tabs.
+        p.library.folders = f
+            .split('\t')
+            .filter_map(|item| {
+                let (rec, path) = item.split_once('|')?;
+                (!path.is_empty()).then(|| (path.to_string(), rec.trim() == "1"))
+            })
+            .collect();
+    }
+    p.library.rescan_on_start = flag("library_rescan_on_start", p.library.rescan_on_start);
+    p.library.watch = flag("library_watch", p.library.watch);
     p.hotkeys.enabled = flag("hotkeys_enabled", p.hotkeys.enabled);
     if get("hotkey_0").is_some() {
         p.hotkeys.bindings = (0..)
@@ -363,5 +418,34 @@ mod tests {
         let (p, st) = from_ini("");
         assert_eq!(p.main_pos, (26, 29));
         assert_eq!(st.volume, 200);
+        assert_eq!(p.library, nulamp_ui::shell::LibraryPrefs::default());
+        assert!(p.library.rescan_on_start && p.library.watch);
+        assert!(!p.lib_visible);
+    }
+
+    #[test]
+    fn media_library_round_trip() {
+        let mut p = UiPrefs {
+            lib_pos: (400, -20),
+            lib_size: (600, 377),
+            lib_visible: true,
+            lib_tree_w: 150,
+            lib_columns: vec![30, 120, 160, 0],
+            ..UiPrefs::default()
+        };
+        p.library.folders = vec![("/music".into(), true), ("/mnt/share/a|b c".into(), false)];
+        p.library.rescan_on_start = false;
+        p.library.watch = false;
+        let (p2, _) = from_ini(&to_ini(&p, &PlayerState::default()));
+        assert_eq!(p2.lib_pos, (400, -20));
+        assert_eq!(p2.lib_size, (600, 377));
+        assert!(p2.lib_visible);
+        assert_eq!(p2.lib_tree_w, 150);
+        assert_eq!(p2.lib_columns, [30, 120, 160, 1]);
+        assert_eq!(p2.library, p.library);
+        // An empty folder list stays empty.
+        p.library.folders.clear();
+        let (p3, _) = from_ini(&to_ini(&p, &PlayerState::default()));
+        assert!(p3.library.folders.is_empty());
     }
 }

@@ -8,6 +8,7 @@ pub mod geom;
 pub mod hotkeys;
 pub mod input;
 pub mod keys;
+pub mod library;
 pub mod main_input;
 pub mod marquee;
 pub mod menu;

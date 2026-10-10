@@ -10,6 +10,7 @@ use nulamp_audio::Player;
 use nulamp_core::{Command, Engine};
 use nulamp_decoders::Registry;
 use nulamp_skin::{Skin, SkinFiles, builtin};
+use nulamp_ui::library::MediaLibrary;
 use nulamp_ui::{PlayerHandle, Shell};
 
 fn load_skin(path: Option<&str>) -> Skin {
@@ -32,6 +33,28 @@ fn absolutize(p: &str) -> String {
     std::path::absolute(p)
         .map(|a| a.to_string_lossy().into_owned())
         .unwrap_or_else(|_| p.to_string())
+}
+
+/// Opens the local media library (`<config>/library.sqlite`); scans index the files some
+/// decoder plays.
+fn open_library(config: &std::path::Path, decoders: &Arc<Registry>) -> Option<MediaLibrary> {
+    let decoders = decoders.clone();
+    let filter = move |ext: &str| !ext.is_empty() && decoders.is_supported_extension(ext);
+    match nulamp_library::LocalLibrary::open(config.join("library.sqlite"), filter) {
+        Ok(local) => {
+            let local = Arc::new(local);
+            let mut registry = nulamp_library::Registry::new();
+            registry.register(local.clone());
+            Some(MediaLibrary {
+                registry: Arc::new(registry),
+                local: Some(local),
+            })
+        }
+        Err(e) => {
+            log::error!("cannot open the media library: {e}");
+            None
+        }
+    }
 }
 
 /// Copies a skin archive into the skins folder and returns its new path (01 §1.4).
@@ -170,6 +193,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         prefs,
         skin,
     );
+    if let Some(library) = open_library(&config, &registry) {
+        shell = shell.with_library(library);
+    }
     if let Some(server) = server {
         // Commands given on the first launch run once the windows exist.
         let sender = server.sender();

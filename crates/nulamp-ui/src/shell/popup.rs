@@ -39,6 +39,8 @@ impl<P: PlayerHandle> Shell<P> {
             main_visible: self.is_visible(Kind::Main),
             eq_visible: self.is_visible(Kind::Equalizer),
             pl_visible: self.is_visible(Kind::Playlist),
+            has_library: self.library.is_some(),
+            lib_visible: self.is_visible(Kind::Library),
             always_on_top: self.prefs.always_on_top,
             double_size: self.prefs.double_size,
             easymove: self.prefs.easymove,
@@ -460,6 +462,7 @@ impl<P: PlayerHandle> Shell<P> {
                 self.handle_pl_actions(pl, vec![PlAction::FileInfoSelected], el);
             }
             MenuCmd::Bookmark(loc) => self.play_bookmark(&loc),
+            MenuCmd::Lib(c) => self.library_menu_cmd(el, c),
             MenuCmd::Rate(r) => {
                 let loc = self
                     .player

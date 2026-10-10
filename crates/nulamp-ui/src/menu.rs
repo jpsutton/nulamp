@@ -55,6 +55,8 @@ pub enum MenuCmd {
     PlRebuildTitles,
     PlRateSelected(u8),
     Bookmark(String),
+    /// Media-library menus.
+    Lib(crate::library::LibCmd),
     None,
 }
 
