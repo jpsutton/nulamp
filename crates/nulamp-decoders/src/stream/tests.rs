@@ -667,6 +667,42 @@ fn playlist_urls() {
 }
 
 #[test]
+fn short_gaps_do_not_rebuffer() {
+    // A server sending in real time leaves the buffer empty between packets; that alone
+    // must not show buffering again.
+    let server = serve(|_, s, _| {
+        send(
+            s,
+            "HTTP/1.0 200 OK\r\nContent-Type: audio/mpeg\r\nicy-name: Live\r\nicy-br: 128\r\n",
+            b"",
+        );
+        let audio = mp3(120);
+        let (burst, rest) = audio.split_at(audio.len() / 2);
+        if s.write_all(burst).is_err() {
+            return;
+        }
+        for chunk in rest.chunks(rest.len() / 4 + 1) {
+            thread::sleep(Duration::from_millis(300));
+            if s.write_all(chunk).is_err() {
+                return;
+            }
+        }
+    });
+    let factory = StreamFactory::new(config());
+    let mut d = open(&factory, &server.url("/live"));
+    let run = drain(&mut d, |_, _| {});
+    assert!(run.error.is_none(), "{:?}", run.error);
+    let first_play = run.titles.iter().position(|t| t == "Live").unwrap();
+    assert!(
+        !run.titles[first_play..]
+            .iter()
+            .any(|t| t.starts_with("[Buffer: ")),
+        "{:?}",
+        run.titles
+    );
+}
+
+#[test]
 fn buffering_progress_and_rebuffering() {
     let server = serve(|_, s, _| {
         thread::sleep(Duration::from_millis(200));
@@ -680,8 +716,8 @@ fn buffering_progress_and_rebuffering() {
             if s.write_all(chunk).is_err() {
                 return;
             }
-            // A stall half way through.
-            let pause = if i == 24 { 400 } else { 8 };
+            // A stall half way through, longer than `UNDERRUN_AFTER`.
+            let pause = if i == 24 { 1200 } else { 8 };
             thread::sleep(Duration::from_millis(pause));
         }
     });

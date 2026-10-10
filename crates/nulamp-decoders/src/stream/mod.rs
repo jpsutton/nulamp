@@ -404,6 +404,7 @@ impl StreamFactory {
             info,
             info_version: 0,
             last_title: None,
+            starved_since: None,
         })
     }
 }
@@ -437,7 +438,13 @@ pub struct StreamDecoder {
     info: StreamInfo,
     info_version: u64,
     last_title: Option<String>,
+    /// When the reader first found no decoded audio, for underrun detection.
+    starved_since: Option<std::time::Instant>,
 }
+
+/// How long the reader may find no decoded audio before the stream rebuffers (NET7). Shorter
+/// gaps are normal for servers that send in real time; the output buffer covers them.
+pub const UNDERRUN_AFTER: Duration = Duration::from_millis(750);
 
 impl StreamDecoder {
     /// The current title, with any `[Connecting]` / `[Buffer: N%]` / error prefix.
@@ -476,6 +483,7 @@ impl Decoder for StreamDecoder {
             st.pcm_frames -= b.frames;
             self.shared.cv.notify_all();
             drop(st);
+            self.starved_since = None;
             self.info.sample_rate = b.rate;
             self.info.channels = b.channels;
             out.extend_from_slice(&b.samples);
@@ -486,6 +494,19 @@ impl Decoder for StreamDecoder {
                 Some(e) => Err(e),
                 None => Ok(ReadStatus::End),
             };
+        }
+        if st.phase == Phase::Playing && st.ring.is_empty() && !st.net_done {
+            let since = *self
+                .starved_since
+                .get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() >= UNDERRUN_AFTER {
+                let p = st.rebuffer_percent;
+                st.start_buffering(p);
+                self.shared.cv.notify_all();
+                self.starved_since = None;
+            }
+        } else {
+            self.starved_since = None;
         }
         Ok(ReadStatus::Pending)
     }
