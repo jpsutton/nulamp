@@ -864,7 +864,11 @@ impl<P: PlayerHandle> Shell<P> {
 
     fn update_pl_font(&mut self) {
         let spec = self.pl_font();
-        self.pl.row_h = self.fonts.metrics(&spec).line_height.max(1);
+        self.pl.row_h = if self.pl.bitmap_font {
+            pl::bitmap_row_height(self.pl.bitmap_scale)
+        } else {
+            self.fonts.metrics(&spec).line_height.max(1)
+        };
         let n = self.player.engine().playlist.len();
         self.pl.clamp_scroll(n);
     }
@@ -965,14 +969,17 @@ impl<P: PlayerHandle> Shell<P> {
                     }
                 }
                 PlAction::FontBigger => {
+                    self.pl.bitmap_scale = (self.pl.bitmap_scale + 1).min(4);
                     self.pl.font_px += 1;
                     self.update_pl_font();
                 }
                 PlAction::FontSmaller => {
+                    self.pl.bitmap_scale = (self.pl.bitmap_scale - 1).max(1);
                     self.pl.font_px = (self.pl.font_px - 1).max(2);
                     self.update_pl_font();
                 }
                 PlAction::FontReset => {
+                    self.pl.bitmap_scale = 1;
                     self.pl.font_px = 12;
                     self.update_pl_font();
                 }

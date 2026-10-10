@@ -142,6 +142,45 @@ pub fn draw_text_bmp(f: &mut Frame, skin: &Skin, text: &str, x: i32, y: i32) {
     }
 }
 
+/// Draws `text.bmp` glyphs recoloured: glyph pixels (those that differ from the font's
+/// background colour at (150,4)) are painted in `color`, scaled by an integer factor.
+/// Pixels outside `clip` (x0, y0, x1, y1; exclusive) are not touched. Returns the width drawn.
+pub fn draw_text_bmp_colored(
+    f: &mut Frame,
+    skin: &Skin,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: u32,
+    scale: i32,
+    clip: (i32, i32, i32, i32),
+) -> i32 {
+    let t = skin.bitmap(B::Text);
+    let bg = t.pixel(150, 4);
+    let s = scale.max(1);
+    let mut cx = x;
+    for c in text.chars() {
+        let (col, row) = text_cell(c);
+        for gy in 0..6 {
+            for gx in 0..5 {
+                if t.pixel(col as i32 * 5 + gx, row as i32 * 6 + gy) == bg {
+                    continue;
+                }
+                for dy in 0..s {
+                    for dx in 0..s {
+                        let (px, py) = (cx + gx * s + dx, y + gy * s + dy);
+                        if px >= clip.0 && px < clip.2 && py >= clip.1 && py < clip.3 {
+                            f.set(px, py, color);
+                        }
+                    }
+                }
+            }
+        }
+        cx += 5 * s;
+    }
+    cx - x
+}
+
 /// Number of fill tiles left and right of the title centre and the slice widths (04 §2.2).
 fn title_layout(w: i32) -> (i32, bool) {
     let n = ((w - 150) / 25).max(0);

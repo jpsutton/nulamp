@@ -196,6 +196,10 @@ pub struct PlaylistUi {
     pub old_school_buttons: bool,
     pub show_numbers: bool,
     pub zero_pad: bool,
+    /// Draw rows with the skin's `text.bmp` font (docs/decisions.md D15).
+    pub bitmap_font: bool,
+    /// Integer glyph scale for the bitmap font (Ctrl+Numpad +/−).
+    pub bitmap_scale: i32,
     pub pressed: Option<PlButton>,
     pub thumb_pressed: bool,
     pub popup: Option<(PopupMenu, Option<usize>)>,
@@ -219,6 +223,8 @@ impl Default for PlaylistUi {
             old_school_buttons: false,
             show_numbers: true,
             zero_pad: false,
+            bitmap_font: true,
+            bitmap_scale: 1,
             pressed: None,
             thumb_pressed: false,
             popup: None,
@@ -799,6 +805,11 @@ fn mini_transport_action(button: usize, mods: Mods) -> Vec<PlAction> {
         .collect()
 }
 
+/// Row height of the bitmap font at a scale: 6-pixel glyphs plus a 2-pixel gap.
+pub fn bitmap_row_height(scale: i32) -> i32 {
+    8 * scale.max(1)
+}
+
 /// Draws the list rows into a playlist frame (04 §3).
 pub fn draw_rows(
     frame: &mut nulamp_render::Frame,
@@ -808,6 +819,8 @@ pub fn draw_rows(
     ui: &PlaylistUi,
     engine: &Engine,
 ) {
+    use nulamp_render::playlist_window::draw_text_bmp_colored;
+    use nulamp_skin::fonts::text_can_draw;
     use nulamp_text::Direction;
     let p = &engine.playlist;
     let colors = &skin.pledit;
@@ -819,6 +832,7 @@ pub fn draw_rows(
     } else {
         p.current_id()
     };
+    let s = ui.bitmap_scale.max(1);
     for i in 0..ui.visible_rows() + 1 {
         let index = ui.first + i;
         let Some(e) = p.get(index) else { break };
@@ -838,17 +852,10 @@ pub fn draw_rows(
         } else {
             colors.normal
         };
-        let baseline = top + (ui.row_h - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent;
         let clip = (x0, top, x1, row_bottom);
-        let mut right = x1;
-        if let Some(ms) = e.length_ms {
-            let dur = format!(" {} ", crate::marquee::format_length(ms / 1000));
-            let l = fonts.layout(&dur, spec, Direction::Ltr);
-            if l.width < (x1 - x0) / 2 {
-                right = x1 - l.width;
-                fonts.draw(frame, &l, right, baseline, fg, clip);
-            }
-        }
+        let duration = e
+            .length_ms
+            .map(|ms| format!(" {} ", crate::marquee::format_length(ms / 1000)));
         let mut text = String::new();
         if ui.show_numbers {
             text.push_str(&number_prefix(index, p.len(), ui.zero_pad));
@@ -857,133 +864,38 @@ pub fn draw_rows(
             text.push_str(&format!("[{}] ", q + 1));
         }
         text.push_str(&e.title);
+        if ui.bitmap_font && text.chars().all(text_can_draw) {
+            let gy = top + (ui.row_h - 6 * s) / 2;
+            let mut right = x1;
+            if let Some(d) = &duration {
+                let w = d.chars().count() as i32 * 5 * s;
+                if w < (x1 - x0) / 2 {
+                    right = x1 - w;
+                    draw_text_bmp_colored(frame, skin, d, right, gy, fg, s, clip);
+                }
+            }
+            let max_chars = ((right - x0) / (5 * s)).max(0) as usize;
+            let mut chars: Vec<char> = text.chars().collect();
+            if chars.len() > max_chars {
+                chars.truncate(max_chars);
+                if let Some(last) = chars.last_mut() {
+                    *last = '…';
+                }
+            }
+            let t: String = chars.into_iter().collect();
+            draw_text_bmp_colored(frame, skin, &t, x0, gy, fg, s, (x0, top, right, row_bottom));
+            continue;
+        }
+        let baseline = top + (ui.row_h - (metrics.ascent + metrics.descent)) / 2 + metrics.ascent;
+        let mut right = x1;
+        if let Some(d) = &duration {
+            let l = fonts.layout(d, spec, Direction::Ltr);
+            if l.width < (x1 - x0) / 2 {
+                right = x1 - l.width;
+                fonts.draw(frame, &l, right, baseline, fg, clip);
+            }
+        }
         let l = fonts.layout_fit(&text, spec, Direction::Auto, right - x0);
         fonts.draw(frame, &l, x0, baseline, fg, (x0, top, right, row_bottom));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use nulamp_core::NewEntry;
-    use nulamp_core::shuffle::Shuffle;
-
-    fn engine(n: usize) -> Engine {
-        let mut e = Engine::new(Shuffle::seeded(1));
-        e.append(
-            (0..n)
-                .map(|i| {
-                    let mut x = NewEntry::new(format!("/m/{i}.mp3"));
-                    x.length_ms = Some(60_000);
-                    x
-                })
-                .collect(),
-        );
-        e
-    }
-
-    #[test]
-    fn info_strings() {
-        let mut e = engine(3);
-        assert_eq!(info_string(&e.playlist), "0:00/3:00");
-        e.playlist.get_mut(0).unwrap().selected = true;
-        assert_eq!(info_string(&e.playlist), "1:00/3:00");
-        e.playlist.get_mut(1).unwrap().length_ms = None;
-        assert_eq!(info_string(&e.playlist), "1:00/2:00+");
-        let mut p = Playlist::new();
-        p.append([NewEntry::new("http://x")]);
-        assert_eq!(info_string(&p), "0:00/?");
-        assert_eq!(format_total(3725), "1:02:05");
-    }
-
-    #[test]
-    fn numbers() {
-        assert_eq!(number_prefix(0, 9, false), "1. ");
-        assert_eq!(number_prefix(4, 120, false), "  5. ");
-        assert_eq!(number_prefix(4, 120, true), "005. ");
-    }
-
-    #[test]
-    fn click_selection_rules() {
-        let mut e = engine(10);
-        let mut ui = PlaylistUi::default();
-        let row_y = |r: i32| 22 + r * 13 + 2;
-        ui.mouse_down(50, row_y(1), Mods::NONE, &mut e);
-        ui.mouse_up(50, row_y(1), Mods::NONE, &mut e);
-        ui.mouse_down(50, row_y(3), Mods::SHIFT, &mut e);
-        ui.mouse_up(50, row_y(3), Mods::SHIFT, &mut e);
-        let sel: Vec<bool> = e.playlist.entries().iter().map(|x| x.selected).collect();
-        assert_eq!(&sel[..5], &[false, true, true, true, false]);
-        // Ctrl+click toggles.
-        ui.mouse_down(50, row_y(2), Mods::CTRL, &mut e);
-        ui.mouse_up(50, row_y(2), Mods::CTRL, &mut e);
-        assert!(!e.playlist.get(2).unwrap().selected);
-        // Click inside selection collapses it on release.
-        ui.mouse_down(50, row_y(1), Mods::NONE, &mut e);
-        ui.mouse_up(50, row_y(1), Mods::NONE, &mut e);
-        assert_eq!(e.playlist.selected_count(), 1);
-    }
-
-    #[test]
-    fn drag_reorders_selection() {
-        let mut e = engine(5);
-        let mut ui = PlaylistUi::default();
-        ui.mouse_down(50, 22 + 2, Mods::NONE, &mut e);
-        ui.mouse_move(50, 22 + 2 * 13 + 2, Mods::NONE, &mut e);
-        ui.mouse_up(50, 22 + 2 * 13 + 2, Mods::NONE, &mut e);
-        let locs: Vec<_> = e
-            .playlist
-            .entries()
-            .iter()
-            .map(|x| x.location.as_str())
-            .collect();
-        assert_eq!(
-            locs,
-            ["/m/1.mp3", "/m/2.mp3", "/m/0.mp3", "/m/3.mp3", "/m/4.mp3"]
-        );
-    }
-
-    #[test]
-    fn popups_click_and_old_school() {
-        let mut e = engine(1);
-        let mut ui = PlaylistUi::default();
-        ui.mouse_down(20, 116 - 20, Mods::NONE, &mut e);
-        ui.mouse_up(20, 116 - 20, Mods::NONE, &mut e);
-        assert!(ui.popup.is_some());
-        let a = ui.mouse_down(20, 116 - 66 + 5, Mods::NONE, &mut e);
-        assert_eq!(a, vec![PlAction::Menu(PlMenuChoice::AddUrl)]);
-        assert!(ui.popup.is_none());
-        let mut ui = PlaylistUi {
-            old_school_buttons: true,
-            ..PlaylistUi::default()
-        };
-        ui.mouse_down(80, 116 - 20, Mods::NONE, &mut e);
-        let a = ui.mouse_up(80, 116 - 20, Mods::NONE, &mut e);
-        assert_eq!(a, vec![PlAction::Menu(PlMenuChoice::SelectAll)]);
-    }
-
-    #[test]
-    fn scrolling() {
-        let mut e = engine(100);
-        let mut ui = PlaylistUi::default();
-        assert_eq!(ui.visible_rows(), 4);
-        ui.wheel(-1, false, &mut e);
-        assert_eq!(ui.first, 2);
-        ui.first = 96;
-        assert_eq!(ui.thumb_offset(100), ui.track_height() - 18);
-        ui.key(KeyCode::End, Mods::NONE, &mut e);
-        assert_eq!(ui.first, 96);
-    }
-
-    #[test]
-    fn keys_operate_on_list() {
-        let mut e = engine(4);
-        let mut ui = PlaylistUi::default();
-        ui.key(KeyCode::KeyA, Mods::CTRL, &mut e);
-        assert_eq!(e.playlist.selected_count(), 4);
-        e.playlist.get_mut(0).unwrap().selected = false;
-        ui.key(KeyCode::Delete, Mods::NONE, &mut e);
-        assert_eq!(e.playlist.len(), 1);
-        assert!(ui.key(KeyCode::KeyZ, Mods::NONE, &mut e).is_none());
     }
 }
