@@ -225,7 +225,7 @@ impl Engine {
         }
     }
 
-    pub fn previous(&mut self) -> Vec<Effect> {
+    pub fn previous_track(&mut self) -> Vec<Effect> {
         if self.playlist.is_empty() {
             return vec![];
         }
@@ -255,7 +255,7 @@ impl Engine {
     }
 
     /// Next track (07 §2.4). Returns no effects at the end of the list without repeat.
-    pub fn next(&mut self) -> Vec<Effect> {
+    pub fn next_track(&mut self) -> Vec<Effect> {
         if let Some(id) = self.pop_queue() {
             return self.start(id);
         }
@@ -350,9 +350,9 @@ impl Engine {
         self.state = PlayState::Stopped;
         for _ in 0..n.unsigned_abs() {
             if n < 0 {
-                self.previous();
+                self.previous_track();
             } else {
-                self.next();
+                self.next_track();
             }
         }
         self.state = was;
@@ -478,17 +478,17 @@ mod tests {
     fn next_previous_without_shuffle() {
         let mut e = engine(3);
         // Stopped: only moves.
-        assert!(e.next().is_empty());
+        assert!(e.next_track().is_empty());
         assert_eq!(e.playlist.current_index(), 1);
         e.play();
-        assert_eq!(started(&e.next(), &e), Some(2));
-        assert!(e.next().is_empty());
+        assert_eq!(started(&e.next_track(), &e), Some(2));
+        assert!(e.next_track().is_empty());
         e.repeat = true;
-        assert_eq!(started(&e.next(), &e), Some(0));
+        assert_eq!(started(&e.next_track(), &e), Some(0));
         e.repeat = false;
-        assert!(e.previous().is_empty());
+        assert!(e.previous_track().is_empty());
         e.repeat = true;
-        assert_eq!(started(&e.previous(), &e), Some(2));
+        assert_eq!(started(&e.previous_track(), &e), Some(2));
     }
 
     #[test]
@@ -566,7 +566,7 @@ mod tests {
         e.manual_advance = true;
         assert_eq!(started(&e.track_ended(), &e), Some(3));
         e.queue.push_back(e.playlist.get(1).unwrap().id);
-        assert_eq!(started(&e.next(), &e), Some(1));
+        assert_eq!(started(&e.next_track(), &e), Some(1));
     }
 
     #[test]
@@ -596,7 +596,7 @@ mod tests {
         let f = e.play();
         assert_eq!(started(&f, &e), Some(7));
         // The first Next goes to slot 1 of an order that starts with entry 7.
-        let first = e.next();
+        let first = e.next_track();
         assert_ne!(started(&first, &e), Some(7));
     }
 
@@ -607,11 +607,11 @@ mod tests {
         e.play();
         let mut fwd = vec![e.playlist.current_index()];
         for _ in 0..5 {
-            fwd.push(started(&e.next(), &e).unwrap());
+            fwd.push(started(&e.next_track(), &e).unwrap());
         }
         let mut back = Vec::new();
         for _ in 0..5 {
-            back.push(started(&e.previous(), &e).unwrap());
+            back.push(started(&e.previous_track(), &e).unwrap());
         }
         fwd.pop();
         fwd.reverse();
@@ -636,10 +636,10 @@ mod tests {
     fn clear_while_playing_restarts_at_first() {
         let mut e = engine(3);
         e.play();
-        e.next();
+        e.next_track();
         e.clear();
         e.append(vec![NewEntry::new("/x.mp3"), NewEntry::new("/y.mp3")]);
-        assert_eq!(started(&e.next(), &e), Some(0));
+        assert_eq!(started(&e.next_track(), &e), Some(0));
     }
 
     #[test]
