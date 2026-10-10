@@ -4,6 +4,7 @@ use nulamp_skinui::{Form, FormEvent, Rect, Widget};
 
 use crate::dialogs::{Dialog, DialogResult, Outcome};
 use crate::shell::UiPrefs;
+use crate::wayland_limits;
 
 /// Playlist options that live in the playlist window state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,14 +61,30 @@ struct CheckOpt {
     label: &'static str,
     get: fn(&UiPrefs, &PlaylistOptions) -> bool,
     set: fn(&mut UiPrefs, &mut PlaylistOptions, bool),
+    /// Why the option cannot work as a native Wayland window (it is then greyed out).
+    wayland: Option<&'static str>,
+}
+
+impl CheckOpt {
+    fn wayland(self, why: &'static str) -> Self {
+        Self {
+            wayland: Some(why),
+            ..self
+        }
+    }
 }
 
 macro_rules! opt {
     ($label:expr, p.$($f:ident).+) => {
-        CheckOpt { label: $label, get: |p, _| p.$($f).+, set: |p, _, v| p.$($f).+ = v }
+        CheckOpt {
+            label: $label,
+            get: |p, _| p.$($f).+,
+            set: |p, _, v| p.$($f).+ = v,
+            wayland: None,
+        }
     };
     ($label:expr, o.$f:ident) => {
-        CheckOpt { label: $label, get: |_, o| o.$f, set: |_, o, v| o.$f = v }
+        CheckOpt { label: $label, get: |_, o| o.$f, set: |_, o, v| o.$f = v, wayland: None }
     };
 }
 
@@ -76,7 +93,8 @@ fn page_options(page: usize) -> Vec<CheckOpt> {
         0 => vec![
             opt!("Dim inactive title bars", p.dim_inactive),
             opt!("Snap windows", p.snap),
-            opt!("Keep windows on screen", p.keep_on_screen),
+            opt!("Keep windows on screen", p.keep_on_screen)
+                .wayland(wayland_limits::KEEP_ON_SCREEN),
             opt!("EasyMove (drag windows from anywhere)", p.easymove),
             opt!("Always show clutterbar", p.clutterbar_always),
             opt!("Double size applies to the equalizer", p.eq_double),
@@ -86,12 +104,13 @@ fn page_options(page: usize) -> Vec<CheckOpt> {
                 p.show_number_in_title
             ),
             opt!("Auto-scroll the song title", p.autoscroll),
-            opt!("Always on top", p.always_on_top),
+            opt!("Always on top", p.always_on_top).wayland(wayland_limits::ALWAYS_ON_TOP),
             opt!("Show icon in the system tray", p.show_tray),
             opt!(
                 "Global hotkeys (Ctrl+Alt+Insert/Home/End...)",
                 p.hotkeys.enabled
-            ),
+            )
+            .wayland(wayland_limits::GLOBAL_HOTKEYS),
         ],
         1 => vec![
             opt!("Show numbers", o.show_numbers),
@@ -114,6 +133,7 @@ fn page_options(page: usize) -> Vec<CheckOpt> {
                         nulamp_eq::replaygain::Source::Track
                     }
                 },
+                wayland: None,
             },
             CheckOpt {
                 label: "Prevent clipping",
@@ -127,6 +147,7 @@ fn page_options(page: usize) -> Vec<CheckOpt> {
                         nulamp_eq::replaygain::Mode::ApplyGain
                     }
                 },
+                wayland: None,
             },
             opt!("Use only the preferred source", p.replaygain.preferred_only),
         ],
@@ -171,6 +192,8 @@ pub struct PrefsDialog {
     default_recursive: bool,
     /// Folder picker (a native dialog; replaced in tests).
     pick_folder: fn() -> Option<std::path::PathBuf>,
+    /// Running as a native Wayland window: options Wayland cannot support are greyed out.
+    wayland_native: bool,
 }
 
 impl PrefsDialog {
@@ -183,6 +206,7 @@ impl PrefsDialog {
             folder_sel: None,
             default_recursive: true,
             pick_folder: pick_library_folder,
+            wayland_native: false,
         };
         d.build();
         d
@@ -195,6 +219,19 @@ impl PrefsDialog {
             self.build();
         }
         self
+    }
+
+    /// Greys out the options that cannot work as a native Wayland window (with a tooltip saying
+    /// why); OK and Apply then leave them unchanged.
+    pub fn wayland_native(mut self, on: bool) -> Self {
+        self.wayland_native = on;
+        self.build();
+        self
+    }
+
+    /// Whether an option is greyed out in this dialog.
+    fn unavailable(&self, o: &CheckOpt) -> Option<&'static str> {
+        o.wayland.filter(|_| self.wayland_native)
     }
 
     /// Media-library page controls below the check boxes, from `y`.
@@ -407,12 +444,21 @@ impl PrefsDialog {
             default: false,
         });
         self.form = Form::new(widgets);
+        for (i, o) in page_options(self.page).iter().enumerate() {
+            if let Some(why) = self.unavailable(o) {
+                self.form.set_enabled(OPT + i as u32, false);
+                self.form.set_tooltip(OPT + i as u32, why);
+            }
+        }
         self.form.focus_id(PAGE_LIST);
     }
 
     /// Copies the visible page's controls back into the preferences.
     fn collect(&mut self) {
         for (i, o) in page_options(self.page).iter().enumerate() {
+            if self.unavailable(o).is_some() {
+                continue;
+            }
             let on = self.form.checked(OPT + i as u32);
             (o.set)(&mut self.prefs, &mut self.pl, on);
         }
@@ -588,6 +634,60 @@ mod tests {
             },
             _ => panic!("expected OK result"),
         }
+    }
+
+    #[test]
+    fn wayland_native_greys_out_and_keeps_values() {
+        let mut prefs = UiPrefs {
+            always_on_top: true,
+            keep_on_screen: false,
+            ..UiPrefs::default()
+        };
+        prefs.hotkeys.enabled = true;
+        let opts = page_options(0);
+        let row = |label: &str| opts.iter().position(|o| o.label == label).unwrap() as u32;
+        let rows = [
+            (row("Always on top"), wayland_limits::ALWAYS_ON_TOP),
+            (
+                row("Keep windows on screen"),
+                wayland_limits::KEEP_ON_SCREEN,
+            ),
+            (
+                row("Global hotkeys (Ctrl+Alt+Insert/Home/End...)"),
+                wayland_limits::GLOBAL_HOTKEYS,
+            ),
+        ];
+
+        // Without Wayland nothing changes: the options are enabled and toggle.
+        let d = PrefsDialog::new(prefs.clone(), pl());
+        assert!(rows.iter().all(|&(r, _)| d.form.is_enabled(OPT + r)));
+
+        let mut d = PrefsDialog::new(prefs.clone(), pl()).wayland_native(true);
+        for &(r, why) in &rows {
+            assert!(!d.form.is_enabled(OPT + r));
+            let (x, y) = (140, 6 + r as i32 * 20 + 4);
+            d.form.mouse_move(x, y);
+            assert_eq!(d.form.hovered_tooltip(), Some(why));
+            d.form.mouse_down(x, y);
+            assert_eq!(d.form.mouse_up(x, y), None);
+        }
+        // Even a value changed behind the form's back is not applied.
+        if let Some(Widget::Check { on, .. }) = d.form.find_mut(OPT + rows[0].0) {
+            *on = false;
+        }
+        // The other options still work.
+        assert!(d.form.is_enabled(OPT));
+        d.form.mouse_down(140, 10);
+        d.form.mouse_up(140, 10);
+        let p = result(d.handle(FormEvent::Clicked(APPLY)));
+        assert!(p.always_on_top && !p.keep_on_screen && p.hotkeys.enabled);
+        assert!(!p.dim_inactive);
+        // Switching pages and back keeps them greyed out.
+        d.handle(FormEvent::Selected(PAGE_LIST, 1));
+        d.handle(FormEvent::Selected(PAGE_LIST, 0));
+        assert!(!d.form.is_enabled(OPT + rows[2].0));
+        let p = result(d.handle(FormEvent::Clicked(OK)));
+        assert!(p.always_on_top && !p.keep_on_screen && p.hotkeys.enabled);
     }
 
     #[test]

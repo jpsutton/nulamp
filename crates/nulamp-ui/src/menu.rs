@@ -3,7 +3,7 @@
 
 use nulamp_render::Frame;
 use nulamp_skin::Skin;
-use nulamp_skinui::{PixelText, UiText};
+use nulamp_skinui::{PixelText, Rect, UiText};
 use nulamp_text::FontSystem;
 
 use crate::input::Action;
@@ -71,6 +71,8 @@ pub enum Item {
         cmd: MenuCmd,
         check: Option<bool>,
         enabled: bool,
+        /// Shown while the pointer is over the item (also when it is disabled).
+        tip: Option<String>,
     },
     Sub {
         label: String,
@@ -87,6 +89,7 @@ impl Item {
             cmd,
             check: None,
             enabled: true,
+            tip: None,
         }
     }
 
@@ -97,6 +100,7 @@ impl Item {
             cmd,
             check: None,
             enabled: true,
+            tip: None,
         }
     }
 
@@ -107,6 +111,7 @@ impl Item {
             cmd,
             check: Some(on),
             enabled: true,
+            tip: None,
         }
     }
 
@@ -117,6 +122,7 @@ impl Item {
             cmd: MenuCmd::None,
             check: None,
             enabled: false,
+            tip: None,
         }
     }
 
@@ -124,6 +130,34 @@ impl Item {
         Item::Sub {
             label: label.into(),
             items,
+        }
+    }
+
+    /// Disables the item with a tooltip saying why, when `off` is set; otherwise returns it as is.
+    pub fn disabled_if(self, off: bool, why: &str) -> Self {
+        match self {
+            Item::Cmd {
+                label,
+                shortcut,
+                cmd,
+                check,
+                ..
+            } if off => Item::Cmd {
+                label,
+                shortcut,
+                cmd,
+                check,
+                enabled: false,
+                tip: Some(why.into()),
+            },
+            it => it,
+        }
+    }
+
+    pub fn tip(&self) -> Option<&str> {
+        match self {
+            Item::Cmd { tip, .. } => tip.as_deref(),
+            _ => None,
         }
     }
 
@@ -147,6 +181,8 @@ pub struct MenuLayout {
     /// (top, height) per item.
     pub rows: Vec<(i32, i32)>,
     label_w: i32,
+    /// Item under the pointer whose tooltip is shown (see [`hover`]).
+    pub tip: Option<usize>,
 }
 
 pub fn layout(fonts: &mut FontSystem, items: &[Item]) -> MenuLayout {
@@ -185,6 +221,7 @@ pub fn layout(fonts: &mut FontSystem, items: &[Item]) -> MenuLayout {
         h: y + 2,
         rows,
         label_w,
+        tip: None,
     }
 }
 
@@ -200,6 +237,26 @@ pub fn item_at(layout: &MenuLayout, items: &[Item], x: i32, y: i32) -> Option<us
         .filter(|&i| items[i].is_selectable())
 }
 
+/// Tracks the pointer for tooltips: any item under it that has a tooltip, disabled or not.
+/// Pass a point outside the menu when the pointer leaves it. Returns true when the menu must be
+/// redrawn.
+pub fn hover(layout: &mut MenuLayout, items: &[Item], x: i32, y: i32) -> bool {
+    let tip = (x >= 0 && x < layout.w)
+        .then(|| {
+            layout
+                .rows
+                .iter()
+                .position(|&(top, h)| y >= top && y < top + h)
+        })
+        .flatten()
+        .filter(|&i| items[i].tip().is_some());
+    let changed = tip != layout.tip;
+    layout.tip = tip;
+    changed
+}
+
+/// Draws the menu with `hi` highlighted, and the tooltip of `layout.tip` over the items below
+/// it (or above it when there is no room).
 pub fn draw(
     fonts: &mut FontSystem,
     skin: &Skin,
@@ -262,6 +319,14 @@ pub fn draw(
         }
     }
     let _ = layout.label_w;
+    if let Some(i) = layout.tip
+        && let Some(tip) = items.get(i).and_then(Item::tip)
+    {
+        let (top, h) = layout.rows[i];
+        let anchor = Rect::new(PAD_X, top, layout.w - 2 * PAD_X, h);
+        let bounds = Rect::new(2, 2, layout.w - 4, layout.h - 4);
+        nulamp_skinui::draw_tooltip(&mut f, skin, &mut text, tip, anchor, bounds);
+    }
     f
 }
 
@@ -330,5 +395,37 @@ mod tests {
         let skin = nulamp_skin::builtin::skin();
         let f = draw(&mut fonts, &skin, &items, &l, Some(0));
         assert_eq!((f.width() as i32, f.height() as i32), (l.w, l.h));
+    }
+
+    #[test]
+    fn tooltips_on_disabled_items() {
+        let mut fonts = FontSystem::new();
+        if !fonts.has_fonts() {
+            return;
+        }
+        let items = vec![
+            Item::key("Play", "X", MenuCmd::None),
+            Item::check("On top", "", true, MenuCmd::None).disabled_if(true, "Not here"),
+            Item::Sep,
+            Item::key("Stop", "V", MenuCmd::None),
+            Item::key("Next", "B", MenuCmd::None),
+            Item::key("Previous", "Z", MenuCmd::None),
+        ];
+        assert_eq!(items[1].tip(), Some("Not here"));
+        assert!(!items[1].is_selectable());
+        let mut l = layout(&mut fonts, &items);
+        let skin = nulamp_skin::builtin::skin();
+        let plain = draw(&mut fonts, &skin, &items, &l, None);
+        let (top, h) = l.rows[1];
+        assert_eq!(item_at(&l, &items, 10, top + 1), None);
+        let play_y = l.rows[0].0 + 1;
+        assert!(!hover(&mut l, &items, 10, play_y));
+        assert!(hover(&mut l, &items, 10, top + 1));
+        assert!(!hover(&mut l, &items, 12, top + h - 1));
+        assert_eq!(l.tip, Some(1));
+        let tipped = draw(&mut fonts, &skin, &items, &l, None);
+        assert!(plain != tipped, "the tooltip is drawn");
+        assert!(hover(&mut l, &items, -1, -1));
+        assert!(draw(&mut fonts, &skin, &items, &l, None) == plain);
     }
 }

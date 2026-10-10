@@ -225,9 +225,8 @@ impl<P: PlayerHandle> Shell<P> {
         let (x, y) = self
             .ids
             .get(&Kind::Library)
-            .and_then(|id| self.windows.get(id))
-            .map(|w| w.cursor)
-            .unwrap_or((0, 0));
+            .and_then(|id| self.local_pos(*id))
+            .map_or((0, 0), |(_, x, y)| (x, y));
         let Some(lib) = self.library.as_mut() else {
             return;
         };
@@ -327,11 +326,13 @@ impl<P: PlayerHandle> Shell<P> {
         let Some(w) = self.windows.get(&id) else {
             return;
         };
-        let (sx, sy) = (w.actual.0 + x, w.actual.1 + y);
+        let s = self.scale_of(Kind::Library);
+        let (sx, sy) = (w.actual.0 + x * s, w.actual.1 + y * s);
         let target = [Kind::Playlist, Kind::Main].into_iter().find_map(|k| {
             let win = self.ids.get(&k).and_then(|i| self.windows.get(i))?;
             let r = crate::geom::Rect::new(win.actual.0, win.actual.1, win.rect.w, win.rect.h);
-            (win.visible && r.contains(sx, sy)).then_some((k, sy - win.actual.1))
+            let local_y = (sy - win.actual.1) / self.scale_of(k);
+            (win.visible && r.contains(sx, sy)).then_some((k, local_y))
         });
         let purpose = match target {
             Some((Kind::Playlist, ly)) => Purpose::Insert(self.pl_drop_row(ly)),

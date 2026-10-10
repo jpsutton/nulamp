@@ -275,9 +275,18 @@ pub struct Form {
     pressed_inside: bool,
     last_click: Option<(usize, usize, std::time::Instant)>,
     row_h: i32,
+    /// Widgets that are greyed out and ignore input.
+    disabled: std::collections::HashSet<Id>,
+    tooltips: std::collections::HashMap<Id, String>,
+    /// Widget under the pointer whose tooltip is shown.
+    tip_hover: Option<usize>,
 }
 
 const ROW_PAD: i32 = 0;
+/// Widest tooltip box, in pixels.
+const TIP_MAX_W: i32 = 240;
+/// Space between a tooltip's border and its text.
+const TIP_PAD: i32 = 2;
 
 impl Form {
     pub fn new(widgets: Vec<Widget>) -> Self {
@@ -347,7 +356,49 @@ impl Form {
     }
 
     pub fn focus_id(&mut self, id: Id) {
-        self.focus = self.widgets.iter().position(|w| w.id() == Some(id));
+        if self.is_enabled(id) {
+            self.focus = self.widgets.iter().position(|w| w.id() == Some(id));
+        }
+    }
+
+    /// Enables or disables a widget. Disabled widgets are drawn greyed, ignore the mouse and the
+    /// keyboard and are skipped by Tab.
+    pub fn set_enabled(&mut self, id: Id, enabled: bool) {
+        if enabled {
+            self.disabled.remove(&id);
+            return;
+        }
+        self.disabled.insert(id);
+        let focused = self.focus.is_some_and(|i| self.widgets[i].id() == Some(id));
+        if focused {
+            self.move_focus(false);
+            if self.focus.is_some_and(|i| !self.can_focus(i)) {
+                self.focus = None;
+            }
+        }
+    }
+
+    pub fn is_enabled(&self, id: Id) -> bool {
+        !self.disabled.contains(&id)
+    }
+
+    /// Text shown in a box while the pointer is over the widget (also when it is disabled).
+    pub fn set_tooltip(&mut self, id: Id, tip: impl Into<String>) {
+        self.tooltips.insert(id, tip.into());
+    }
+
+    /// The tooltip currently shown, if the pointer is over a widget that has one.
+    pub fn hovered_tooltip(&self) -> Option<&str> {
+        let id = self.widgets.get(self.tip_hover?)?.id()?;
+        self.tooltips.get(&id).map(String::as_str)
+    }
+
+    fn widget_enabled(&self, i: usize) -> bool {
+        self.widgets[i].id().is_none_or(|id| self.is_enabled(id))
+    }
+
+    fn can_focus(&self, i: usize) -> bool {
+        self.widgets[i].focusable() && self.widget_enabled(i)
     }
 
     fn list_visible(&self, rect: Rect) -> usize {
@@ -371,6 +422,7 @@ impl Form {
             let r = w.rect();
             let (x, y) = (ox + r.x, oy + r.y);
             let focused = self.focus == Some(i);
+            let enabled = w.id().is_none_or(|id| !self.disabled.contains(&id));
             match w {
                 Widget::Label { text: t, .. } => {
                     text.draw(frame, t, x, y, c.window_text, (x, y, x + r.w, y + r.h));
@@ -398,7 +450,7 @@ impl Form {
                         label,
                         x + (r.w - tw) / 2 + off,
                         ty,
-                        c.button_text,
+                        if enabled { c.button_text } else { c.divider },
                         (x, y, x + r.w, y + r.h),
                     );
                     if focused || *default {
@@ -440,7 +492,8 @@ impl Form {
                     // Scroll so the cursor stays visible.
                     let shift = (cw - (r.w - 8)).max(0);
                     let ty = y + (r.h - text.line_height()) / 2;
-                    text.draw(frame, t, x + 3 - shift, ty, c.item_fg, clip);
+                    let fg = if enabled { c.item_fg } else { c.divider };
+                    text.draw(frame, t, x + 3 - shift, ty, fg, clip);
                     if focused {
                         frame.fill_rect(x + 3 + cw - shift, y + 3, 1, r.h - 6, c.item_fg);
                     }
@@ -477,6 +530,7 @@ impl Form {
                         } else {
                             c.item_fg
                         };
+                        let fg = if enabled { fg } else { c.divider };
                         let shown = text.fit(row, inner_w - 4);
                         text.draw(
                             frame,
@@ -501,6 +555,12 @@ impl Form {
                     }
                 }
                 Widget::Check { label, on, .. } => {
+                    // Disabled check boxes are greyed like disabled menu items.
+                    let (mark, label_fg) = if enabled {
+                        (c.item_fg, c.window_text)
+                    } else {
+                        (c.divider, c.divider)
+                    };
                     let by = y + (r.h - 11) / 2;
                     frame.fill_rect(x, by, 11, 11, c.item_bg);
                     frame_rect(
@@ -527,18 +587,11 @@ impl Form {
                             (7, 3),
                             (8, 2),
                         ] {
-                            frame.set(x + dx, by + dy, c.item_fg);
+                            frame.set(x + dx, by + dy, mark);
                         }
                     }
                     let ty = y + (r.h - text.line_height()) / 2;
-                    text.draw(
-                        frame,
-                        label,
-                        x + 16,
-                        ty,
-                        c.window_text,
-                        (x, y, x + r.w, y + r.h),
-                    );
+                    text.draw(frame, label, x + 16, ty, label_fg, (x, y, x + r.w, y + r.h));
                 }
                 Widget::TextBox { lines, first, .. } => {
                     frame.fill_rect(x, y, r.w, r.h, c.item_bg);
@@ -558,6 +611,26 @@ impl Form {
                 }
             }
         }
+        if let Some(tip) = self.hovered_tooltip() {
+            let r = self.widgets[self.tip_hover.expect("hovered")].rect();
+            let anchor = Rect::new(ox + r.x, oy + r.y, r.w, r.h);
+            // Keep the box inside the area the widgets cover (and the frame).
+            let area = self
+                .widgets
+                .iter()
+                .map(Widget::rect)
+                .reduce(|a, b| {
+                    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+                    let (x1, y1) = ((a.x + a.w).max(b.x + b.w), (a.y + a.h).max(b.y + b.h));
+                    Rect::new(x, y, x1 - x, y1 - y)
+                })
+                .unwrap_or(r);
+            let (x0, y0) = ((ox + area.x).max(0), (oy + area.y).max(0));
+            let x1 = (ox + area.x + area.w).min(frame.width() as i32);
+            let y1 = (oy + area.y + area.h).min(frame.height() as i32);
+            let bounds = Rect::new(x0, y0, x1 - x0, y1 - y0);
+            draw_tooltip(frame, skin, text, tip, anchor, bounds);
+        }
     }
 
     // ----- Input -----
@@ -569,6 +642,9 @@ impl Form {
     /// Left button pressed at client coordinates.
     pub fn mouse_down(&mut self, x: i32, y: i32) -> Option<FormEvent> {
         let i = self.widget_at(x, y)?;
+        if !self.widget_enabled(i) {
+            return None;
+        }
         if self.widgets[i].focusable() {
             self.focus = Some(i);
         }
@@ -611,15 +687,35 @@ impl Form {
         }
     }
 
-    pub fn mouse_move(&mut self, x: i32, y: i32) {
+    /// Pointer moved to client coordinates. Returns true when the form needs redrawing (a
+    /// pressed button changed state, or a tooltip appeared or went away).
+    pub fn mouse_move(&mut self, x: i32, y: i32) -> bool {
+        let mut changed = false;
         if let Some(i) = self.pressed {
-            self.pressed_inside = self.widgets[i].rect().contains(x, y);
+            let inside = self.widgets[i].rect().contains(x, y);
+            changed = inside != self.pressed_inside;
+            self.pressed_inside = inside;
         }
+        let hover = self.widget_at(x, y).filter(|&i| {
+            self.widgets[i]
+                .id()
+                .is_some_and(|id| self.tooltips.contains_key(&id))
+        });
+        if hover != self.tip_hover {
+            self.tip_hover = hover;
+            changed = true;
+        }
+        changed
+    }
+
+    /// Pointer left the form's window. Returns true when a tooltip was hidden.
+    pub fn mouse_leave(&mut self) -> bool {
+        self.tip_hover.take().is_some()
     }
 
     pub fn mouse_up(&mut self, x: i32, y: i32) -> Option<FormEvent> {
         let i = self.pressed.take()?;
-        if !self.widgets[i].rect().contains(x, y) {
+        if !self.widgets[i].rect().contains(x, y) || !self.widget_enabled(i) {
             return None;
         }
         match &mut self.widgets[i] {
@@ -634,7 +730,7 @@ impl Form {
 
     /// Mouse wheel over the form (positive = up).
     pub fn wheel(&mut self, x: i32, y: i32, notches: i32) {
-        let Some(i) = self.widget_at(x, y) else {
+        let Some(i) = self.widget_at(x, y).filter(|&i| self.widget_enabled(i)) else {
             return;
         };
         let vis = self.list_visible(self.widgets[i].rect());
@@ -659,7 +755,7 @@ impl Form {
         let mut i = self.focus.unwrap_or(0);
         for _ in 0..n {
             i = if back { (i + n - 1) % n } else { (i + 1) % n };
-            if self.widgets[i].focusable() {
+            if self.can_focus(i) {
                 self.focus = Some(i);
                 return;
             }
@@ -668,7 +764,7 @@ impl Form {
 
     /// Typed text (from the keyboard layout), inserted into the focused edit field.
     pub fn text_input(&mut self, s: &str) -> Option<FormEvent> {
-        let i = self.focus?;
+        let i = self.focus.filter(|&i| self.widget_enabled(i))?;
         if let Widget::Edit {
             id, text, cursor, ..
         } = &mut self.widgets[i]
@@ -703,7 +799,7 @@ impl Form {
             }
             _ => {}
         }
-        let Some(i) = self.focus else {
+        let Some(i) = self.focus.filter(|&i| self.widget_enabled(i)) else {
             return (key == Key::Enter).then_some(FormEvent::Submit);
         };
         let vis = self.list_visible(self.widgets[i].rect());
@@ -796,6 +892,91 @@ impl Form {
         let ev = self.key(key);
         self.focus = saved;
         ev
+    }
+}
+
+/// Splits `s` into lines no wider than `max` pixels, breaking at spaces. A word wider than `max`
+/// gets a line of its own.
+pub fn wrap_text(text: &mut dyn UiText, s: &str, max: i32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in s.split_whitespace() {
+        if line.is_empty() {
+            line = word.to_string();
+            continue;
+        }
+        let joined = format!("{line} {word}");
+        if text.measure(&joined) <= max {
+            line = joined;
+        } else {
+            lines.push(std::mem::replace(&mut line, word.to_string()));
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// Draws a bordered tooltip box with `tip` below `anchor` (above it when there is no room below),
+/// kept inside `bounds`. The text is word-wrapped; what does not fit in `bounds` is cut off with an
+/// ellipsis.
+pub fn draw_tooltip(
+    frame: &mut Frame,
+    skin: &Skin,
+    text: &mut dyn UiText,
+    tip: &str,
+    anchor: Rect,
+    bounds: Rect,
+) {
+    let c = &skin.genex;
+    let lh = text.line_height();
+    let edge = 1 + TIP_PAD;
+    let inner_max = bounds.w.min(TIP_MAX_W) - 2 * edge - 1;
+    let max_lines = (bounds.h - 2 * edge) / lh;
+    if inner_max <= 0 || max_lines <= 0 {
+        return;
+    }
+    let mut lines = wrap_text(text, tip, inner_max);
+    if lines.is_empty() {
+        return;
+    }
+    let max_lines = max_lines as usize;
+    if lines.len() > max_lines {
+        let rest = lines[max_lines - 1..].join(" ");
+        lines.truncate(max_lines - 1);
+        lines.push(rest);
+    }
+    for l in &mut lines {
+        *l = text.fit(l, inner_max);
+    }
+    let inner_w = lines.iter().map(|l| text.measure(l)).max().unwrap_or(0);
+    // One extra pixel on the right: glyphs can reach past their measured advance.
+    let w = inner_w + 2 * edge + 1;
+    let h = lines.len() as i32 * lh + 2 * edge;
+    let (right, bottom) = (bounds.x + bounds.w, bounds.y + bounds.h);
+    let x = anchor.x.min(right - w).max(bounds.x);
+    let below = anchor.y + anchor.h + 1;
+    let above = anchor.y - 1 - h;
+    let y = if below + h <= bottom {
+        below
+    } else if above >= bounds.y {
+        above
+    } else {
+        (bottom - h).max(bounds.y)
+    };
+    frame.fill_rect(x, y, w, h, c.item_bg);
+    frame_rect(frame, x, y, w, h, c.divider);
+    let clip = (x + 1, y + 1, x + w - 1, y + h - 1);
+    for (k, line) in lines.iter().enumerate() {
+        text.draw(
+            frame,
+            line,
+            x + edge,
+            y + edge + k as i32 * lh,
+            c.item_fg,
+            clip,
+        );
     }
 }
 
@@ -943,5 +1124,97 @@ mod tests {
             f.mouse_down(10, 20 + 1 + 14 * 2),
             Some(FormEvent::Selected(2, 2))
         );
+    }
+
+    /// Fixed-width text that records what was drawn.
+    #[derive(Default)]
+    struct FakeText(Vec<String>);
+
+    impl UiText for FakeText {
+        fn line_height(&self) -> i32 {
+            12
+        }
+        fn measure(&mut self, text: &str) -> i32 {
+            text.chars().count() as i32 * 5
+        }
+        fn draw(&mut self, _: &mut Frame, text: &str, _: i32, _: i32, _: u32, _: Clip) {
+            self.0.push(text.to_string());
+        }
+    }
+
+    type Clip = (i32, i32, i32, i32);
+
+    #[test]
+    fn disabled_check_ignores_input() {
+        let mut f = form();
+        f.set_enabled(4, false);
+        assert!(!f.is_enabled(4));
+        assert_eq!(f.mouse_down(60, 75), None);
+        assert_eq!(f.mouse_up(60, 75), None);
+        assert!(!f.checked(4));
+        // Tab skips it: edit → list → button → edit.
+        f.key(Key::Tab);
+        f.key(Key::Tab);
+        f.key(Key::Tab);
+        assert_eq!(f.focus, Some(0));
+        // A disabled widget cannot be focused, so Enter does not toggle it.
+        f.focus_id(4);
+        assert_eq!(f.focus, Some(0));
+        f.focus = Some(3);
+        assert_eq!(f.key(Key::Enter), Some(FormEvent::Submit));
+        assert!(!f.checked(4));
+        // Disabling the focused widget moves the focus on.
+        f.focus_id(3);
+        f.set_enabled(3, false);
+        assert_eq!(f.focus, Some(0));
+        f.set_enabled(4, true);
+        f.mouse_down(60, 75);
+        assert_eq!(f.mouse_up(60, 75), Some(FormEvent::Clicked(4)));
+        assert!(f.checked(4));
+    }
+
+    #[test]
+    fn tooltip_only_while_hovered() {
+        let skin = nulamp_skin::builtin::skin();
+        let mut frame = Frame::new(200, 200, 0);
+        let tip = "Not available here because of reasons that take more than one line";
+        let mut f = form();
+        f.set_enabled(4, false);
+        f.set_tooltip(4, tip);
+        let drawn = |f: &mut Form, frame: &mut Frame| {
+            let mut t = FakeText::default();
+            f.draw(frame, 0, 0, &skin, &mut t);
+            t.0
+        };
+        let base = drawn(&mut f, &mut frame);
+        assert!(!f.mouse_move(10, 75), "no tooltip over the button");
+        assert_eq!(f.hovered_tooltip(), None);
+        assert!(
+            f.mouse_move(60, 75),
+            "entering the check box shows its tooltip"
+        );
+        assert!(!f.mouse_move(61, 76), "moving inside it needs no redraw");
+        assert_eq!(f.hovered_tooltip(), Some(tip));
+        let shown = drawn(&mut f, &mut frame);
+        let extra: Vec<&String> = shown[base.len()..].iter().collect();
+        assert!(extra.len() > 1, "wrapped: {extra:?}");
+        assert!(
+            extra
+                .iter()
+                .all(|l| l.chars().count() as i32 * 5 <= 110 - 6)
+        );
+        assert_eq!(
+            extra
+                .iter()
+                .map(|l| l.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+            tip
+        );
+        assert!(f.mouse_move(10, 75));
+        assert_eq!(drawn(&mut f, &mut frame), base);
+        f.mouse_move(60, 75);
+        assert!(f.mouse_leave());
+        assert_eq!(f.hovered_tooltip(), None);
     }
 }
