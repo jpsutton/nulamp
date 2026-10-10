@@ -40,6 +40,14 @@ signed with the nulamp release key ([`packaging/nulamp-signing-key.asc`](packagi
 fingerprint `928D 2737 FE5D 5FA5 0DC6  EBAC E5F8 0263 48A3 8A7F`): `SHA256SUMS.asc` covers every
 file, and the Arch packages and repository are signed directly.
 
+To check a download, fetch `SHA256SUMS` and `SHA256SUMS.asc` from the same release, then:
+
+```bash
+gpg --import packaging/nulamp-signing-key.asc   # or the key file attached to the release
+gpg --verify SHA256SUMS.asc SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
 **Ubuntu 24.04 or 26.04:** download the `.deb` for your release, then
 
 ```bash
@@ -53,7 +61,7 @@ curl -sSfLo /tmp/nulamp.asc https://raw.githubusercontent.com/jpsutton/nulamp/st
 sudo pacman-key --add /tmp/nulamp.asc
 sudo pacman-key --lsign-key 928D2737FE5D5FA50DC6EBACE5F8026348A38A7F
 printf '\n[nulamp]\nServer = https://github.com/jpsutton/nulamp/releases/latest/download\n' | sudo tee -a /etc/pacman.conf
-sudo pacman -Sy nulamp
+sudo pacman -Syu nulamp
 ```
 
 **Other Linux distributions:** the AppImage needs glibc 2.39 or newer and bundles the extra codecs
