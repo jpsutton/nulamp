@@ -1,10 +1,10 @@
-# Build and test every pushed feature/fix branch and staging. Pull requests show the results of
-# the push run of their head commit, so there is no separate pull_request run.
+# Build and test pull requests into staging (feature and fix branches) and into release (the
+# release candidate). Pushes do not run CI; merging into release runs the release workflow.
 name: CI
 
 on:
-  push:
-    branches: ["feat/**", "fix/**", "staging"]
+  pull_request:
+    branches: ["staging", "release"]
   workflow_dispatch:
 
 concurrency:
