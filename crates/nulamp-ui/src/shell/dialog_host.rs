@@ -178,6 +178,7 @@ impl<P: PlayerHandle> Shell<P> {
                 self.player.engine_mut().playlist.modified = true;
             }
             DialogResult::PlayBookmark(loc) => self.play_bookmark(&loc),
+            DialogResult::Plugin(i, action) => self.player.plugin_action(i, action),
             DialogResult::Prefs(b) => {
                 let (prefs, pl) = *b;
                 self.apply_prefs(prefs, pl);

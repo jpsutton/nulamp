@@ -66,6 +66,16 @@ pub trait PlayerHandle {
     fn extensions(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+    /// Remote-control requests from other sources (plugins), oldest first.
+    fn take_requests(&mut self) -> Vec<nulamp_remote::Request> {
+        Vec::new()
+    }
+    /// Loaded plugin modules, and how many files or modules failed to load.
+    fn plugins(&self) -> (Vec<crate::plugins_dialog::PluginRow>, usize) {
+        (Vec::new(), 0)
+    }
+    /// Runs an action on the n-th module of [`PlayerHandle::plugins`].
+    fn plugin_action(&mut self, _index: usize, _action: crate::plugins_dialog::PluginAction) {}
     /// Network servers asking for a user name and password (07 §8.5), oldest first.
     fn credential_requests(&mut self) -> Vec<CredentialRequest> {
         Vec::new()
@@ -2423,6 +2433,13 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
                 "skins" => self.key_action(id, KeyAction::SkinBrowser, el),
                 "fileinfo" => self.handle_action(id, Action::FileInfoCurrent, el),
                 "prefs" => self.key_action(id, KeyAction::Preferences, el),
+                "plugins" => {
+                    let (rows, errors) = self.player.plugins();
+                    self.open_dialog(
+                        el,
+                        Box::new(crate::plugins_dialog::PluginsDialog::new(rows, errors)),
+                    );
+                }
                 _ => {}
             }
         }

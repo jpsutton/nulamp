@@ -86,6 +86,7 @@ pub fn options_menu(s: &MenuState) -> Vec<Item> {
             MenuCmd::Key(KeyAction::Preferences),
         ),
         Item::sub("Skins", skins_menu(s)),
+        Item::cmd("Plugins...", MenuCmd::Plugins),
         Item::Sep,
         Item::check(
             "Time elapsed",

@@ -33,6 +33,9 @@ impl<P: PlayerHandle> Shell<P> {
         while let Ok(req) = self.tray_rx.try_recv() {
             self.handle_request(el, req);
         }
+        for req in self.player.take_requests() {
+            self.handle_request(el, req);
+        }
         let pressed = self
             .global_hotkeys
             .as_ref()

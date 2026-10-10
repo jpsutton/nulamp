@@ -55,6 +55,7 @@ pub enum MenuCmd {
     PlRebuildTitles,
     PlRateSelected(u8),
     Bookmark(String),
+    Plugins,
     None,
 }
 

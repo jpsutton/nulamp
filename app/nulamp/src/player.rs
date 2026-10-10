@@ -13,6 +13,10 @@ pub struct AppPlayer {
     pub streams: nulamp_decoders::stream::StreamFactory,
     /// Login requests from network threads.
     pub logins: std::sync::mpsc::Receiver<nulamp_ui::shell::CredentialRequest>,
+    /// Remote-control requests from plugins, for the shell.
+    pub requests: Vec<nulamp_remote::Request>,
+    /// Declared last: plugins are unloaded after the player (and its audio thread) is gone.
+    pub plugins: crate::plugins::PluginRuntime,
 }
 
 /// Forwards login requests from network threads to the user interface and waits for the
@@ -35,6 +39,20 @@ impl nulamp_decoders::stream::CredentialPrompt for LoginPrompt {
 }
 
 impl PlayerHandle for AppPlayer {
+    fn take_requests(&mut self) -> Vec<nulamp_remote::Request> {
+        std::mem::take(&mut self.requests)
+    }
+
+    fn plugins(&self) -> (Vec<nulamp_ui::plugins_dialog::PluginRow>, usize) {
+        self.plugins.rows()
+    }
+
+    fn plugin_action(&mut self, index: usize, action: nulamp_ui::plugins_dialog::PluginAction) {
+        if self.plugins.action(index, action) {
+            self.player.set_dsp(self.plugins.active_dsp_stage());
+        }
+    }
+
     fn credential_requests(&mut self) -> Vec<nulamp_ui::shell::CredentialRequest> {
         self.logins.try_iter().collect()
     }
@@ -112,6 +130,8 @@ impl PlayerHandle for AppPlayer {
 
     fn set_eq(&mut self, settings: &nulamp_eq::EqSettings) {
         self.player.set_eq(settings);
+        self.plugins
+            .broadcast(&nulamp_plugin_api::PluginEvent::EqChanged);
     }
 
     fn tick(&mut self) {
@@ -133,6 +153,24 @@ impl PlayerHandle for AppPlayer {
                 PlayerEvent::Error(msg) => log::error!("{msg}"),
                 PlayerEvent::OpenFileDialog => log::info!("playlist is empty"),
                 other => log::debug!("{other:?}"),
+            }
+        }
+        let status = self.player.status();
+        let location = self
+            .player
+            .engine
+            .playlist
+            .get(status.position)
+            .map(|e| e.location.clone());
+        for c in self.plugins.tick(&status, location.as_deref()) {
+            match c {
+                nulamp_plugin_api::HostCommand::Player(c) => self.player.command(c),
+                nulamp_plugin_api::HostCommand::Numbered(id) => {
+                    match nulamp_remote::NumberedCommand::from_id(id) {
+                        Some(n) => self.requests.push(nulamp_remote::Request::Command(n)),
+                        None => log::debug!("plugin command {id} is not handled"),
+                    }
+                }
             }
         }
     }
