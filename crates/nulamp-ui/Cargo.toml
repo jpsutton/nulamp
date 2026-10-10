@@ -10,11 +10,13 @@ rust-version.workspace = true
 log = "0.4.34"
 nulamp-core = { version = "0.1.0", path = "../nulamp-core" }
 nulamp-eq = { version = "0.1.0", path = "../nulamp-eq" }
+nulamp-playlist = { version = "0.1.0", path = "../nulamp-playlist" }
 nulamp-render = { version = "0.1.0", path = "../nulamp-render" }
 nulamp-skin = { version = "0.1.0", path = "../nulamp-skin" }
 nulamp-text = { version = "0.1.0", path = "../nulamp-text" }
 rand = "0.9"
 raw-window-handle = "0.6"
+rfd = "0.17.2"
 softbuffer = "0.4"
 winit = "0.30"
 

@@ -20,6 +20,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHan
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{Cursor, CursorIcon, CustomCursor, Window, WindowId, WindowLevel};
 
+mod dialogs;
+mod popup;
+
 use crate::docking::{self, DEFAULT_SNAP};
 use crate::eq_input::{EqAction, EqContext, EqInput};
 use crate::geom::Rect;
@@ -43,6 +46,14 @@ pub trait PlayerHandle {
     /// The play-order engine and playlist.
     fn engine(&self) -> &nulamp_core::Engine;
     fn engine_mut(&mut self) -> &mut nulamp_core::Engine;
+    /// Whether some decoder handles a file extension.
+    fn is_supported_extension(&self, _ext: &str) -> bool {
+        true
+    }
+    /// (extension list separated by `;`, description) pairs for file dialogs.
+    fn extensions(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 /// User-interface preferences (subset of 11 §1.3).
@@ -74,6 +85,11 @@ pub struct UiPrefs {
     pub user_font: Option<String>,
     pub easter_egg_word: String,
     pub eq: EqSettings,
+    /// User skins folder (01 §1.4).
+    pub skins_dir: std::path::PathBuf,
+    /// Current skin: a path, or `None` for the built-in skin.
+    pub skin_path: Option<String>,
+    pub last_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for UiPrefs {
@@ -102,6 +118,9 @@ impl Default for UiPrefs {
             user_font: None,
             easter_egg_word: "NULAMP".into(),
             eq: EqSettings::default(),
+            skins_dir: default_skins_dir(),
+            skin_path: None,
+            last_dir: None,
         }
     }
 }
@@ -159,6 +178,10 @@ pub struct Shell<P: PlayerHandle> {
     eq_input: EqInput,
     pl: PlaylistUi,
     middle_held: bool,
+    menus: Vec<popup::MenuWin>,
+    menu_focus_check: Option<Instant>,
+    /// A menu requested by code that has no event loop handle; opened in `about_to_wait`.
+    pending_menu: Option<(Kind, Vec<crate::menu::Item>, i32, i32)>,
     marquee: Marquee,
     drag: Option<WindowDrag>,
     last_click: Option<(WindowId, Instant, i32, i32)>,
@@ -196,6 +219,9 @@ impl<P: PlayerHandle> Shell<P> {
             eq_input: EqInput::new(),
             pl: PlaylistUi::default(),
             middle_held: false,
+            menus: Vec::new(),
+            menu_focus_check: None,
+            pending_menu: None,
             marquee: Marquee::new(),
             drag: None,
             last_click: None,
@@ -730,7 +756,14 @@ impl<P: PlayerHandle> Shell<P> {
                     self.prefs.eq_shade = !self.prefs.eq_shade;
                     self.resize_window(Kind::Equalizer);
                 }
-                other => log::info!("equalizer action not implemented yet: {other:?}"),
+                EqAction::PresetsMenu { x, y } => {
+                    let items = crate::menus::presets_menu(&self.menu_state());
+                    self.open_items_at(el, id, items, x, y);
+                }
+                EqAction::ToggleMenu { auto, x, y } => {
+                    let items = crate::menus::eq_toggle_menu(auto, &self.menu_state());
+                    self.open_items_at(el, id, items, x, y);
+                }
             }
         }
         self.request_redraw_all();
@@ -776,6 +809,20 @@ impl<P: PlayerHandle> Shell<P> {
             Action::TogglePlaylistWindow => {
                 let v = !self.is_visible(Kind::Playlist);
                 self.set_visible(Kind::Playlist, v);
+            }
+            Action::Menu { kind, x, y } => {
+                let target = if self.kind_of(id) == Some(Kind::Main) {
+                    id
+                } else {
+                    self.ids[&Kind::Main]
+                };
+                let (x, y) = if target == id { (x, y) } else { (6, 13) };
+                self.open_menu_kind(el, target, kind, x, y);
+            }
+            Action::OpenFiles => self.dialog_open_files(true),
+            Action::OpenFolder => self.dialog_open_folder(true),
+            Action::OpenUrl => {
+                log::info!("open URL needs the text-input dialog (not implemented yet)")
             }
             Action::ToggleTimeMode => self.prefs.time_remaining = !self.prefs.time_remaining,
             Action::CycleVisMode => {
@@ -984,6 +1031,17 @@ impl<P: PlayerHandle> Shell<P> {
                     self.update_pl_font();
                 }
                 PlAction::Menu(choice) => self.pl_menu_choice(choice),
+                PlAction::StandardMenu { menu, x, y } => {
+                    self.open_playlist_menu(el, id, menu, x, y)
+                }
+                PlAction::ListContextMenu { x, y } => {
+                    self.open_items_at(el, id, crate::menus::list_context(), x, y)
+                }
+                PlAction::MainMenu { x, y } => self.open_main_menu_at(el, id, x, y),
+                PlAction::VisMenu { x, y } => {
+                    let items = crate::menus::vis_menu(&self.menu_state());
+                    self.open_items_at(el, id, items, x, y);
+                }
                 other => log::info!("playlist action not implemented yet: {other:?}"),
             }
         }
@@ -1006,6 +1064,26 @@ impl<P: PlayerHandle> Shell<P> {
                 }
             }
             PlMenuChoice::RemoveAll | PlMenuChoice::NewList => e.clear(),
+            PlMenuChoice::AddFile => self.dialog_open_files(false),
+            PlMenuChoice::AddFolder => self.dialog_open_folder(false),
+            PlMenuChoice::LoadList => self.dialog_load_playlist(),
+            PlMenuChoice::SaveList => self.dialog_save_playlist(),
+            PlMenuChoice::Sort => {
+                let items = crate::menus::sort_menu();
+                self.pending_menu = Some((Kind::Playlist, items, 122, self.pl.h - 66));
+            }
+            PlMenuChoice::FileInfo => {
+                let items = crate::menus::file_info_menu();
+                self.pending_menu = Some((Kind::Playlist, items, 122, self.pl.h - 48));
+            }
+            PlMenuChoice::MiscOptions => {
+                let items = crate::menus::misc_menu();
+                self.pending_menu = Some((Kind::Playlist, items, 122, self.pl.h - 30));
+            }
+            PlMenuChoice::RemoveMisc => {
+                let items = crate::menus::remove_misc();
+                self.pending_menu = Some((Kind::Playlist, items, 64, self.pl.h - 84));
+            }
             other => log::info!("playlist menu choice not implemented yet: {other:?}"),
         }
         let n = self.player.engine().playlist.len();
@@ -1088,6 +1166,7 @@ impl<P: PlayerHandle> Shell<P> {
         let Some((kind, x, y)) = self.local_pos(id) else {
             return;
         };
+        log::debug!("mouse {button:?} {state:?} on {kind:?} at ({x},{y})");
         let mods = self.mods;
         let now = self.now_ms();
         match (button, state) {
@@ -1251,30 +1330,8 @@ impl<P: PlayerHandle> Shell<P> {
             Kind::Equalizer => Focus::Equalizer,
             Kind::Playlist => Focus::Playlist,
         };
-        match keys::resolve(focus, code, self.mods, playing) {
-            Some(KeyAction::Do(a)) => self.handle_action(id, a, el),
-            Some(KeyAction::ShadeFocused) => self.handle_action(id, Action::ToggleShade, el),
-            Some(KeyAction::ToggleEasyMove) => self.prefs.easymove = !self.prefs.easymove,
-            Some(KeyAction::ToggleMainWindow) => {
-                let v = !self.is_visible(Kind::Main);
-                self.set_visible(Kind::Main, v);
-            }
-            Some(KeyAction::ToggleManualAdvance) => {
-                let on = !self.last_status.manual_advance;
-                self.player.command(Command::SetManualAdvance(on));
-                let now = self.now_ms();
-                self.marquee.show_message(
-                    if on {
-                        "Manual Advance: On"
-                    } else {
-                        "Manual Advance: Off"
-                    },
-                    now,
-                );
-                self.poll_player();
-            }
-            Some(other) => log::info!("key action not implemented yet: {other:?}"),
-            None => {}
+        if let Some(k) = keys::resolve(focus, code, self.mods, playing) {
+            self.key_action(id, k, el);
         }
         if matches!(
             code,
@@ -1285,6 +1342,70 @@ impl<P: PlayerHandle> Shell<P> {
                 .show_message(marquee::volume_message(self.last_status.volume), now);
         }
         self.request_redraw_all();
+    }
+
+    /// Carries out a keyboard (or menu) shortcut action.
+    fn key_action(&mut self, id: WindowId, k: KeyAction, el: &ActiveEventLoop) {
+        match k {
+            KeyAction::Do(a) => self.handle_action(id, a, el),
+            KeyAction::ShadeFocused => self.handle_action(id, Action::ToggleShade, el),
+            KeyAction::ToggleEasyMove => self.prefs.easymove = !self.prefs.easymove,
+            KeyAction::ToggleMainWindow => {
+                let v = !self.is_visible(Kind::Main);
+                self.set_visible(Kind::Main, v);
+            }
+            KeyAction::ToggleManualAdvance => {
+                let on = !self.last_status.manual_advance;
+                self.player.command(Command::SetManualAdvance(on));
+                let now = self.now_ms();
+                let msg = if on {
+                    "Manual Advance: On"
+                } else {
+                    "Manual Advance: Off"
+                };
+                self.marquee.show_message(msg, now);
+                self.poll_player();
+            }
+            KeyAction::OpenPlaylist => self.dialog_load_playlist(),
+            KeyAction::SavePlaylist => self.dialog_save_playlist(),
+            KeyAction::ReloadSkin => {
+                let p = self.prefs.skin_path.clone();
+                self.load_skin(p);
+            }
+            other => log::info!("key action not implemented yet: {other:?}"),
+        }
+        self.request_redraw_all();
+    }
+
+    /// Loads a skin (or the built-in one) and redraws everything (01 §3).
+    fn load_skin(&mut self, path: Option<String>) {
+        let builtin = nulamp_skin::builtin::files();
+        let skin = match &path {
+            None => nulamp_skin::builtin::skin(),
+            Some(p) => match nulamp_skin::SkinFiles::open(std::path::Path::new(p)) {
+                Ok(files) => Skin::load(&files, &builtin),
+                Err(e) => {
+                    log::error!("cannot load skin {p}: {e}");
+                    return;
+                }
+            },
+        };
+        self.skin = skin;
+        self.prefs.skin_path = path;
+        self.cursors.clear();
+        self.current_cursor.clear();
+        for w in self.windows.values_mut() {
+            w.shape_dirty = true;
+        }
+        self.update_pl_font();
+        self.refresh_title_force();
+        self.request_redraw_all();
+    }
+
+    fn refresh_title_force(&mut self) {
+        self.marquee_title_text.clear();
+        self.marquee = Marquee::new();
+        self.refresh_title();
     }
 
     /// Equalizer keys (03 §1.7). Returns true when handled.
@@ -1404,6 +1525,31 @@ fn pl_cursor(x: i32, y: i32, w: i32, h: i32, shade: bool) -> CursorRole {
     }
 }
 
+/// `$XDG_CONFIG_HOME/nulamp/skins` (or the platform equivalent).
+pub fn default_skins_dir() -> std::path::PathBuf {
+    config_dir().join("skins")
+}
+
+/// The per-user settings folder (11 §1.1).
+pub fn config_dir() -> std::path::PathBuf {
+    if let Some(d) = std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()) {
+        return std::path::PathBuf::from(d).join(APP_NAME);
+    }
+    if cfg!(target_os = "windows")
+        && let Some(d) = std::env::var_os("APPDATA")
+    {
+        return std::path::PathBuf::from(d).join(APP_NAME);
+    }
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    if cfg!(target_os = "macos") {
+        home.join("Library/Application Support").join(APP_NAME)
+    } else {
+        home.join(".config").join(APP_NAME)
+    }
+}
+
 fn seek_pos(s: &PlayerStatus) -> u32 {
     match s.length_ms {
         Some(l) if l > 0 => (s.position_ms.min(l) * 256 / l) as u32,
@@ -1423,15 +1569,24 @@ fn builtin_cursor(shape: CursorShape) -> CursorIcon {
 }
 
 fn present(w: &mut Win, frame: &Frame) {
-    let size = w.window.inner_size();
+    present_raw(&w.window, &mut w.surface, frame);
+}
+
+/// Copies a frame into a window surface.
+fn present_raw(
+    window: &Window,
+    surface: &mut softbuffer::Surface<OwnedDisplayHandle, Rc<Window>>,
+    frame: &Frame,
+) {
+    let size = window.inner_size();
     let (Some(width), Some(height)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
     else {
         return;
     };
-    if w.surface.resize(width, height).is_err() {
+    if surface.resize(width, height).is_err() {
         return;
     }
-    let Ok(mut buf) = w.surface.buffer_mut() else {
+    let Ok(mut buf) = surface.buffer_mut() else {
         return;
     };
     let (bw, bh) = (size.width as usize, size.height as usize);
@@ -1473,6 +1628,17 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if self.menu_event(el, id, &event) {
+            return;
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            ..
+        } = event
+            && !self.menus.is_empty()
+        {
+            self.close_menus();
+        }
         match event {
             WindowEvent::CloseRequested => {
                 self.exit = true;
@@ -1528,6 +1694,12 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         if self.exit {
             return;
+        }
+        self.check_menu_focus();
+        if let Some((kind, items, x, y)) = self.pending_menu.take()
+            && let Some(&id) = self.ids.get(&kind)
+        {
+            self.open_items_at(el, id, items, x, y);
         }
         let now = self.now_ms();
         let before = self.last_status.clone();
