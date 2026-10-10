@@ -1,6 +1,6 @@
 //! Golden-image helpers (12 §3). Goldens live in `tests/golden/` at the workspace root and are
 //! produced by nulamp itself; `NULAMP_BLESS=1` rewrites them. Mismatches write the actual image
-//! to `target/golden-diff/` for inspection.
+//! to `target/tmp/golden-diff/` for inspection.
 
 #![allow(dead_code)]
 
@@ -10,6 +10,11 @@ use nulamp_render::Frame;
 
 pub fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// Where actual images of failed comparisons go.
+pub fn diff_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("golden-diff")
 }
 
 pub fn write_png(path: &std::path::Path, f: &Frame) {
@@ -67,7 +72,7 @@ pub fn check(name: &str, f: &Frame) {
         px.iter().zip(f.pixels()).filter(|(a, b)| a != b).count()
     };
     if differing != 0 {
-        let out = root().join(format!("target/golden-diff/{name}.png"));
+        let out = diff_dir().join(format!("{name}.png"));
         write_png(&out, f);
         panic!(
             "{name}: {} differs from the golden ({} pixels); actual image: {}",

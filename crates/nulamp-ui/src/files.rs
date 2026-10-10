@@ -59,7 +59,7 @@ pub fn add_anything(
         return files.into_iter().map(NewEntry::new).collect();
     }
     let abs = std::fs::canonicalize(path)
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| strip_verbatim(&p.to_string_lossy()))
         .unwrap_or(local.clone());
     if path.is_file() {
         let is_list =
@@ -70,6 +70,18 @@ pub fn add_anything(
     }
     // Existing media files and paths that do not exist are added as given (they fail at play).
     vec![NewEntry::new(abs)]
+}
+
+/// Windows `canonicalize` gives verbatim paths (`\\?\C:\…`, `\\?\UNC\server\…`), which
+/// users and other programs do not expect in playlists: back to the ordinary form.
+fn strip_verbatim(p: &str) -> String {
+    if let Some(rest) = p.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    match p.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_string(),
+        _ => p.to_string(),
+    }
 }
 
 fn sniff_playlist(path: &Path) -> bool {
@@ -156,6 +168,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn verbatim_paths_are_simplified() {
+        assert_eq!(strip_verbatim(r"\\?\C:\Music\a.mp3"), r"C:\Music\a.mp3");
+        assert_eq!(
+            strip_verbatim(r"\\?\UNC\nas\share\a.mp3"),
+            r"\\nas\share\a.mp3"
+        );
+        assert_eq!(
+            strip_verbatim(r"\\?\Volume{x}\a.mp3"),
+            r"\\?\Volume{x}\a.mp3"
+        );
+        assert_eq!(strip_verbatim("/music/a.mp3"), "/music/a.mp3");
+    }
+
+    #[test]
     fn folders_playlists_and_files() {
         let dir = std::env::temp_dir().join(format!("nulamp-files-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
@@ -169,7 +195,10 @@ mod tests {
         let all = add_anything(&d, true, true, &supported);
         let names: Vec<_> = all
             .iter()
-            .map(|e| e.location.rsplit('/').next().unwrap().to_string())
+            .map(|e| {
+                let name = Path::new(&e.location).file_name().unwrap();
+                name.to_string_lossy().into_owned()
+            })
             .collect();
         assert_eq!(names, ["a.flac", "b.mp3", "c.ogg"]);
         assert_eq!(add_anything(&d, false, true, &supported).len(), 2);

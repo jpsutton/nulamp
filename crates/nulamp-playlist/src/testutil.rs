@@ -25,12 +25,17 @@ impl TempDir {
 
     /// Absolute path of `rel` (with `/` separators) inside the folder.
     pub fn path(&self, rel: &str) -> String {
-        self.root.join(rel).to_string_lossy().into_owned()
+        self.root
+            .join(rel.replace('/', std::path::MAIN_SEPARATOR_STR))
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// Writes `bytes` to `rel`, creating parent folders. Returns the absolute path.
     pub fn write(&self, rel: &str, bytes: &[u8]) -> String {
-        let p = self.root.join(rel);
+        let p = self
+            .root
+            .join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, bytes).unwrap();
         p.to_string_lossy().into_owned()

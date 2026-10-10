@@ -72,6 +72,10 @@ jobs:
       - name: Install system libraries
         shell: bash
         run: ./scripts/ci-deps.sh
+      - name: zlib headers for the bundled FreeType (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ./scripts/windows-zlib.sh --release --target ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}

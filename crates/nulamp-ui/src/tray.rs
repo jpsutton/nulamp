@@ -3,7 +3,9 @@
 
 use std::sync::mpsc::Sender;
 
-use nulamp_remote::{NumberedCommand, Request};
+#[cfg(target_os = "linux")]
+use nulamp_remote::NumberedCommand;
+use nulamp_remote::Request;
 
 /// The tray icon's requests go to the shell like remote-control requests.
 pub struct Tray {

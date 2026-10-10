@@ -45,6 +45,10 @@ jobs:
       - name: Install system libraries
         shell: bash
         run: ./scripts/ci-deps.sh
+      - name: zlib headers for the bundled FreeType (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ./scripts/windows-zlib.sh
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace

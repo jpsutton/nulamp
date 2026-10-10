@@ -13,5 +13,9 @@ nulamp-skin = { version = "0.1.0", path = "../nulamp-skin" }
 rustybuzz = "0.20.1"
 unicode-bidi = "0.3.18"
 
+# Windows has no system FreeType: build the bundled copy there.
+[target.'cfg(windows)'.dependencies]
+freetype-rs = { version = "0.38.0", features = ["bundled"] }
+
 [lints]
 workspace = true

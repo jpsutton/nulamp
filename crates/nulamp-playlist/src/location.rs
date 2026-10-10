@@ -490,6 +490,7 @@ pub(crate) fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::testutil::TempDir;
 
     fn unix(base: &str, raw: &str) -> String {
@@ -562,6 +563,8 @@ mod tests {
         assert_eq!(unix("http://h", "a.mp3"), "http://h/a.mp3");
     }
 
+    // Case fallback exists for case-sensitive file systems; Windows needs none.
+    #[cfg(unix)]
     #[test]
     fn case_insensitive_fallback() {
         let t = TempDir::new("case");
