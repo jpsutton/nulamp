@@ -18,13 +18,18 @@ use nulamp_core::Command;
 use nulamp_render::playlist_window::PopupMenu;
 
 pub(super) struct MenuWin {
-    pub window: Rc<Window>,
-    pub surface: softbuffer::Surface<winit::event_loop::OwnedDisplayHandle, Rc<Window>>,
+    /// The OS window; `None` for a menu drawn as a part of the Wayland compound window.
+    pub window: Option<Rc<Window>>,
+    pub surface: Option<softbuffer::Surface<winit::event_loop::OwnedDisplayHandle, Rc<Window>>>,
+    /// Compound window part number (native Wayland).
+    pub part: Option<usize>,
     pub items: Vec<Item>,
     pub layout: MenuLayout,
     pub hi: Option<usize>,
     /// Screen position (physical pixels).
     pub pos: (i32, i32),
+    /// Pixel scale (2 with double size).
+    pub scale: i32,
     pub opened: Instant,
 }
 
@@ -71,6 +76,7 @@ impl<P: PlayerHandle> Shell<P> {
             eq_auto: self.prefs.eq.auto_load,
             eq_presets: self.eq_library().into_iter().map(|p| p.name).collect(),
             app_name: super::APP_NAME.into(),
+            wayland_native: self.wayland,
         }
     }
 
@@ -105,20 +111,45 @@ impl<P: PlayerHandle> Shell<P> {
 
     fn push_menu(&mut self, el: &ActiveEventLoop, items: Vec<Item>, pos: (i32, i32)) {
         let layout = menu::layout(&mut self.fonts, &items);
+        let scale = if self.prefs.double_size { 2 } else { 1 };
+        let (lw, lh) = (layout.w * scale, layout.h * scale);
+        if let Some(c) = &mut self.compound {
+            // Wayland cannot place a top-level menu window: draw the menu as a part of the
+            // main window, at the same place relative to it. The screen size is unknown, so
+            // the menu is not kept on screen.
+            let Some(main) = self.ids.get(&Kind::Main).map(|m| self.windows[m].rect) else {
+                return;
+            };
+            let part = c.add_part();
+            c.set_position(part, pos.0 - main.x, pos.1 - main.y);
+            self.menus.push(MenuWin {
+                window: None,
+                surface: None,
+                part: Some(part),
+                items,
+                layout,
+                hi: None,
+                pos,
+                scale,
+                opened: Instant::now(),
+            });
+            let last = self.menus.len() - 1;
+            self.draw_menu(last);
+            return;
+        }
         // Keep the menu on the monitor.
         let mut pos = pos;
         if let Some(m) = self
             .windows
             .values()
-            .next()
-            .and_then(|w| w.window.current_monitor())
+            .find_map(|w| w.window.as_ref()?.current_monitor())
         {
             let (mp, ms) = (m.position(), m.size());
-            if pos.0 + layout.w > mp.x + ms.width as i32 {
-                pos.0 = (mp.x + ms.width as i32 - layout.w).max(mp.x);
+            if pos.0 + lw > mp.x + ms.width as i32 {
+                pos.0 = (mp.x + ms.width as i32 - lw).max(mp.x);
             }
-            if pos.1 + layout.h > mp.y + ms.height as i32 {
-                pos.1 = (pos.1 - layout.h).max(mp.y);
+            if pos.1 + lh > mp.y + ms.height as i32 {
+                pos.1 = (pos.1 - lh).max(mp.y);
             }
         }
         #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(unused_mut))]
@@ -127,7 +158,7 @@ impl<P: PlayerHandle> Shell<P> {
             .with_decorations(false)
             .with_resizable(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
-            .with_inner_size(PhysicalSize::new(layout.w as u32, layout.h as u32))
+            .with_inner_size(PhysicalSize::new(lw as u32, lh as u32))
             .with_position(PhysicalPosition::new(pos.0, pos.1));
         #[cfg(all(unix, not(target_os = "macos")))]
         {
@@ -144,21 +175,21 @@ impl<P: PlayerHandle> Shell<P> {
             }
         };
         let window = Rc::new(window);
-        let Some(context) = self.context.as_ref() else {
-            return;
-        };
+        let context = self.softbuffer(el);
         let Ok(surface) = softbuffer::Surface::new(context, window.clone()) else {
             return;
         };
         log::debug!("menu opened at {pos:?} ({}x{})", layout.w, layout.h);
         window.focus_window();
         self.menus.push(MenuWin {
-            window,
-            surface,
+            window: Some(window),
+            surface: Some(surface),
+            part: None,
             items,
             layout,
             hi: None,
             pos,
+            scale,
             opened: Instant::now(),
         });
         let last = self.menus.len() - 1;
@@ -166,15 +197,28 @@ impl<P: PlayerHandle> Shell<P> {
     }
 
     pub(super) fn close_menus(&mut self) {
-        self.menus.clear();
+        self.close_menus_from(0);
     }
 
     fn close_menus_from(&mut self, level: usize) {
-        self.menus.truncate(level);
+        for m in self.menus.drain(level.min(self.menus.len())..) {
+            if let (Some(part), Some(c)) = (m.part, &mut self.compound) {
+                c.remove_part(part);
+            }
+        }
     }
 
     pub(super) fn menu_level(&self, id: WindowId) -> Option<usize> {
-        self.menus.iter().position(|m| m.window.id() == id)
+        self.menus.iter().position(|m| match (&m.window, m.part) {
+            (Some(w), _) => w.id() == id,
+            (None, Some(part)) => super::part_window_id(part) == id,
+            _ => false,
+        })
+    }
+
+    /// The menu drawn as compound part `part`.
+    pub(super) fn menu_of_part(&self, part: usize) -> Option<usize> {
+        self.menus.iter().position(|m| m.part == Some(part))
     }
 
     fn draw_menu(&mut self, level: usize) {
@@ -182,8 +226,15 @@ impl<P: PlayerHandle> Shell<P> {
             return;
         };
         let frame = menu::draw(&mut self.fonts, &self.skin, &m.items, &m.layout, m.hi);
+        let frame = nulamp_render::scale(&frame, m.scale as u32);
         let m = &mut self.menus[level];
-        present_raw(&m.window, &mut m.surface, &frame);
+        match (&m.window, &mut m.surface, m.part, &mut self.compound) {
+            (Some(window), Some(surface), _, _) => present_raw(window, surface, &frame),
+            (None, None, Some(part), Some(c)) => {
+                c.present(part, &frame);
+            }
+            _ => {}
+        }
     }
 
     fn open_submenu_of(&mut self, el: &ActiveEventLoop, level: usize, index: usize) {
@@ -193,8 +244,8 @@ impl<P: PlayerHandle> Shell<P> {
         };
         let items = items.clone();
         let pos = (
-            m.pos.0 + m.layout.w - 3,
-            m.pos.1 + m.layout.rows[index].0 - 2,
+            m.pos.0 + (m.layout.w - 3) * m.scale,
+            m.pos.1 + (m.layout.rows[index].0 - 2) * m.scale,
         );
         self.close_menus_from(level + 1);
         self.push_menu(el, items, pos);
@@ -213,36 +264,19 @@ impl<P: PlayerHandle> Shell<P> {
         match event {
             WindowEvent::RedrawRequested => self.draw_menu(level),
             WindowEvent::CursorMoved { position, .. } => {
-                let (x, y) = (position.x as i32, position.y as i32);
-                let m = &self.menus[level];
-                let hi = menu::item_at(&m.layout, &m.items, x, y);
-                if hi != m.hi {
-                    self.menus[level].hi = hi;
-                    self.draw_menu(level);
-                    match hi.and_then(|i| self.menus[level].items.get(i).cloned()) {
-                        Some(Item::Sub { .. }) => {
-                            self.open_submenu_of(el, level, hi.expect("item"))
-                        }
-                        _ => self.close_menus_from(level + 1),
-                    }
-                }
+                self.menu_motion(el, level, position.x as i32, position.y as i32)
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => {
-                // Ignore the release of the click that opened the menu.
-                if self.menus[level].opened.elapsed().as_millis() < 250 {
-                    return true;
-                }
-                self.activate(el, level);
-            }
+            } => self.menu_release(el, level),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     self.menu_key(el, level, code);
                 }
             }
+            WindowEvent::CursorLeft { .. } => self.menu_leave(level),
             WindowEvent::Focused(false) => self.menu_focus_check = Some(Instant::now()),
             WindowEvent::Focused(true) => self.menu_focus_check = None,
             _ => {}
@@ -250,7 +284,51 @@ impl<P: PlayerHandle> Shell<P> {
         true
     }
 
-    fn menu_key(&mut self, el: &ActiveEventLoop, level: usize, code: KeyCode) {
+    /// The pointer moved to (x, y) in a menu.
+    pub(super) fn menu_motion(&mut self, el: &ActiveEventLoop, level: usize, x: i32, y: i32) {
+        let Some(m) = self.menus.get_mut(level) else {
+            return;
+        };
+        let (x, y) = (x.div_euclid(m.scale), y.div_euclid(m.scale));
+        let tip_changed = menu::hover(&mut m.layout, &m.items, x, y);
+        let hi = menu::item_at(&m.layout, &m.items, x, y);
+        let same = hi == m.hi;
+        if same && tip_changed {
+            self.draw_menu(level);
+        }
+        if !same {
+            self.menus[level].hi = hi;
+            self.draw_menu(level);
+            match hi.and_then(|i| self.menus[level].items.get(i).cloned()) {
+                Some(Item::Sub { .. }) => self.open_submenu_of(el, level, hi.expect("item")),
+                _ => self.close_menus_from(level + 1),
+            }
+        }
+    }
+
+    /// The left button was released over a menu.
+    pub(super) fn menu_release(&mut self, el: &ActiveEventLoop, level: usize) {
+        // Ignore the release of the click that opened the menu.
+        if self
+            .menus
+            .get(level)
+            .is_none_or(|m| m.opened.elapsed().as_millis() < 250)
+        {
+            return;
+        }
+        self.activate(el, level);
+    }
+
+    pub(super) fn menu_leave(&mut self, level: usize) {
+        let Some(m) = self.menus.get_mut(level) else {
+            return;
+        };
+        if menu::hover(&mut m.layout, &m.items, -1, -1) {
+            self.draw_menu(level);
+        }
+    }
+
+    pub(super) fn menu_key(&mut self, el: &ActiveEventLoop, level: usize, code: KeyCode) {
         match code {
             KeyCode::Escape => self.close_menus_from(level),
             KeyCode::ArrowDown | KeyCode::ArrowUp => {
@@ -299,7 +377,10 @@ impl<P: PlayerHandle> Shell<P> {
             && t.elapsed().as_millis() > 120
         {
             self.menu_focus_check = None;
-            let any_focused = self.menus.iter().any(|m| m.window.has_focus());
+            let any_focused = self
+                .menus
+                .iter()
+                .any(|m| m.window.as_ref().is_some_and(|w| w.has_focus()));
             if !any_focused {
                 self.close_menus();
             }
