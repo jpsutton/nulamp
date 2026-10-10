@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=nulamp
+GenericName=Audio Player
+Comment=Audio player for classic Winamp 2.x skins
+Exec=nulamp %U
+Icon=nulamp
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+MimeType=audio/mpeg;audio/flac;audio/ogg;audio/x-vorbis+ogg;audio/opus;audio/x-wav;audio/mp4;audio/x-ms-wma;audio/x-wavpack;audio/x-mod;audio/x-s3m;audio/x-xm;audio/x-it;audio/midi;audio/x-mpegurl;audio/x-scpls;application/xspf+xml;
+StartupWMClass=nulamp

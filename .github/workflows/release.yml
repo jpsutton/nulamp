@@ -39,9 +39,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            archive: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
@@ -90,9 +87,41 @@ jobs:
           name: nulamp-${{ matrix.target }}
           path: dist/*.${{ matrix.archive }}
 
+  appimage:
+    name: Build (Linux AppImage)
+    needs: [version]
+    # The oldest supported Ubuntu sets the glibc the AppImage needs (2.39).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install system libraries
+        run: |
+          ./scripts/ci-deps.sh
+          sudo apt-get install -y --no-install-recommends nasm
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the bundled LGPL FFmpeg and libopenmpt
+        run: ./scripts/appimage/build-deps.sh
+      - name: Build the AppImage
+        run: ./scripts/appimage/build-appimage.sh
+      - name: Plugin SDK
+        run: |
+          name="nulamp-${{ needs.version.outputs.version }}-plugin-sdk"
+          mkdir -p "dist/$name"
+          cp include/nulamp_plugin.h docs/plugins.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          rm -r "dist/$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nulamp-linux-appimage
+          path: |
+            dist/*.AppImage
+            dist/ffmpeg-*.tar.xz
+            dist/*-plugin-sdk.tar.gz
+
   publish:
     name: Publish GitHub release
-    needs: [version, build]
+    needs: [version, build, appimage]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
