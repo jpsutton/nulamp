@@ -12,6 +12,7 @@ log = "0.4.34"
 nulamp-audio = { version = "0.1.0", path = "../../crates/nulamp-audio" }
 nulamp-core = { version = "0.1.0", path = "../../crates/nulamp-core" }
 nulamp-decoders = { version = "0.1.0", path = "../../crates/nulamp-decoders" }
+nulamp-eq = { version = "0.1.0", path = "../../crates/nulamp-eq" }
 nulamp-skin = { version = "0.1.0", path = "../../crates/nulamp-skin" }
 nulamp-ui = { version = "0.1.0", path = "../../crates/nulamp-ui" }
 

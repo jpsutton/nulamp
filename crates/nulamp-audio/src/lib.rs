@@ -2,6 +2,7 @@
 
 pub mod chain;
 pub mod engine;
+pub mod eq_stage;
 pub mod mixer;
 pub mod output;
 pub mod player;

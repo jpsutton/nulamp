@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 log = "0.4.34"
 nulamp-core = { version = "0.1.0", path = "../nulamp-core" }
+nulamp-eq = { version = "0.1.0", path = "../nulamp-eq" }
 nulamp-render = { version = "0.1.0", path = "../nulamp-render" }
 nulamp-skin = { version = "0.1.0", path = "../nulamp-skin" }
 nulamp-text = { version = "0.1.0", path = "../nulamp-text" }

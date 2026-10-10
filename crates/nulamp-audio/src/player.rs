@@ -34,6 +34,7 @@ pub struct Player {
     pending_events: Vec<PlayerEvent>,
     /// Per-track pre-gain (ReplayGain); 1.0 until wired.
     pub gain_for: Box<dyn Fn(&str) -> f32 + Send>,
+    eq: Arc<crate::eq_stage::SharedEq>,
 }
 
 fn token(id: EntryId) -> Token {
@@ -44,6 +45,10 @@ impl Player {
     pub fn new(engine: Engine, registry: Arc<Registry>) -> Self {
         let audio = AudioEngine::start(registry.clone());
         audio.send(Control::Volume(200));
+        let eq = crate::eq_stage::SharedEq::new(nulamp_eq::EqSettings::default());
+        audio.send(Control::SetStages(vec![Box::new(
+            crate::eq_stage::EqStage::new(eq.clone()),
+        )]));
         Self {
             engine,
             audio,
@@ -55,6 +60,7 @@ impl Player {
             draining: false,
             pending_events: Vec::new(),
             gain_for: Box::new(|_| 1.0),
+            eq,
         }
     }
 
@@ -285,6 +291,11 @@ impl Player {
         {
             e.length_ms = len;
         }
+    }
+
+    /// Updates the equalizer.
+    pub fn set_eq(&mut self, s: &nulamp_eq::EqSettings) {
+        self.eq.set(s);
     }
 
     pub fn volume(&self) -> u8 {
