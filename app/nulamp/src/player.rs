@@ -9,9 +9,57 @@ pub struct AppPlayer {
     pub titles: crate::titles::TitleReader,
     /// ReplayGain settings read by the player's gain hook.
     pub replaygain: std::sync::Arc<std::sync::Mutex<nulamp_eq::ReplayGainSettings>>,
+    /// The network stream input (shared with the decoder registry).
+    pub streams: nulamp_decoders::stream::StreamFactory,
+    /// Login requests from network threads.
+    pub logins: std::sync::mpsc::Receiver<nulamp_ui::shell::CredentialRequest>,
+}
+
+/// Forwards login requests from network threads to the user interface and waits for the
+/// answer (07 §8.5).
+pub struct LoginPrompt(
+    pub std::sync::Mutex<std::sync::mpsc::Sender<nulamp_ui::shell::CredentialRequest>>,
+);
+
+impl nulamp_decoders::stream::CredentialPrompt for LoginPrompt {
+    fn credentials(&self, url: &str, realm: &str) -> Option<(String, String)> {
+        let (reply, answer) = std::sync::mpsc::channel();
+        let request = nulamp_ui::shell::CredentialRequest {
+            url: url.to_string(),
+            realm: realm.to_string(),
+            reply,
+        };
+        self.0.lock().ok()?.send(request).ok()?;
+        answer.recv().ok().flatten()
+    }
 }
 
 impl PlayerHandle for AppPlayer {
+    fn credential_requests(&mut self) -> Vec<nulamp_ui::shell::CredentialRequest> {
+        self.logins.try_iter().collect()
+    }
+
+    fn resolve_playlist_url(&self, url: &str) -> Option<std::sync::mpsc::Receiver<Vec<String>>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (streams, url) = (self.streams.clone(), url.to_string());
+        std::thread::Builder::new()
+            .name("nulamp-plurl".into())
+            .spawn(move || {
+                let entries = match streams.resolve_playlist_url(&url) {
+                    Ok(entries) if !entries.is_empty() => entries,
+                    Ok(_) => Vec::new(),
+                    Err(e) => {
+                        // Added as is: playing it shows the error in the title.
+                        log::info!("cannot read playlist {url}: {e}");
+                        vec![url]
+                    }
+                };
+                let _ = tx.send(entries);
+            })
+            .ok()?;
+        Some(rx)
+    }
+
     fn status(&self) -> PlayerStatus {
         self.player.status()
     }

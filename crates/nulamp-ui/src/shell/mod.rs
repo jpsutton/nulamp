@@ -66,6 +66,22 @@ pub trait PlayerHandle {
     fn extensions(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+    /// Network servers asking for a user name and password (07 §8.5), oldest first.
+    fn credential_requests(&mut self) -> Vec<CredentialRequest> {
+        Vec::new()
+    }
+    /// Starts expanding a playlist URL into its entries (10 §2.5) off the UI thread. `None`
+    /// when the URL is not a playlist URL.
+    fn resolve_playlist_url(&self, _url: &str) -> Option<std::sync::mpsc::Receiver<Vec<String>>> {
+        None
+    }
+}
+
+/// A server asks for Basic-authentication credentials. Answer through `reply`; `None` gives up.
+pub struct CredentialRequest {
+    pub url: String,
+    pub realm: String,
+    pub reply: std::sync::mpsc::Sender<Option<(String, String)>>,
 }
 
 /// User-interface preferences (subset of 11 §1.3).
@@ -238,6 +254,8 @@ pub struct Shell<P: PlayerHandle> {
     hidden_to_tray: Vec<Kind>,
     /// OS hotkey registration; created when global hotkeys are first enabled.
     global_hotkeys: Option<crate::hotkeys::GlobalHotkeys>,
+    /// Playlist URLs being downloaded: (entries, replace the list).
+    url_expansions: Vec<(std::sync::mpsc::Receiver<Vec<String>>, bool)>,
     /// Kept alive: on X11 the clipboard owner must stay to serve pastes.
     clipboard: Option<arboard::Clipboard>,
     /// Files dropped during this event batch, and the window they were dropped on.
@@ -313,6 +331,7 @@ impl<P: PlayerHandle> Shell<P> {
             tray_rx,
             hidden_to_tray: Vec::new(),
             global_hotkeys: None,
+            url_expansions: Vec::new(),
             clipboard: None,
             dropped: Vec::new(),
             menu_focus_check: None,
@@ -2486,6 +2505,10 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         }
         self.check_menu_focus();
         self.poll_remote(el);
+        self.poll_url_expansions();
+        for request in self.player.credential_requests() {
+            self.open_dialog(el, Box::new(crate::dialogs::LoginDialog::new(request)));
+        }
         if !self.dropped.is_empty() {
             self.handle_drop();
         }
