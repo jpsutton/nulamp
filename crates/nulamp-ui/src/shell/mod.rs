@@ -2569,6 +2569,10 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
             self.close_menus();
         }
         match event {
+            // Closing the library window (for example from the window manager) hides it.
+            WindowEvent::CloseRequested if self.kind_of(id) == Some(Kind::Library) => {
+                self.set_visible(Kind::Library, false);
+            }
             WindowEvent::CloseRequested => {
                 self.exit = true;
                 el.exit();

@@ -607,6 +607,16 @@ mod tests {
             } => assert_eq!(summary.count, total),
             other => panic!("{other:?}"),
         }
+        // An open-ended range reads to the end of the listing.
+        s.send(Request::Collect {
+            spec: spec.clone(),
+            ranges: vec![(0, usize::MAX)],
+            purpose: Purpose::Play,
+        });
+        match next(&s) {
+            Response::Collected { items, .. } => assert_eq!(items.len() as u64, total),
+            other => panic!("{other:?}"),
+        }
         s.send(Request::Collect {
             spec,
             ranges: vec![(0, 1), (2, 3)],

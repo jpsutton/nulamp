@@ -261,11 +261,13 @@ impl<P: PlayerHandle> Shell<P> {
                     self.library_act(ranges, p);
                 }
                 LibAction::All(p) => {
+                    // Before the first page arrived the size is unknown: the worker reads
+                    // until the listing ends.
                     let total = self
                         .library
                         .as_ref()
                         .and_then(|lib| lib.view.total)
-                        .unwrap_or(0);
+                        .unwrap_or(usize::MAX);
                     self.library_act(vec![(0, total)], p);
                 }
                 LibAction::ContextMenu { x, y } => {
