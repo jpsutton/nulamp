@@ -31,6 +31,8 @@ use crate::title;
 pub trait PlayerHandle {
     fn status(&self) -> PlayerStatus;
     fn command(&mut self, command: Command);
+    /// Called on every UI tick to process audio events.
+    fn tick(&mut self) {}
 }
 
 /// User-interface preferences (subset of 11 §1.3).
@@ -651,6 +653,7 @@ impl<P: PlayerHandle> Shell<P> {
     }
 
     fn poll_player(&mut self) {
+        self.player.tick();
         let s = self.player.status();
         let title_changed = s.title != self.last_status.title
             || s.position != self.last_status.position

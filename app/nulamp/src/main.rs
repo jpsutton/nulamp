@@ -1,15 +1,29 @@
 //! nulamp: a cross-platform player for classic skins.
 
-mod fake;
+mod player;
 
+use std::sync::Arc;
+
+use nulamp_audio::Player;
+use nulamp_core::Engine;
+use nulamp_decoders::Registry;
 use nulamp_skin::{Skin, SkinFiles, builtin};
 use nulamp_ui::{Shell, UiPrefs};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let skin = match std::env::args().nth(1) {
+    let mut skin_path = None;
+    let mut files = Vec::new();
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--skin" => skin_path = args.next(),
+            _ => files.push(a),
+        }
+    }
+    let skin = match skin_path {
         Some(path) => match SkinFiles::open(std::path::Path::new(&path)) {
-            Ok(files) => Skin::load(&files, &builtin::files()),
+            Ok(f) => Skin::load(&f, &builtin::files()),
             Err(e) => {
                 log::error!("cannot load skin {path}: {e}; using the built-in skin");
                 builtin::skin()
@@ -17,5 +31,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         None => builtin::skin(),
     };
-    Shell::new(fake::FakePlayer::new(), UiPrefs::default(), skin).run()
+    let registry = Arc::new(Registry::with_defaults());
+    let mut player = Player::new(Engine::default(), registry.clone());
+    let entries = player::expand(&files, &|ext| registry.is_supported_extension(ext));
+    let start = !entries.is_empty();
+    player.engine.append(entries);
+    if start {
+        player.command(nulamp_core::Command::Play);
+    }
+    Shell::new(player::AppPlayer { player }, UiPrefs::default(), skin).run()
 }
