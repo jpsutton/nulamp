@@ -7,6 +7,16 @@
 use nulamp_render::{Frame, blit};
 use nulamp_skin::{Skin, SkinBitmap};
 
+pub mod scrollbar;
+pub mod selection;
+pub mod table;
+pub mod tree;
+
+pub use scrollbar::{SCROLLBAR_W, ScrollBar, ScrollPart};
+pub use selection::Selection;
+pub use table::{Column, HeaderHit, Table, TableEvent};
+pub use tree::{TreeEvent, TreeRow, TreeView};
+
 /// Text measuring and drawing used by the widgets (1-bit only).
 pub trait UiText {
     fn line_height(&self) -> i32;

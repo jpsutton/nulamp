@@ -9,7 +9,7 @@ use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
 
 use crate::error::{Error, Result};
-use crate::model::{BrowseNode, NodeKind, Page, Track, TrackPage};
+use crate::model::{BrowseNode, NodeKind, Page, Track, TrackPage, TrackSummary};
 use crate::query::{Query, Sort, SortKey, fold};
 use crate::{enc_segment, split_id};
 
@@ -219,20 +219,7 @@ pub(crate) fn children(conn: &Connection, node: &BrowseNode) -> Result<Vec<Brows
                 out.push(BrowseNode::new(id, label, NodeKind::Year, false).with_count(count(n)));
             }
         }
-        Node::Playlists => {
-            for p in playlists(conn)? {
-                out.push(
-                    BrowseNode::new(
-                        format!("playlist/{}", p.id),
-                        p.name,
-                        NodeKind::Playlist,
-                        false,
-                    )
-                    .with_count(p.track_count)
-                    .with_sort(Sort::asc(SortKey::Position)),
-                );
-            }
-        }
+        Node::Playlists => out.extend(playlists(conn)?.into_iter().map(playlist_node)),
         Node::Recent
         | Node::MostPlayed
         | Node::NeverPlayed
@@ -243,6 +230,18 @@ pub(crate) fn children(conn: &Connection, node: &BrowseNode) -> Result<Vec<Brows
         | Node::Playlist(_) => {}
     }
     Ok(out)
+}
+
+/// The browse node of a stored playlist.
+pub(crate) fn playlist_node(p: crate::PlaylistInfo) -> BrowseNode {
+    BrowseNode::new(
+        format!("playlist/{}", p.id),
+        p.name,
+        NodeKind::Playlist,
+        false,
+    )
+    .with_count(p.track_count)
+    .with_sort(Sort::asc(SortKey::Position))
 }
 
 /// Every stored playlist, sorted by name.
@@ -297,27 +296,24 @@ fn to_i64(n: u64) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
 
-/// Tracks below `node` matching `query`.
-pub(crate) fn tracks(
-    conn: &Connection,
-    node: &BrowseNode,
-    query: &Query,
-    sort: Sort,
-    page: Page,
-) -> Result<TrackPage> {
-    let node = parse(&node.id)?;
+/// The `FROM` clause, `WHERE` filter and parameters that select the tracks below a node
+/// matching a query.
+struct Selection {
+    from: &'static str,
+    filter: String,
+    params: Vec<Value>,
+    playlist: bool,
+}
+
+/// `None` when the node has no tracks.
+fn select(node: &Node, query: &Query) -> Option<Selection> {
     let mut params = Vec::new();
     let mut clauses = Vec::new();
     let mut from = "tracks t";
     let mut playlist = false;
-    match scope(&node) {
+    match scope(node) {
         Scope::All => {}
-        Scope::Nothing => {
-            return Ok(TrackPage {
-                offset: page.offset,
-                ..TrackPage::default()
-            });
-        }
+        Scope::Nothing => return None,
         Scope::Where(sql, p) => {
             clauses.push(sql);
             params.extend(p);
@@ -334,6 +330,55 @@ pub(crate) fn tracks(
         String::new()
     } else {
         format!(" WHERE {}", clauses.join(" AND "))
+    };
+    Some(Selection {
+        from,
+        filter,
+        params,
+        playlist,
+    })
+}
+
+/// Number and total length of the tracks below `node` matching `query`.
+pub(crate) fn summary(conn: &Connection, node: &BrowseNode, query: &Query) -> Result<TrackSummary> {
+    let node = parse(&node.id)?;
+    let Some(sel) = select(&node, query) else {
+        return Ok(TrackSummary::default());
+    };
+    let (n, ms): (i64, i64) = conn.query_row(
+        &format!(
+            "SELECT COUNT(*), COALESCE(SUM(t.length_ms), 0) FROM {}{}",
+            sel.from, sel.filter
+        ),
+        params_from_iter(sel.params.iter()),
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok(TrackSummary {
+        count: count(n),
+        length_ms: count(ms),
+    })
+}
+
+/// Tracks below `node` matching `query`.
+pub(crate) fn tracks(
+    conn: &Connection,
+    node: &BrowseNode,
+    query: &Query,
+    sort: Sort,
+    page: Page,
+) -> Result<TrackPage> {
+    let node = parse(&node.id)?;
+    let Some(Selection {
+        from,
+        filter,
+        mut params,
+        playlist,
+    }) = select(&node, query)
+    else {
+        return Ok(TrackPage {
+            offset: page.offset,
+            ..TrackPage::default()
+        });
     };
     let total: i64 = conn.query_row(
         &format!("SELECT COUNT(*) FROM {from}{filter}"),

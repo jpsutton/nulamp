@@ -35,6 +35,16 @@ pub enum DialogResult {
     },
     /// An action on the n-th module of the plugin list.
     Plugin(usize, crate::plugins_dialog::PluginAction),
+    /// Re-index the media library's watch folders now.
+    LibraryRescan,
+    /// The user confirmed removing tracks from the media library.
+    LibraryRemove(Vec<nulamp_library::TrackId>),
+    /// Create a library playlist with these tracks.
+    LibraryNewPlaylist {
+        provider: String,
+        name: String,
+        tracks: Vec<nulamp_library::TrackId>,
+    },
 }
 
 pub enum Outcome {
@@ -880,19 +890,42 @@ impl Dialog for FileInfoDialog {
 
 pub struct ConfirmDialog {
     form: Form,
-    files: Vec<String>,
+    /// What OK does.
+    on_ok: DialogResult,
 }
 
 impl ConfirmDialog {
     /// Asks before moving files to the trash (04 §9).
     pub fn delete_files(files: Vec<String>) -> Self {
+        let question = format!("Move {} file(s) to the trash?", files.len());
+        Self::new(
+            &question,
+            &files,
+            "Delete",
+            DialogResult::DeleteFiles(files.clone()),
+        )
+    }
+
+    /// Asks before removing tracks from the media library (the files stay).
+    pub fn remove_from_library(titles: &[String], ids: Vec<nulamp_library::TrackId>) -> Self {
+        let question = format!(
+            "Remove {} track(s) from the library?\nThe files stay on disk.",
+            ids.len()
+        );
+        Self::new(
+            &question,
+            titles,
+            "Remove",
+            DialogResult::LibraryRemove(ids),
+        )
+    }
+
+    fn new(question: &str, items: &[String], ok: &str, on_ok: DialogResult) -> Self {
         let w = cw(375);
-        let mut lines = vec![
-            format!("Move {} file(s) to the trash?", files.len()),
-            String::new(),
-        ];
-        lines.extend(files.iter().take(6).cloned());
-        if files.len() > 6 {
+        let mut lines: Vec<String> = question.lines().map(str::to_string).collect();
+        lines.push(String::new());
+        lines.extend(items.iter().take(6).cloned());
+        if items.len() > 6 {
             lines.push("…".into());
         }
         let form = Form::new(vec![
@@ -904,7 +937,7 @@ impl ConfirmDialog {
             Widget::Button {
                 rect: Rect::new(w - 128, 130, 58, 18),
                 id: OK,
-                label: "Delete".into(),
+                label: ok.into(),
                 default: false,
             },
             Widget::Button {
@@ -914,7 +947,7 @@ impl ConfirmDialog {
                 default: true,
             },
         ]);
-        let mut d = Self { form, files };
+        let mut d = Self { form, on_ok };
         d.form.focus_id(CANCEL);
         d
     }
@@ -939,9 +972,7 @@ impl Dialog for ConfirmDialog {
 
     fn handle(&mut self, ev: FormEvent) -> Outcome {
         match ev {
-            FormEvent::Clicked(OK) => {
-                Outcome::Do(vec![DialogResult::DeleteFiles(self.files.clone())], true)
-            }
+            FormEvent::Clicked(OK) => Outcome::Do(vec![self.on_ok.clone()], true),
             FormEvent::Clicked(CANCEL) | FormEvent::Cancel | FormEvent::Submit => Outcome::Close,
             _ => Outcome::Keep,
         }
@@ -1264,9 +1295,120 @@ impl Dialog for PresetSaveDialog {
     }
 }
 
+// ----- New library playlist -----
+
+/// Asks for the name of a new media-library playlist for some tracks.
+pub struct LibraryPlaylistDialog {
+    form: Form,
+    provider: String,
+    tracks: Vec<nulamp_library::TrackId>,
+}
+
+impl LibraryPlaylistDialog {
+    pub fn new(provider: String, tracks: Vec<nulamp_library::TrackId>) -> Self {
+        let w = cw(375);
+        let mut form = Form::new(vec![
+            Widget::Label {
+                rect: Rect::new(6, 6, w - 12, 14),
+                text: format!("Name of the new playlist ({} tracks):", tracks.len()),
+            },
+            Widget::Edit {
+                rect: Rect::new(6, 24, w - 12, 18),
+                id: EDIT,
+                text: String::new(),
+                cursor: 0,
+                secret: false,
+            },
+            Widget::Button {
+                rect: Rect::new(w - 128, 52, 58, 18),
+                id: OK,
+                label: "Create".into(),
+                default: true,
+            },
+            Widget::Button {
+                rect: Rect::new(w - 64, 52, 58, 18),
+                id: CANCEL,
+                label: "Cancel".into(),
+                default: false,
+            },
+        ]);
+        form.focus_id(EDIT);
+        Self {
+            form,
+            provider,
+            tracks,
+        }
+    }
+}
+
+impl Dialog for LibraryPlaylistDialog {
+    fn title(&self) -> String {
+        "New playlist".into()
+    }
+
+    fn size(&self) -> (i32, i32) {
+        (375, 116)
+    }
+
+    fn form(&mut self) -> &mut Form {
+        &mut self.form
+    }
+
+    fn kind(&self) -> &'static str {
+        "libplaylist"
+    }
+
+    fn handle(&mut self, ev: FormEvent) -> Outcome {
+        match ev {
+            FormEvent::Clicked(OK) | FormEvent::Submit => {
+                let name = self.form.text(EDIT).trim().to_string();
+                if name.is_empty() {
+                    return Outcome::Keep;
+                }
+                Outcome::Do(
+                    vec![DialogResult::LibraryNewPlaylist {
+                        provider: self.provider.clone(),
+                        name,
+                        tracks: self.tracks.clone(),
+                    }],
+                    true,
+                )
+            }
+            FormEvent::Clicked(CANCEL) | FormEvent::Cancel => Outcome::Close,
+            _ => Outcome::Keep,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn library_dialogs() {
+        let ids = vec![nulamp_library::TrackId::new("local", "7")];
+        let mut d = ConfirmDialog::remove_from_library(&["Song".into()], ids.clone());
+        match d.handle(FormEvent::Clicked(OK)) {
+            Outcome::Do(r, true) => {
+                assert!(matches!(&r[..], [DialogResult::LibraryRemove(x)] if *x == ids))
+            }
+            _ => panic!("expected the removal"),
+        }
+        assert!(matches!(d.handle(FormEvent::Submit), Outcome::Close));
+        let mut p = LibraryPlaylistDialog::new("local".into(), ids.clone());
+        assert!(matches!(p.handle(FormEvent::Submit), Outcome::Keep));
+        p.form().text_input(" Road trip ");
+        match p.handle(FormEvent::Submit) {
+            Outcome::Do(r, true) => match &r[..] {
+                [DialogResult::LibraryNewPlaylist { name, tracks, .. }] => {
+                    assert_eq!(name, "Road trip");
+                    assert_eq!(tracks, &ids);
+                }
+                _ => panic!(),
+            },
+            _ => panic!("expected a new playlist"),
+        }
+    }
 
     fn login() -> (
         LoginDialog,

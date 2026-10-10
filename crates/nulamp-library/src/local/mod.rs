@@ -22,7 +22,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::error::{Error, Result};
 use crate::model::{
     BrowseNode, Capabilities, LibraryEvent, Page, PlaybackLocation, PlaylistInfo, ScanSummary,
-    Track, TrackId, TrackPage,
+    Track, TrackId, TrackPage, TrackSummary,
 };
 use crate::provider::{LibraryProvider, Subscribers};
 use crate::query::{Query, Sort};
@@ -378,6 +378,7 @@ impl LibraryProvider for LocalLibrary {
             | Capabilities::PLAYLISTS
             | Capabilities::ARTWORK
             | Capabilities::RATING_DB_ONLY
+            | Capabilities::REMOVE
     }
 
     fn browse(&self, node: &BrowseNode) -> Result<Vec<BrowseNode>> {
@@ -394,8 +395,39 @@ impl LibraryProvider for LocalLibrary {
         browse::tracks(&self.conn(), node, query, sort, page)
     }
 
+    fn summary(&self, node: &BrowseNode, query: &Query) -> Result<TrackSummary> {
+        browse::summary(&self.conn(), node, query)
+    }
+
     fn track(&self, id: &TrackId) -> Result<Option<Track>> {
         browse::track(&self.conn(), Self::row_id(id)?)
+    }
+
+    /// Deletes the index rows (and their playlist entries). The files stay; a later scan
+    /// adds them again while they are under a watch folder.
+    fn remove_tracks(&self, ids: &[TrackId]) -> Result<u64> {
+        let rows = ids.iter().map(Self::row_id).collect::<Result<Vec<_>>>()?;
+        let removed = {
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            let mut removed = 0;
+            for rid in rows {
+                let exists: Option<i64> = tx
+                    .query_row("SELECT id FROM tracks WHERE id = ?", [rid], |r| r.get(0))
+                    .optional()?;
+                if exists.is_some() {
+                    db::delete_track(&tx, rid)?;
+                    removed += 1;
+                }
+            }
+            tx.commit()?;
+            removed
+        };
+        if removed > 0 {
+            self.notify(LibraryEvent::TracksChanged);
+            self.notify(LibraryEvent::PlaylistsChanged);
+        }
+        Ok(removed)
     }
 
     fn resolve_playback(&self, id: &TrackId) -> Result<PlaybackLocation> {
@@ -508,6 +540,15 @@ impl LibraryProvider for LocalLibrary {
 
     fn playlists(&self) -> Result<Vec<PlaylistInfo>> {
         browse::playlists(&self.conn())
+    }
+
+    fn playlist_node(&self, id: &str) -> Result<BrowseNode> {
+        let pid = Self::playlist_id(id)?.to_string();
+        browse::playlists(&self.conn())?
+            .into_iter()
+            .find(|p| p.id == pid)
+            .map(browse::playlist_node)
+            .ok_or_else(|| Error::NotFound(format!("playlist `{id}`")))
     }
 
     fn create_playlist(&self, name: &str) -> Result<PlaylistInfo> {

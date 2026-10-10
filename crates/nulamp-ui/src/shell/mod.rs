@@ -22,6 +22,7 @@ use winit::window::{Cursor, CursorIcon, CustomCursor, Window, WindowId, WindowLe
 
 mod dialog_host;
 mod dialogs;
+mod library_host;
 mod popup;
 mod remote;
 
@@ -167,6 +168,35 @@ pub struct UiPrefs {
     pub show_tray: bool,
     /// Global hotkeys (11 §5).
     pub hotkeys: nulamp_remote::HotkeySettings,
+    /// Media-library window position, size and visibility.
+    pub lib_pos: (i32, i32),
+    pub lib_size: (i32, i32),
+    pub lib_visible: bool,
+    /// Width of the library's tree pane.
+    pub lib_tree_w: i32,
+    /// Widths of the library's list columns (empty: defaults).
+    pub lib_columns: Vec<i32>,
+    pub library: LibraryPrefs,
+}
+
+/// Media-library options (preferences page "Media Library").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryPrefs {
+    /// Watch folders: (path, include subfolders).
+    pub folders: Vec<(String, bool)>,
+    pub rescan_on_start: bool,
+    /// Follow file changes in the watch folders while running.
+    pub watch: bool,
+}
+
+impl Default for LibraryPrefs {
+    fn default() -> Self {
+        Self {
+            folders: Vec::new(),
+            rescan_on_start: true,
+            watch: true,
+        }
+    }
 }
 
 impl Default for UiPrefs {
@@ -221,6 +251,13 @@ impl Default for UiPrefs {
             gapless_albums: true,
             show_tray: false,
             hotkeys: nulamp_remote::HotkeySettings::default(),
+            // Right of the default main/equalizer/playlist stack, as tall as the stack.
+            lib_pos: (301, 29),
+            lib_size: crate::library::window::DEFAULT_SIZE,
+            lib_visible: false,
+            lib_tree_w: crate::library::window::DEFAULT_TREE_W,
+            lib_columns: Vec::new(),
+            library: LibraryPrefs::default(),
         }
     }
 }
@@ -235,6 +272,8 @@ pub enum Kind {
     Main,
     Equalizer,
     Playlist,
+    /// The media library (a generic window, 05 §1).
+    Library,
 }
 
 struct Win {
@@ -314,6 +353,8 @@ pub struct Shell<P: PlayerHandle> {
     last_marquee_step: u64,
     last_blink: u64,
     exit: bool,
+    /// The media library, when the application provides one.
+    library: Option<library_host::LibraryHost>,
 }
 
 impl<P: PlayerHandle> Shell<P> {
@@ -386,6 +427,7 @@ impl<P: PlayerHandle> Shell<P> {
             last_marquee_step: 0,
             last_blink: 0,
             exit: false,
+            library: None,
         }
     }
 
@@ -413,6 +455,14 @@ impl<P: PlayerHandle> Shell<P> {
         }
         if let Some(p) = pos(Kind::Playlist) {
             self.prefs.pl_pos = p;
+        }
+        if let Some(p) = pos(Kind::Library) {
+            self.prefs.lib_pos = p;
+        }
+        if let Some(lib) = &self.library {
+            self.prefs.lib_size = (lib.win.w, lib.win.h);
+            self.prefs.lib_tree_w = lib.win.tree_w;
+            self.prefs.lib_columns = lib.win.column_widths();
         }
         self.prefs.pl_size = (
             self.pl.w,
@@ -446,7 +496,8 @@ impl<P: PlayerHandle> Shell<P> {
         let doubled = match kind {
             Kind::Main => self.prefs.double_size,
             Kind::Equalizer => self.prefs.double_size && self.prefs.eq_double,
-            Kind::Playlist => false,
+            // Generic windows are never doubled (05 §1.4).
+            Kind::Playlist | Kind::Library => false,
         };
         if doubled { 2 } else { 1 }
     }
@@ -461,6 +512,10 @@ impl<P: PlayerHandle> Shell<P> {
                 self.pl.w as u32,
                 if self.pl.shade { 14 } else { self.pl.h as u32 },
             ),
+            Kind::Library => match &self.library {
+                Some(lib) => (lib.win.w as u32, lib.win.h as u32),
+                None => (275, 116),
+            },
         };
         let s = self.scale_of(kind);
         (w as i32 * s, h as i32 * s)
@@ -473,6 +528,7 @@ impl<P: PlayerHandle> Shell<P> {
             Kind::Main => APP_NAME.to_string(),
             Kind::Equalizer => format!("{APP_NAME} Equalizer"),
             Kind::Playlist => format!("{APP_NAME} Playlist Editor"),
+            Kind::Library => format!("{APP_NAME} {}", crate::library::window::TITLE),
         };
         let mut attrs = Window::default_attributes()
             .with_title(title)
@@ -721,6 +777,7 @@ impl<P: PlayerHandle> Shell<P> {
             }
             Kind::Equalizer => scale(&ew::draw_eq(&self.skin, &self.eq_view()), s),
             Kind::Playlist => self.draw_playlist(),
+            Kind::Library => self.draw_library(),
         };
         let mask = self.shape_for(kind, &frame);
         let Some(w) = self.windows.get_mut(&id) else {
@@ -743,7 +800,7 @@ impl<P: PlayerHandle> Shell<P> {
             Kind::Main => r.normal.as_ref(),
             Kind::Equalizer if self.prefs.eq_shade => r.equalizer_ws.as_ref(),
             Kind::Equalizer => r.equalizer.as_ref(),
-            Kind::Playlist => None,
+            Kind::Playlist | Kind::Library => None,
         }?;
         Some(region::rasterize(
             polys,
@@ -838,6 +895,7 @@ impl<P: PlayerHandle> Shell<P> {
         match kind {
             Kind::Equalizer => self.prefs.eq_visible = visible,
             Kind::Playlist => self.prefs.pl_visible = visible,
+            Kind::Library => self.prefs.lib_visible = visible,
             Kind::Main => {}
         }
         self.request_redraw(Kind::Main);
@@ -1049,6 +1107,13 @@ impl<P: PlayerHandle> Shell<P> {
                 let v = !self.is_visible(Kind::Playlist);
                 self.set_visible(Kind::Playlist, v);
             }
+            Action::ToggleLibraryWindow if self.library.is_some() => {
+                let v = !self.is_visible(Kind::Library);
+                self.set_visible(Kind::Library, v);
+                if v && let Some(&lid) = self.ids.get(&Kind::Library) {
+                    self.windows[&lid].window.focus_window();
+                }
+            }
             Action::Menu { kind, x, y } => {
                 let target = if self.kind_of(id) == Some(Kind::Main) {
                     id
@@ -1111,6 +1176,8 @@ impl<P: PlayerHandle> Shell<P> {
             }
             Action::ToggleShade => match self.kind_of(id) {
                 Some(Kind::Playlist) => self.toggle_pl_shade(),
+                // Generic windows have no windowshade mode.
+                Some(Kind::Library) => {}
                 Some(Kind::Equalizer) => {
                     self.prefs.eq_shade = !self.prefs.eq_shade;
                     self.resize_window(Kind::Equalizer);
@@ -1248,13 +1315,8 @@ impl<P: PlayerHandle> Shell<P> {
                     .and_then(|id| self.windows.get(id))
                     .map(|w| w.cursor)
                     .unwrap_or((0, 0));
-                let n = self.player.engine().playlist.len();
-                let row = if self.pl.shade || y < 20 {
-                    n
-                } else {
-                    ((y - 20).max(0) / self.pl.row_h.max(1)) as usize + self.pl.first
-                };
-                self.player.engine_mut().insert(row.min(n), entries);
+                let row = self.pl_drop_row(y);
+                self.player.engine_mut().insert(row, entries);
                 let n = self.player.engine().playlist.len();
                 self.pl.clamp_scroll(n);
             }
@@ -1262,6 +1324,18 @@ impl<P: PlayerHandle> Shell<P> {
         }
         self.poll_player();
         self.request_redraw_all();
+    }
+
+    /// The playlist position for items dropped at playlist-window y (04 §7.4): the row
+    /// under the pointer, or the end.
+    fn pl_drop_row(&self, y: i32) -> usize {
+        let n = self.player.engine().playlist.len();
+        let row = if self.pl.shade || y < 20 {
+            n
+        } else {
+            ((y - 20).max(0) / self.pl.row_h.max(1)) as usize + self.pl.first
+        };
+        row.min(n)
     }
 
     fn bookmarks_path(&self) -> std::path::PathBuf {
@@ -1406,10 +1480,16 @@ impl<P: PlayerHandle> Shell<P> {
         let eq_double_changed = prefs.eq_double != self.prefs.eq_double;
         // Keep window-owned state that the dialog does not edit.
         let keep = self.prefs.clone();
+        self.library_prefs_changed(&keep.library, &prefs.library);
         self.prefs = UiPrefs {
             main_pos: keep.main_pos,
             eq_pos: keep.eq_pos,
             pl_pos: keep.pl_pos,
+            lib_pos: keep.lib_pos,
+            lib_size: keep.lib_size,
+            lib_visible: keep.lib_visible,
+            lib_tree_w: keep.lib_tree_w,
+            lib_columns: keep.lib_columns,
             eq_visible: keep.eq_visible,
             pl_visible: keep.pl_visible,
             double_size: keep.double_size,
@@ -1480,7 +1560,7 @@ impl<P: PlayerHandle> Shell<P> {
             }
             return;
         }
-        self.hidden_to_tray = [Kind::Main, Kind::Equalizer, Kind::Playlist]
+        self.hidden_to_tray = [Kind::Main, Kind::Equalizer, Kind::Playlist, Kind::Library]
             .into_iter()
             .filter(|k| self.is_visible(*k))
             .collect();
@@ -1816,6 +1896,7 @@ impl<P: PlayerHandle> Shell<P> {
             && (self.last_status.state == PlayState::Stopped
                 || s.position != self.last_status.position);
         self.last_status = s;
+        self.track_library_play();
         if title_changed {
             self.refresh_title();
         }
@@ -1832,6 +1913,13 @@ impl<P: PlayerHandle> Shell<P> {
             Kind::Main => main_input::cursor(x, y, self.prefs.shade),
             Kind::Equalizer => eq_cursor(x, y, self.prefs.eq_shade),
             Kind::Playlist => pl_cursor(x, y, self.pl.w, self.pl.h, self.pl.shade),
+            // Generic-window cursors (05 §1.4).
+            Kind::Library => match &self.library {
+                Some(lib) if lib.win.in_close(x, y) => CursorRole::PClose,
+                Some(_) if y < 14 => CursorRole::PtBar,
+                Some(lib) if lib.win.in_grip(x, y) => CursorRole::PSize,
+                _ => CursorRole::PNormal,
+            },
         })
     }
 
@@ -1887,6 +1975,13 @@ impl<P: PlayerHandle> Shell<P> {
             return;
         };
         log::debug!("mouse {button:?} {state:?} on {kind:?} at ({x},{y})");
+        if kind == Kind::Library {
+            if (button, state) == (MouseButton::Left, ElementState::Released) {
+                self.drag = None;
+            }
+            self.library_mouse(id, state, button, x, y, el);
+            return;
+        }
         let mods = self.mods;
         let now = self.now_ms();
         match (button, state) {
@@ -1931,6 +2026,7 @@ impl<P: PlayerHandle> Shell<P> {
                         };
                         self.handle_pl_actions(id, actions, el);
                     }
+                    Kind::Library => {}
                 }
             }
             (MouseButton::Left, ElementState::Released) => {
@@ -1949,6 +2045,7 @@ impl<P: PlayerHandle> Shell<P> {
                         let actions = self.pl.mouse_up(x, y, mods, self.player.engine_mut());
                         self.handle_pl_actions(id, actions, el);
                     }
+                    Kind::Library => {}
                 }
             }
             (MouseButton::Right, ElementState::Pressed) => match kind {
@@ -1967,6 +2064,7 @@ impl<P: PlayerHandle> Shell<P> {
                     let actions = self.pl.right_click(x, y, mods, self.player.engine_mut());
                     self.handle_pl_actions(id, actions, el);
                 }
+                Kind::Library => {}
             },
             (MouseButton::Middle, st) => self.middle_held = st == ElementState::Pressed,
             _ => {}
@@ -2005,6 +2103,7 @@ impl<P: PlayerHandle> Shell<P> {
                     self.handle_pl_actions(id, acts, el);
                 }
             }
+            Kind::Library => self.library_mouse_move(id, x, y, el),
         }
         self.update_cursor(id, el);
     }
@@ -2044,11 +2143,15 @@ impl<P: PlayerHandle> Shell<P> {
                 return;
             }
         }
+        if kind == Kind::Library && self.library_key(id, code, event.text.as_deref(), el) {
+            return;
+        }
         let playing = self.last_status.state == PlayState::Playing;
         let focus = match kind {
             Kind::Main => Focus::Main,
             Kind::Equalizer => Focus::Equalizer,
             Kind::Playlist => Focus::Playlist,
+            Kind::Library => Focus::Other,
         };
         if let Some(k) = keys::resolve(focus, code, self.mods, playing) {
             self.key_action(id, k, el);
@@ -2116,15 +2219,10 @@ impl<P: PlayerHandle> Shell<P> {
                 self.open_dialog(el, Box::new(d));
             }
             KeyAction::Preferences => {
-                let pl = crate::prefs_dialog::PlaylistOptions {
-                    show_numbers: self.pl.show_numbers,
-                    zero_pad: self.pl.zero_pad,
-                    bitmap_font: self.pl.bitmap_font,
-                    page_lines: self.pl.page_lines,
-                    wheel_double: self.pl.wheel_double,
-                    old_school_buttons: self.pl.old_school_buttons,
-                };
-                let d = crate::prefs_dialog::PrefsDialog::new(self.prefs.clone(), pl);
+                let d = crate::prefs_dialog::PrefsDialog::new(
+                    self.prefs.clone(),
+                    self.playlist_options(),
+                );
                 self.open_dialog(el, Box::new(d));
             }
             KeyAction::BookmarkCurrent => {
@@ -2147,6 +2245,18 @@ impl<P: PlayerHandle> Shell<P> {
             other => log::info!("key action not implemented yet: {other:?}"),
         }
         self.request_redraw_all();
+    }
+
+    /// Playlist options edited by the preferences dialog.
+    fn playlist_options(&self) -> crate::prefs_dialog::PlaylistOptions {
+        crate::prefs_dialog::PlaylistOptions {
+            show_numbers: self.pl.show_numbers,
+            zero_pad: self.pl.zero_pad,
+            bitmap_font: self.pl.bitmap_font,
+            page_lines: self.pl.page_lines,
+            wheel_double: self.pl.wheel_double,
+            old_school_buttons: self.pl.old_school_buttons,
+        }
     }
 
     /// Loads a skin (or the built-in one) and redraws everything (01 §3).
@@ -2241,6 +2351,11 @@ impl<P: PlayerHandle> Shell<P> {
         }
         self.wheel_accum += notches;
         let whole = self.wheel_accum.trunc() as i32;
+        if whole != 0 && self.kind_of(id) == Some(Kind::Library) {
+            self.wheel_accum -= whole as f32;
+            self.library_wheel(whole);
+            return;
+        }
         if whole != 0 && self.kind_of(id) == Some(Kind::Playlist) {
             self.wheel_accum -= whole as f32;
             let middle = self.middle_held;
@@ -2432,6 +2547,9 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         }
         self.apply_hotkeys();
         self.update_pl_font();
+        if self.library.is_some() {
+            self.create_window(el, Kind::Library, p.lib_pos, p.lib_visible);
+        }
         self.create_window(el, Kind::Playlist, p.pl_pos, p.pl_visible);
         self.create_window(el, Kind::Equalizer, p.eq_pos, p.eq_visible);
         self.create_window(el, Kind::Main, p.main_pos, true);
@@ -2454,6 +2572,15 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
                         Box::new(crate::plugins_dialog::PluginsDialog::new(rows, errors)),
                     );
                 }
+                "library" if self.library.is_some() => self.set_visible(Kind::Library, true),
+                "libprefs" => {
+                    let d = crate::prefs_dialog::PrefsDialog::new(
+                        self.prefs.clone(),
+                        self.playlist_options(),
+                    )
+                    .with_page("Media Library");
+                    self.open_dialog(el, Box::new(d));
+                }
                 _ => {}
             }
         }
@@ -2473,6 +2600,10 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
             self.close_menus();
         }
         match event {
+            // Closing the library window (for example from the window manager) hides it.
+            WindowEvent::CloseRequested if self.kind_of(id) == Some(Kind::Library) => {
+                self.set_visible(Kind::Library, false);
+            }
             WindowEvent::CloseRequested => {
                 self.exit = true;
                 el.exit();
@@ -2550,6 +2681,9 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
             && let Some(&id) = self.ids.get(&kind)
         {
             self.open_items_at(el, id, items, x, y);
+        }
+        if self.library_poll(el) {
+            self.request_redraw(Kind::Library);
         }
         let now = self.now_ms();
         let before = self.last_status.clone();

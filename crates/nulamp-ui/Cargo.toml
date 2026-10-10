@@ -12,6 +12,7 @@ global-hotkey = "0.8"
 log = "0.4.34"
 nulamp-core = { version = "0.1.0", path = "../nulamp-core" }
 nulamp-eq = { version = "0.1.0", path = "../nulamp-eq" }
+nulamp-library = { version = "0.1.0", path = "../nulamp-library" }
 nulamp-meta = { version = "0.1.0", path = "../nulamp-meta" }
 nulamp-pixelfont = { version = "0.1.0", path = "../nulamp-pixelfont" }
 nulamp-playlist = { version = "0.1.0", path = "../nulamp-playlist" }

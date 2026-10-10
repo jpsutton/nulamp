@@ -58,6 +58,8 @@ pub enum MenuCmd {
     /// Play an audio CD (whole-disc location).
     PlayCd(String),
     Plugins,
+    /// Media-library menus.
+    Lib(crate::library::LibCmd),
     None,
 }
 

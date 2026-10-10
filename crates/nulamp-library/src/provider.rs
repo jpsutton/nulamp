@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use crate::error::{Error, Result};
 use crate::model::{
     BrowseNode, Capabilities, LibraryEvent, Page, PlaybackLocation, PlaylistInfo, Track, TrackId,
-    TrackPage,
+    TrackPage, TrackSummary,
 };
 use crate::query::{Query, Sort};
 
@@ -35,6 +35,17 @@ pub trait LibraryProvider: Send + Sync {
     /// Tracks of the whole library that match `query`.
     fn search(&self, query: &Query, sort: Sort, page: Page) -> Result<TrackPage> {
         self.tracks(&BrowseNode::root(), query, sort, page)
+    }
+
+    /// Number and total length of the tracks below `node` that match `query` (for a status
+    /// line). The default lists every matching track; providers override it with a cheaper
+    /// query.
+    fn summary(&self, node: &BrowseNode, query: &Query) -> Result<TrackSummary> {
+        let page = self.tracks(node, query, Sort::default(), Page::all())?;
+        Ok(TrackSummary {
+            count: page.total,
+            length_ms: page.tracks.iter().map(|t| t.length_ms).sum(),
+        })
     }
 
     /// One track, `None` when it no longer exists.
@@ -66,6 +77,12 @@ pub trait LibraryProvider: Send + Sync {
         Err(Error::Unsupported)
     }
 
+    /// Removes tracks from the library without touching their files
+    /// ([`Capabilities::REMOVE`]). Returns how many were removed; unknown ids are skipped.
+    fn remove_tracks(&self, _ids: &[TrackId]) -> Result<u64> {
+        Err(Error::Unsupported)
+    }
+
     /// Changes tag fields (spec 10 §7.1 keys; `None` deletes) ([`Capabilities::EDIT_TAGS`]).
     fn edit_tags(&self, _id: &TrackId, _changes: &[(String, Option<String>)]) -> Result<()> {
         Err(Error::Unsupported)
@@ -73,6 +90,11 @@ pub trait LibraryProvider: Send + Sync {
 
     /// Stored playlists ([`Capabilities::PLAYLISTS`]).
     fn playlists(&self) -> Result<Vec<PlaylistInfo>> {
+        Err(Error::Unsupported)
+    }
+
+    /// The browse node that lists a stored playlist's tracks (in playlist order).
+    fn playlist_node(&self, _id: &str) -> Result<BrowseNode> {
         Err(Error::Unsupported)
     }
 

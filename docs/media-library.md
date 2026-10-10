@@ -20,16 +20,18 @@ Every provider offers the same browse tree, track listing, search, playback reso
 | Method | Purpose |
 |---|---|
 | `id()`, `name()` | Stable id (used in `TrackId::provider`) and display name |
-| `capabilities()` | Flags: `SCAN`, `WRITE_RATING`, `RECORD_PLAY`, `EDIT_TAGS`, `PLAYLISTS`, `ARTWORK`, `REMOTE`, `RATING_DB_ONLY` |
+| `capabilities()` | Flags: `SCAN`, `WRITE_RATING`, `RECORD_PLAY`, `EDIT_TAGS`, `PLAYLISTS`, `ARTWORK`, `REMOTE`, `RATING_DB_ONLY`, `REMOVE` |
 | `browse(&BrowseNode)` | Children of a node; `BrowseNode::root()` gives the top level |
 | `tracks(&BrowseNode, &Query, Sort, Page)` | Tracks below a node that match a query, sorted and paged |
 | `search(&Query, Sort, Page)` | `tracks` on the root |
+| `summary(&BrowseNode, &Query)` | `TrackSummary { count, length_ms }` of a listing over all pages (status lines). The default lists every track; the local provider runs one `COUNT`/`SUM` query |
 | `track(&TrackId)` | One track, `None` when gone |
 | `resolve_playback(&TrackId)` | `PlaybackLocation { location, headers }`: a file path, or a URL plus HTTP headers such as `Authorization` |
 | `artwork(&TrackId)` | `(mime, bytes)` of the cover |
 | `rescan()` | Start re-indexing (`SCAN`) |
 | `set_rating`, `record_play`, `edit_tags` | Optional writes |
-| `playlists`, `create_playlist`, `rename_playlist`, `delete_playlist`, `set_playlist_tracks` | Optional playlist storage |
+| `remove_tracks(&[TrackId])` | Optional (`REMOVE`): drop tracks from the index; files stay |
+| `playlists`, `playlist_node`, `create_playlist`, `rename_playlist`, `delete_playlist`, `set_playlist_tracks` | Optional playlist storage; `playlist_node(id)` gives the node that lists a playlist in order |
 | `subscribe()` | A `Receiver<LibraryEvent>`: `TracksChanged`, `PlaylistsChanged`, `ScanProgress { done, total }`, `ScanFinished(ScanSummary)` |
 
 Optional methods return `Error::Unsupported` by default. `Subscribers` is a small helper that fans events out to every receiver and forgets dropped ones.
@@ -118,6 +120,7 @@ The FTS row is rewritten by the same statements that write the track row, inside
 - `record_play` adds one to the play count and sets the last-played time. The rule for whether a play counts is `should_count_play(played_ms, length_ms)`: at least half the track or at least 240 seconds (only the 240-second rule when the length is unknown).
 - `set_rating` stores 0–5 stars in the database only (`RATING_DB_ONLY`); the app may also write the tag. A new track takes the rating from its tag; a rescan replaces the stored rating only when the tag's rating changed.
 - `edit_tags` writes the file with `nulamp_meta::write` and re-reads it into the index.
+- `remove_tracks` deletes index rows and their playlist entries; the files are not touched, so a later scan adds a file again while a watch folder covers it.
 - `artwork` returns the embedded front cover, else a folder image named `cover`, `folder` or `front` (`.jpg`, `.jpeg`, `.png`).
 - `track_id_for_path` maps a playlist entry's file to its library track, for example to record a play.
 
@@ -161,3 +164,22 @@ The trait was shaped so that streaming servers map onto it directly; `MockProvid
 | `subscribe` | Server websocket or polling | Polling |
 
 Track ids are the server's item ids; `TrackId::provider` names the server account so several servers can be registered side by side. Servers search words rather than substrings, so a remote provider sends the free-text tokens to the server and applies field terms it cannot express with `Term::matches` on the results; `Sort::compare` sorts locally when the server cannot. Credentials and tokens belong to the provider's configuration and never appear in `Track::location`, only in `PlaybackLocation`.
+
+## 10. User interface
+
+The window and its wiring live in `crates/nulamp-ui/src/library/` and `shell/library_host.rs`; choices are the `MLUI*` rows in `decisions.md`.
+
+```
+app ── MediaLibrary { registry, local } ──► Shell::with_library
+                                             │
+          LibraryWindow ◄──► LibraryView ──► LibraryService (worker thread) ──► providers
+          (widgets, input)   (tree, pages,      ▲ requests / responses polled every tick
+                              search, status)   └── provider events (one forwarding thread each)
+```
+
+- **Worker.** `LibraryService` runs every provider call on one thread. The view queues `Request`s (browse, a page of tracks, the summary, collecting the selected rows for an action, ratings, removal, scans, watch folders, plays) and the shell feeds `Response`s back on each tick. Listing requests carry a generation; the worker skips those older than the current one.
+- **View.** `LibraryView` keeps the provider tree (children load on first expansion), the listing of the selected node in 200-row pages fetched around the visible rows (24 pages kept), the search box (applied 250 ms after typing stops) and the status line (track count and total time from `summary`, scan progress, messages). Provider change events reload the tree and the listing in place, at most once a second.
+- **Window.** `LibraryWindow` is a generic skinned window (05 §1): search box, tree (`nulamp_skinui::TreeView`) and track list (`nulamp_skinui::Table`: sortable, resizable columns, multi-selection, vertical and horizontal `ScrollBar`s) with a movable splitter, Play/Enqueue buttons and the status line. All text is 1-bit (`PixelText`).
+- **Actions.** Play (replace the playlist), Enqueue (append), Play next (append and queue first), Insert (drag onto the playlist window), rate, file info, show in folder, add to a library playlist and remove from the library collect the selected rows through the worker first, so they work on rows that were never loaded.
+- **Plays.** `PlayTracker` follows the heard entry and its listening time; when it ends or is skipped the worker maps the file with `track_id_for_path` and calls `Registry::finish_play`.
+- **Settings.** Window geometry (`lib_*`) and the options of the preferences page "Media Library" (`library_folders`, `library_rescan_on_start`, `library_watch`) are stored in `nulamp.ini`.

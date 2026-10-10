@@ -22,6 +22,18 @@ fn mock_provider_through_the_trait() {
     let caps = p.capabilities();
     assert!(caps.contains(Capabilities::REMOTE));
     assert!(!caps.contains(Capabilities::PLAYLISTS));
+    assert!(!caps.contains(Capabilities::REMOVE));
+    assert!(matches!(p.remove_tracks(&[]), Err(Error::Unsupported)));
+    // The default summary lists every track.
+    let everything = p
+        .search(&Query::all(), Sort::default(), Page::all())
+        .unwrap();
+    let summary = p.summary(&BrowseNode::root(), &Query::all()).unwrap();
+    assert_eq!(summary.count, everything.total);
+    assert_eq!(
+        summary.length_ms,
+        everything.tracks.iter().map(|t| t.length_ms).sum::<u64>()
+    );
 
     let top = p.browse(&BrowseNode::root()).unwrap();
     let artists = top.iter().find(|n| n.label == "Artists").unwrap();

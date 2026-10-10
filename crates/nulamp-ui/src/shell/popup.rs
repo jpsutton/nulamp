@@ -39,6 +39,8 @@ impl<P: PlayerHandle> Shell<P> {
             main_visible: self.is_visible(Kind::Main),
             eq_visible: self.is_visible(Kind::Equalizer),
             pl_visible: self.is_visible(Kind::Playlist),
+            has_library: self.library.is_some(),
+            lib_visible: self.is_visible(Kind::Library),
             always_on_top: self.prefs.always_on_top,
             double_size: self.prefs.double_size,
             easymove: self.prefs.easymove,
@@ -469,6 +471,7 @@ impl<P: PlayerHandle> Shell<P> {
                     Box::new(crate::plugins_dialog::PluginsDialog::new(rows, errors)),
                 );
             }
+            MenuCmd::Lib(c) => self.library_menu_cmd(el, c),
             MenuCmd::Rate(r) => {
                 let loc = self
                     .player

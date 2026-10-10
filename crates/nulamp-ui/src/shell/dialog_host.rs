@@ -194,7 +194,24 @@ impl<P: PlayerHandle> Shell<P> {
                 {
                     e.metadata_read = false;
                 }
+                self.library_send(crate::library::Request::FileChanged(location));
             }
+            DialogResult::LibraryRescan => {
+                self.library_send(crate::library::Request::Rescan { full: false })
+            }
+            DialogResult::LibraryRemove(ids) => {
+                self.library_send(crate::library::Request::Remove { ids })
+            }
+            DialogResult::LibraryNewPlaylist {
+                provider,
+                name,
+                tracks,
+            } => self.library_send(crate::library::Request::AddToPlaylist {
+                provider,
+                playlist: None,
+                name,
+                ids: tracks,
+            }),
         }
         self.poll_player();
         self.request_redraw_all();

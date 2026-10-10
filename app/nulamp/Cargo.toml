@@ -14,6 +14,7 @@ nulamp-audio = { version = "0.1.0", path = "../../crates/nulamp-audio" }
 nulamp-core = { version = "0.1.0", path = "../../crates/nulamp-core" }
 nulamp-decoders = { version = "0.1.0", path = "../../crates/nulamp-decoders" }
 nulamp-eq = { version = "0.1.0", path = "../../crates/nulamp-eq" }
+nulamp-library = { version = "0.1.0", path = "../../crates/nulamp-library" }
 nulamp-meta = { version = "0.1.0", path = "../../crates/nulamp-meta" }
 nulamp-playlist = { version = "0.1.0", path = "../../crates/nulamp-playlist" }
 nulamp-plugin-api = { version = "0.1.0", path = "../../crates/nulamp-plugin-api" }
