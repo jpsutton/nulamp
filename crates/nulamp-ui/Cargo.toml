@@ -7,6 +7,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+nulamp-core = { version = "0.1.0", path = "../nulamp-core" }
+nulamp-render = { version = "0.1.0", path = "../nulamp-render" }
+nulamp-skin = { version = "0.1.0", path = "../nulamp-skin" }
 
 [lints]
 workspace = true

@@ -91,6 +91,8 @@ pub struct MainView {
     /// Seek position 0..=256 while playing a seekable item; `None` hides the thumb.
     pub seek: Option<u32>,
     pub seek_pressed: bool,
+    /// While dragging the seek bar: the thumb's pixel offset (0..=218), overriding `seek`.
+    pub seek_drag: Option<i32>,
     pub shuffle: bool,
     pub repeat: bool,
     pub eq_visible: bool,
@@ -121,6 +123,7 @@ impl Default for MainView {
             balance_pressed: false,
             seek: None,
             seek_pressed: false,
+            seek_drag: None,
             shuffle: false,
             repeat: false,
             eq_visible: true,
@@ -150,7 +153,8 @@ pub fn draw_main(skin: &Skin, v: &MainView) -> Frame {
     draw_volume(&mut f, skin, v.volume, v.volume_pressed);
     draw_balance(&mut f, skin, v.balance, v.balance_pressed);
     if let Some(pos) = v.seek {
-        draw_seek(&mut f, skin, pos, v.seek_pressed);
+        let x = v.seek_drag.unwrap_or_else(|| seek_thumb_x(pos));
+        draw_seek(&mut f, skin, x, v.seek_pressed);
     }
     draw_buttons(&mut f, skin, v);
     draw_title_area(&mut f, skin, &v.title);
@@ -389,7 +393,7 @@ pub fn seek_thumb_x(pos: u32) -> i32 {
     (pos as i32 * 219 / 256).clamp(0, 219)
 }
 
-fn draw_seek(f: &mut Frame, skin: &Skin, pos: u32, pressed: bool) {
+fn draw_seek(f: &mut Frame, skin: &Skin, thumb_x: i32, pressed: bool) {
     let p = skin.bitmap(B::Posbar);
     blit(f, p, 0, 0, 248, 10, 16, 72);
     blit(
@@ -399,7 +403,7 @@ fn draw_seek(f: &mut Frame, skin: &Skin, pos: u32, pressed: bool) {
         0,
         29,
         10,
-        16 + seek_thumb_x(pos),
+        16 + thumb_x,
         72,
     );
 }

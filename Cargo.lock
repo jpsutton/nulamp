@@ -310,6 +310,11 @@ version = "0.1.0"
 [[package]]
 name = "nulamp-ui"
 version = "0.1.0"
+dependencies = [
+ "nulamp-core",
+ "nulamp-render",
+ "nulamp-skin",
+]
 
 [[package]]
 name = "nulamp-vis"

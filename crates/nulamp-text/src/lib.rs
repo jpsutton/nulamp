@@ -265,9 +265,10 @@ impl FontSystem {
             }
             let lower = family.to_lowercase();
             if let Some((_, subs)) = SUBSTITUTES.iter().find(|(n, _)| *n == lower)
-                && let Some(f) = subs.iter().find_map(|s| self.family_face(s)) {
-                    return Some(f);
-                }
+                && let Some(f) = subs.iter().find_map(|s| self.family_face(s))
+            {
+                return Some(f);
+            }
         }
         self.default_face
     }
@@ -295,19 +296,21 @@ impl FontSystem {
         let mut found = None;
         for fam in FALLBACK_FAMILIES {
             if let Some(f) = self.family_face(fam)
-                && self.has_char(f, c) {
-                    found = Some(f);
-                    break;
-                }
+                && self.has_char(f, c)
+            {
+                found = Some(f);
+                break;
+            }
         }
         if found.is_none() {
             let ids: Vec<fontdb::ID> = self.db.faces().map(|f| f.id).collect();
             for id in ids {
                 if let Some(f) = self.load(id)
-                    && self.has_char(f, c) {
-                        found = Some(f);
-                        break;
-                    }
+                    && self.has_char(f, c)
+                {
+                    found = Some(f);
+                    break;
+                }
             }
         }
         self.fallback_cache.insert((primary, c), found);
