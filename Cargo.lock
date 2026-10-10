@@ -1305,6 +1305,7 @@ dependencies = [
 name = "nulamp-skinui"
 version = "0.1.0"
 dependencies = [
+ "nulamp-pixelfont",
  "nulamp-render",
  "nulamp-skin",
  "nulamp-text",
@@ -1336,6 +1337,7 @@ dependencies = [
  "nulamp-core",
  "nulamp-eq",
  "nulamp-meta",
+ "nulamp-pixelfont",
  "nulamp-playlist",
  "nulamp-render",
  "nulamp-skin",

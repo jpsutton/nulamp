@@ -3,7 +3,8 @@
 
 use nulamp_render::Frame;
 use nulamp_skin::Skin;
-use nulamp_text::{Direction, FontSpec, FontSystem};
+use nulamp_skinui::{PixelText, UiText};
+use nulamp_text::FontSystem;
 
 use crate::input::Action;
 use crate::keys::KeyAction;
@@ -143,13 +144,9 @@ pub struct MenuLayout {
     label_w: i32,
 }
 
-pub fn menu_font() -> FontSpec {
-    FontSpec::new("", 11)
-}
-
 pub fn layout(fonts: &mut FontSystem, items: &[Item]) -> MenuLayout {
-    let spec = menu_font();
-    let row_h = fonts.metrics(&spec).line_height + 5;
+    let mut text = PixelText { fonts, bold: false };
+    let row_h = text.line_height() + 4;
     let (mut label_w, mut short_w) = (0, 0);
     let mut rows = Vec::new();
     let mut y = 2;
@@ -162,15 +159,15 @@ pub fn layout(fonts: &mut FontSystem, items: &[Item]) -> MenuLayout {
             Item::Cmd {
                 label, shortcut, ..
             } => {
-                label_w = label_w.max(fonts.measure(label, &spec));
+                label_w = label_w.max(text.measure(label));
                 if !shortcut.is_empty() {
-                    short_w = short_w.max(fonts.measure(shortcut, &spec));
+                    short_w = short_w.max(text.measure(shortcut));
                 }
                 rows.push((y, row_h));
                 y += row_h;
             }
             Item::Sub { label, .. } => {
-                label_w = label_w.max(fonts.measure(label, &spec));
+                label_w = label_w.max(text.measure(label));
                 rows.push((y, row_h));
                 y += row_h;
             }
@@ -206,14 +203,13 @@ pub fn draw(
     hi: Option<usize>,
 ) -> Frame {
     let c = &skin.genex;
-    let spec = menu_font();
+    let mut text = PixelText { fonts, bold: false };
     let mut f = Frame::new(layout.w as u32, layout.h as u32, c.item_bg);
-    // Border.
     f.fill_rect(0, 0, layout.w, 1, c.divider);
     f.fill_rect(0, layout.h - 1, layout.w, 1, c.divider);
     f.fill_rect(0, 0, 1, layout.h, c.divider);
     f.fill_rect(layout.w - 1, 0, 1, layout.h, c.divider);
-    let m = fonts.metrics(&spec);
+    let lh = text.line_height();
     for (i, it) in items.iter().enumerate() {
         let (top, h) = layout.rows[i];
         if let Item::Sep = it {
@@ -229,7 +225,7 @@ pub fn draw(
         if selected {
             f.fill_rect(2, top, layout.w - 4, h, bg);
         }
-        let baseline = top + (h - (m.ascent + m.descent)) / 2 + m.ascent;
+        let ty = top + (h - lh) / 2;
         let clip = (1, top, layout.w - 1, top + h);
         match it {
             Item::Cmd {
@@ -240,19 +236,17 @@ pub fn draw(
                 ..
             } => {
                 let fg = if *enabled { fg } else { c.divider };
-                let l = fonts.layout(label, &spec, Direction::Ltr);
-                fonts.draw(&mut f, &l, PAD_X, baseline, fg, clip);
+                text.draw(&mut f, label, PAD_X, ty, fg, clip);
                 if !shortcut.is_empty() {
-                    let l = fonts.layout(shortcut, &spec, Direction::Ltr);
-                    fonts.draw(&mut f, &l, layout.w - PAD_X - l.width, baseline, fg, clip);
+                    let w = text.measure(shortcut);
+                    text.draw(&mut f, shortcut, layout.w - PAD_X - w, ty, fg, clip);
                 }
                 if *check == Some(true) {
                     draw_check(&mut f, 6, top + h / 2 - 3, fg);
                 }
             }
             Item::Sub { label, .. } => {
-                let l = fonts.layout(label, &spec, Direction::Ltr);
-                fonts.draw(&mut f, &l, PAD_X, baseline, fg, clip);
+                text.draw(&mut f, label, PAD_X, ty, fg, clip);
                 let ax = layout.w - 10;
                 let ay = top + h / 2;
                 for k in 0..4 {

@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use nulamp_render::gen_window::{self, GenView};
-use nulamp_skinui::{FreeTypeText, Key};
+use nulamp_skinui::{Key, PixelText};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, OwnedDisplayHandle};
@@ -114,9 +114,9 @@ impl<P: PlayerHandle> Shell<P> {
         let mut frame = gen_window::draw_gen_frame(&self.skin, &view);
         let (cx, cy, cw, ch) = gen_window::client_rect(w, h);
         frame.fill_rect(cx, cy, cw, ch, self.skin.genex.window_bg);
-        let mut text = FreeTypeText {
+        let mut text = PixelText {
             fonts: &mut self.fonts,
-            spec: nulamp_text::FontSpec::new("", 11),
+            bold: false,
         };
         d.dialog
             .form()
