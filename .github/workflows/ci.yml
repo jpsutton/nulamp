@@ -1,10 +1,11 @@
-# Build and test every pushed feature/fix branch and staging. Pull requests show the results of
-# the push run of their head commit, so there is no separate pull_request run.
+# Pull requests into staging (features and fixes) get a quick compile check on Linux. Pull
+# requests into release get the full build and tests on Linux, macOS and Windows. Pushes do not
+# run CI; merging into release runs the release workflow.
 name: CI
 
 on:
-  push:
-    branches: ["feat/**", "fix/**", "staging"]
+  pull_request:
+    branches: ["staging", "release"]
   workflow_dispatch:
 
 concurrency:
@@ -15,8 +16,23 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  check:
+    name: Compile check
+    if: github.base_ref != 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install system libraries
+        run: ./scripts/ci-deps.sh
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets
+      - name: Check the opt-in audio CD backend
+        run: cargo check -p nulamp-decoders --all-targets --features cdio
+
   test:
     name: Test (${{ matrix.os }})
+    if: github.base_ref == 'release'
     strategy:
       fail-fast: false
       matrix:
@@ -34,7 +50,7 @@ jobs:
         run: ./scripts/windows-zlib.sh
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --all-targets
-      - name: Build the opt-in audio CD backend
+      - name: Check the opt-in audio CD backend
         if: runner.os == 'Linux'
         run: cargo check -p nulamp-decoders --all-targets --features cdio
       - run: cargo test --workspace
