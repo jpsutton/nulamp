@@ -89,6 +89,8 @@ pub fn pledit() -> Canvas {
         c.text_centered(26, y + 2, 100, 12, "PLAYLIST", ink);
         btn_shade(&mut c, 158, y + 3, false, false);
         btn_x(&mut c, 167, y + 3, false);
+        // Outer right edge, dark like the main and equalizer windows' bevel.
+        c.vline(177, y, 20, pal::SHADOW);
     }
     // Side tiles and scroll bar parts (y 42, 29 tall).
     side(&mut c, 0, 42, 12, 29, true);
@@ -97,6 +99,7 @@ pub fn pledit() -> Canvas {
     c.vline(39, 42, 29, pal::FACE_DARK);
     c.vline(40, 42, 29, pal::FACE_DARK);
     side(&mut c, 44, 42, 7, 29, false);
+    c.vline(50, 42, 29, pal::SHADOW);
     // Scroll thumb normal / pressed 8×18.
     for (x, pressed) in [(52, false), (61, true)] {
         c.button(x, 53, 8, 18, pressed);
@@ -125,6 +128,8 @@ pub fn pledit() -> Canvas {
     // Bottom left (0,72) 125×38 with ADD REM SEL MISC buttons at x 14/43/72/101, y +8..+26.
     bottom_bar(&mut c, 0, 72, 125, 38);
     c.vline(11, 72, 1, pal::HILITE);
+    c.vline(0, 72, 38, pal::HILITE);
+    c.hline(0, 72 + 37, 125, pal::SHADOW);
     for (x, label) in [(14, "ADD"), (43, "REM"), (72, "SEL"), (101, "MISC")] {
         c.button(x, 80, 22, 18, false);
         c.text_centered(x, 80, 22, 18, label, pal::TITLE_TEXT);
@@ -132,6 +137,8 @@ pub fn pledit() -> Canvas {
     // Bottom right (126,72) 150×38.
     let (bx, by) = (126, 72);
     bottom_bar(&mut c, bx, by, 150, 38);
+    c.hline(bx, by + 37, 150, pal::SHADOW);
+    c.vline(bx + 149, by, 38, pal::SHADOW);
     c.well(bx + 7, by + 9, 90, 8, pal::LCD_BG);
     // Mini transport (rel x 6..59, y 23..30) and time well (rel 64..95).
     let boxes = [
@@ -164,6 +171,9 @@ pub fn pledit() -> Canvas {
     // Bottom fill (179,0) 25×38 and visualizer piece (205,0) 75×38.
     bottom_bar(&mut c, 179, 0, 25, 38);
     bottom_bar(&mut c, 205, 0, 75, 38);
+    c.hline(179, 37, 25, pal::SHADOW);
+    c.hline(205, 37, 75, pal::SHADOW);
+    c.vline(279, 0, 38, pal::SHADOW);
     c.well(205 + 3, 38 - 26, 72, 16, pal::BLACK);
 
     // Pop-up menu items 22×18 (normal at X, highlighted at X+23) and bars 3 px wide.
