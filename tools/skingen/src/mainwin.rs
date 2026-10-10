@@ -108,8 +108,8 @@ pub fn main_bmp() -> Canvas {
     }
     // Song title box and info row.
     c.well(110, 24, 156, 12, pal::LCD_BG);
-    c.well(110, 42, 28, 8, pal::LCD_BG);
-    c.text(140, 43, "KBPS", pal::LABEL_DIM);
+    c.well(110, 42, 17, 8, pal::LCD_BG);
+    c.text(130, 43, "KBPS", pal::LABEL_DIM);
     c.well(155, 42, 13, 8, pal::LCD_BG);
     c.text(170, 43, "KHZ", pal::LABEL_DIM);
     // Mono/stereo and slider recesses.

@@ -165,6 +165,9 @@ version = "0.1.0"
 [[package]]
 name = "nulamp-render"
 version = "0.1.0"
+dependencies = [
+ "nulamp-skin",
+]
 
 [[package]]
 name = "nulamp-skin"
