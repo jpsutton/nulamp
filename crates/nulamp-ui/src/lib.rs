@@ -13,6 +13,7 @@ pub mod menu;
 pub mod menus;
 pub mod platform;
 pub mod playlist;
+pub mod prefs_dialog;
 pub mod shell;
 pub mod title;
 

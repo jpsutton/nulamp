@@ -107,6 +107,11 @@ pub struct UiPrefs {
     pub pl_font_px: u32,
     pub pl_bitmap_font: bool,
     pub pl_bitmap_scale: i32,
+    pub pl_show_numbers: bool,
+    pub pl_zero_pad: bool,
+    pub pl_page_lines: usize,
+    pub pl_wheel_double: bool,
+    pub pl_old_school_buttons: bool,
 }
 
 impl Default for UiPrefs {
@@ -145,6 +150,11 @@ impl Default for UiPrefs {
             pl_font_px: 12,
             pl_bitmap_font: true,
             pl_bitmap_scale: 1,
+            pl_show_numbers: true,
+            pl_zero_pad: false,
+            pl_page_lines: 1,
+            pl_wheel_double: true,
+            pl_old_school_buttons: false,
         }
     }
 }
@@ -236,6 +246,11 @@ impl<P: PlayerHandle> Shell<P> {
         pl.font_px = prefs.pl_font_px;
         pl.bitmap_font = prefs.pl_bitmap_font;
         pl.bitmap_scale = prefs.pl_bitmap_scale;
+        pl.show_numbers = prefs.pl_show_numbers;
+        pl.zero_pad = prefs.pl_zero_pad;
+        pl.page_lines = prefs.pl_page_lines.max(1);
+        pl.wheel_double = prefs.pl_wheel_double;
+        pl.old_school_buttons = prefs.pl_old_school_buttons;
         let visualizer = nulamp_vis::Visualizer::new(prefs.vis);
         Self {
             last_status: player.status(),
@@ -317,6 +332,11 @@ impl<P: PlayerHandle> Shell<P> {
         self.prefs.pl_font_px = self.pl.font_px;
         self.prefs.pl_bitmap_font = self.pl.bitmap_font;
         self.prefs.pl_bitmap_scale = self.pl.bitmap_scale;
+        self.prefs.pl_show_numbers = self.pl.show_numbers;
+        self.prefs.pl_zero_pad = self.pl.zero_pad;
+        self.prefs.pl_page_lines = self.pl.page_lines;
+        self.prefs.pl_wheel_double = self.pl.wheel_double;
+        self.prefs.pl_old_school_buttons = self.pl.old_school_buttons;
     }
 
     fn now_ms(&self) -> u64 {
@@ -1151,6 +1171,53 @@ impl<P: PlayerHandle> Shell<P> {
         self.request_redraw_all();
     }
 
+    /// Applies preferences from the preferences dialog.
+    fn apply_prefs(&mut self, prefs: UiPrefs, pl: crate::prefs_dialog::PlaylistOptions) {
+        let aot_changed = prefs.always_on_top != self.prefs.always_on_top;
+        let eq_double_changed = prefs.eq_double != self.prefs.eq_double;
+        // Keep window-owned state that the dialog does not edit.
+        let keep = self.prefs.clone();
+        self.prefs = UiPrefs {
+            main_pos: keep.main_pos,
+            eq_pos: keep.eq_pos,
+            pl_pos: keep.pl_pos,
+            eq_visible: keep.eq_visible,
+            pl_visible: keep.pl_visible,
+            double_size: keep.double_size,
+            shade: keep.shade,
+            eq_shade: keep.eq_shade,
+            time_remaining: keep.time_remaining,
+            skin_path: keep.skin_path,
+            last_dir: keep.last_dir,
+            recent_urls: keep.recent_urls,
+            ..prefs
+        };
+        self.pl.show_numbers = pl.show_numbers;
+        self.pl.zero_pad = pl.zero_pad;
+        self.pl.bitmap_font = pl.bitmap_font;
+        self.pl.page_lines = pl.page_lines;
+        self.pl.wheel_double = pl.wheel_double;
+        self.pl.old_school_buttons = pl.old_school_buttons;
+        self.update_pl_font();
+        self.visualizer.set_settings(self.prefs.vis);
+        self.player.set_eq(&self.prefs.eq);
+        if aot_changed {
+            let level = if self.prefs.always_on_top {
+                WindowLevel::AlwaysOnTop
+            } else {
+                WindowLevel::Normal
+            };
+            for w in self.windows.values() {
+                w.window.set_window_level(level);
+            }
+        }
+        if eq_double_changed {
+            self.resize_window(Kind::Equalizer);
+        }
+        self.refresh_title_force();
+        self.request_redraw_all();
+    }
+
     fn pl_font(&self) -> nulamp_text::FontSpec {
         let family = self
             .prefs
@@ -1669,6 +1736,18 @@ impl<P: PlayerHandle> Shell<P> {
                 let d = crate::dialogs::SkinBrowser::new(skins, self.prefs.skin_path.as_deref());
                 self.open_dialog(el, Box::new(d));
             }
+            KeyAction::Preferences => {
+                let pl = crate::prefs_dialog::PlaylistOptions {
+                    show_numbers: self.pl.show_numbers,
+                    zero_pad: self.pl.zero_pad,
+                    bitmap_font: self.pl.bitmap_font,
+                    page_lines: self.pl.page_lines,
+                    wheel_double: self.pl.wheel_double,
+                    old_school_buttons: self.pl.old_school_buttons,
+                };
+                let d = crate::prefs_dialog::PrefsDialog::new(self.prefs.clone(), pl);
+                self.open_dialog(el, Box::new(d));
+            }
             KeyAction::OpenPlaylist => self.dialog_load_playlist(),
             KeyAction::SavePlaylist => self.dialog_save_playlist(),
             KeyAction::ReloadSkin => {
@@ -1936,6 +2015,7 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
                 "jumpfile" => self.key_action(id, KeyAction::JumpToFile, el),
                 "skins" => self.key_action(id, KeyAction::SkinBrowser, el),
                 "fileinfo" => self.handle_action(id, Action::FileInfoCurrent, el),
+                "prefs" => self.key_action(id, KeyAction::Preferences, el),
                 _ => {}
             }
         }

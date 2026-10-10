@@ -60,6 +60,12 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
         ("pl_font_px", p.pl_font_px.to_string()),
         ("pl_bitmap_font", b(p.pl_bitmap_font)),
         ("pl_bitmap_scale", p.pl_bitmap_scale.to_string()),
+        ("pl_show_numbers", b(p.pl_show_numbers)),
+        ("pl_zero_pad", b(p.pl_zero_pad)),
+        ("pl_page_lines", p.pl_page_lines.to_string()),
+        ("pl_wheel_double", b(p.pl_wheel_double)),
+        ("pl_old_school_buttons", b(p.pl_old_school_buttons)),
+        ("recent_urls", p.recent_urls.join("\t")),
         ("eq_visible", b(p.eq_visible)),
         ("pl_visible", b(p.pl_visible)),
         ("double_size", b(p.double_size)),
@@ -143,6 +149,20 @@ pub fn from_ini(text: &str) -> (UiPrefs, PlayerState) {
     set_i!(p.snap_distance, "snap_distance", i32);
     p.pl_shade = flag("pl_shade", p.pl_shade);
     p.pl_bitmap_font = flag("pl_bitmap_font", p.pl_bitmap_font);
+    p.pl_show_numbers = flag("pl_show_numbers", p.pl_show_numbers);
+    p.pl_zero_pad = flag("pl_zero_pad", p.pl_zero_pad);
+    p.pl_wheel_double = flag("pl_wheel_double", p.pl_wheel_double);
+    p.pl_old_school_buttons = flag("pl_old_school_buttons", p.pl_old_school_buttons);
+    if let Some(n) = num("pl_page_lines") {
+        p.pl_page_lines = n.clamp(1, 16) as usize;
+    }
+    if let Some(r) = get("recent_urls") {
+        p.recent_urls = r
+            .split('\t')
+            .filter(|u| !u.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
     p.eq_visible = flag("eq_visible", p.eq_visible);
     p.pl_visible = flag("pl_visible", p.pl_visible);
     p.double_size = flag("double_size", p.double_size);
