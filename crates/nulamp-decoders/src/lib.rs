@@ -4,7 +4,7 @@
 //! threading code.
 
 pub mod midi_decoder;
-#[cfg(feature = "openmpt")]
+#[cfg(nulamp_openmpt)]
 pub mod module_decoder;
 pub mod opus_decoder;
 pub mod symphonia_decoder;
@@ -126,7 +126,7 @@ impl Registry {
         r.add(Box::new(symphonia_decoder::SymphoniaFactory));
         r.add(Box::new(opus_decoder::OpusFactory));
         r.add(Box::new(midi_decoder::MidiFactory::default()));
-        #[cfg(feature = "openmpt")]
+        #[cfg(nulamp_openmpt)]
         r.add(Box::new(module_decoder::ModuleFactory::default()));
         r
     }
