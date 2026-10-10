@@ -100,6 +100,11 @@ pub enum PlAction {
     JumpToFile,
     FileInfoSelected,
     BookmarkSelected,
+    EnqueueSelected,
+    ShowInFolder,
+    GenerateHtml,
+    RebuildTitles,
+    EditEntries,
     ScrollToPlaying,
 }
 
@@ -760,6 +765,11 @@ impl PlaylistUi {
             }
             (Digit3, false, true, false) => vec![PlAction::FileInfoSelected],
             (KeyI, false, true, false) => vec![PlAction::BookmarkSelected],
+            (KeyQ, false, false, false) => vec![PlAction::EnqueueSelected],
+            (KeyF, true, false, false) => vec![PlAction::ShowInFolder],
+            (KeyG, true, true, false) => vec![PlAction::GenerateHtml],
+            (KeyE, true, true, false) => vec![PlAction::RebuildTitles],
+            (KeyE, true, false, false) => vec![PlAction::EditEntries],
             (F4, true, false, false) => vec![PlAction::Close],
             (Numpad8, false, false, false) => {
                 vec![PlAction::Do(Action::Player(Command::VolumeBy(4)))]

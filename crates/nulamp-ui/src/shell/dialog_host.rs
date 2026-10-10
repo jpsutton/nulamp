@@ -167,6 +167,16 @@ impl<P: PlayerHandle> Shell<P> {
             DialogResult::LoadSkin(path) => self.load_skin(path),
             DialogResult::EqSave { name, auto } => self.eq_save(&name, auto),
             DialogResult::SetBookmarks(items) => self.save_bookmarks(&items),
+            DialogResult::DeleteFiles(files) => self.delete_files(&files),
+            DialogResult::SetLocation(eid, loc) => {
+                if let Some(e) = self.player.engine_mut().playlist.by_id_mut(eid) {
+                    e.title = nulamp_core::playlist::placeholder_title(&loc);
+                    e.location = loc;
+                    e.metadata_read = false;
+                    e.length_ms = None;
+                }
+                self.player.engine_mut().playlist.modified = true;
+            }
             DialogResult::PlayBookmark(loc) => self.play_bookmark(&loc),
             DialogResult::Prefs(b) => {
                 let (prefs, pl) = *b;

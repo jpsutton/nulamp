@@ -128,6 +128,11 @@ impl Playlist {
         self.entries.get_mut(i)
     }
 
+    /// Selected entries.
+    pub fn entries_mut_selected(&mut self) -> impl Iterator<Item = &mut Entry> {
+        self.entries.iter_mut().filter(|e| e.selected)
+    }
+
     /// Entries whose location equals `location`.
     pub fn entries_mut_by_location<'a>(
         &'a mut self,

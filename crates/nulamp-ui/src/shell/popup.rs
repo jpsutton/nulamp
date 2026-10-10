@@ -303,6 +303,13 @@ impl<P: PlayerHandle> Shell<P> {
     }
 
     pub(super) fn menu_cmd(&mut self, el: &ActiveEventLoop, id: WindowId, cmd: MenuCmd) {
+        let cmd_clone_kind = |c: &MenuCmd| match c {
+            MenuCmd::PlShowInFolder => 0,
+            MenuCmd::PlGenerateHtml => 1,
+            MenuCmd::PlRebuildTitles => 2,
+            MenuCmd::PlEditEntry => 3,
+            _ => 4,
+        };
         match cmd {
             MenuCmd::Act(a) => self.handle_action(id, a, el),
             MenuCmd::Key(k) => self.key_action(id, k, el),
@@ -480,6 +487,24 @@ impl<P: PlayerHandle> Shell<P> {
                 if let Some(i) = self.player.engine().playlist.first_selected() {
                     self.player.command(Command::PlayIndex(i));
                 }
+            }
+            MenuCmd::PlShowInFolder
+            | MenuCmd::PlGenerateHtml
+            | MenuCmd::PlRebuildTitles
+            | MenuCmd::PlEditEntry
+            | MenuCmd::PlPhysicallyRemove => {
+                let pl = self.ids.get(&Kind::Playlist).copied().unwrap_or(id);
+                let a = match cmd_clone_kind(&cmd) {
+                    0 => PlAction::ShowInFolder,
+                    1 => PlAction::GenerateHtml,
+                    2 => PlAction::RebuildTitles,
+                    3 => PlAction::EditEntries,
+                    _ => {
+                        self.physically_remove_selected();
+                        return;
+                    }
+                };
+                self.handle_pl_actions(pl, vec![a], el);
             }
             MenuCmd::PlEnqueueSelected => {
                 let e = self.player.engine_mut();
