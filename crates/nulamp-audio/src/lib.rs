@@ -7,6 +7,7 @@ pub mod mixer;
 pub mod output;
 pub mod player;
 pub mod resample;
+mod retained;
 
 pub use engine::{
     AudioEngine, Backend, Control, EngineStatus, Event, FadeCurve, OfflineSlot, OutputPrefs,
