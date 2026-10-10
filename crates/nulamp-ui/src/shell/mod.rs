@@ -1242,6 +1242,82 @@ impl<P: PlayerHandle> Shell<P> {
         self.add_items(vec![location.to_string()], replace);
     }
 
+    fn selected_locations(&self) -> Vec<String> {
+        self.player
+            .engine()
+            .playlist
+            .entries()
+            .iter()
+            .filter(|e| e.selected)
+            .map(|e| e.location.clone())
+            .collect()
+    }
+
+    /// Asks, then moves the selected local files to the trash (04 §9).
+    pub(super) fn physically_remove_selected(&mut self) {
+        let files: Vec<String> = self
+            .selected_locations()
+            .into_iter()
+            .filter(|l| !nulamp_core::playlist::is_url(l))
+            .collect();
+        if !files.is_empty() {
+            self.pending_dialog =
+                Some(Box::new(crate::dialogs::ConfirmDialog::delete_files(files)));
+        }
+    }
+
+    /// Deletes files (to the trash) and removes the entries whose file was deleted.
+    pub(super) fn delete_files(&mut self, files: &[String]) {
+        let deleted: Vec<String> = files
+            .iter()
+            .filter(|f| match trash::delete(f) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::error!("cannot delete {f}: {e}");
+                    false
+                }
+            })
+            .cloned()
+            .collect();
+        self.player
+            .engine_mut()
+            .remove_where(|_, e| deleted.contains(&e.location));
+    }
+
+    /// Writes an HTML page listing the playlist and opens it (04 §9).
+    fn generate_html(&mut self) {
+        let p = &self.player.engine().playlist;
+        let esc = |s: &str| {
+            s.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        };
+        let mut total = 0;
+        let mut rows = String::new();
+        for (i, e) in p.entries().iter().enumerate() {
+            let len = e
+                .length_ms
+                .map(|l| marquee::format_length(l / 1000))
+                .unwrap_or_default();
+            total += e.length_ms.unwrap_or(0) / 1000;
+            rows.push_str(&format!(
+                "<tr><td>{}.</td><td>{}</td><td>{}</td></tr>\n",
+                i + 1,
+                esc(&e.title),
+                len
+            ));
+        }
+        let html = format!(
+            "<!doctype html><meta charset=\"utf-8\"><title>{APP_NAME} playlist</title>\n<h1>Playlist</h1>\n<p>{} entries, {}</p>\n<table>\n{rows}</table>\n",
+            p.len(),
+            crate::playlist::format_total(total)
+        );
+        let path = std::env::temp_dir().join("nulamp-playlist.html");
+        if std::fs::write(&path, html).is_ok() {
+            open_path(&path.to_string_lossy());
+        }
+    }
+
     /// Writes a 0–5 rating to the files' tags.
     pub(super) fn rate_files(&mut self, locations: &[String], rating: u8) {
         for loc in locations
@@ -1431,6 +1507,50 @@ impl<P: PlayerHandle> Shell<P> {
                         let n = self.player.engine().playlist.len();
                         self.pl.clamp_scroll(n);
                         self.resize_window(Kind::Playlist);
+                    }
+                }
+                PlAction::EnqueueSelected => {
+                    let e = self.player.engine_mut();
+                    let ids: Vec<_> = e
+                        .playlist
+                        .entries()
+                        .iter()
+                        .filter(|x| x.selected)
+                        .map(|x| x.id)
+                        .collect();
+                    for eid in ids {
+                        match e.queue.iter().position(|q| *q == eid) {
+                            Some(pos) => {
+                                e.queue.remove(pos);
+                            }
+                            None => e.queue.push_back(eid),
+                        }
+                    }
+                }
+                PlAction::ShowInFolder => {
+                    let loc = self.selected_locations().into_iter().next();
+                    if let Some(loc) = loc {
+                        show_in_folder(&loc);
+                    }
+                }
+                PlAction::GenerateHtml => self.generate_html(),
+                PlAction::RebuildTitles => {
+                    for e in self.player.engine_mut().playlist.entries_mut_selected() {
+                        e.metadata_read = false;
+                    }
+                }
+                PlAction::EditEntries => {
+                    let q: Vec<_> = self
+                        .player
+                        .engine()
+                        .playlist
+                        .entries()
+                        .iter()
+                        .filter(|x| x.selected)
+                        .map(|x| (x.id, x.location.clone()))
+                        .collect();
+                    if !q.is_empty() {
+                        self.open_dialog(el, Box::new(crate::dialogs::EditEntryDialog::new(q)));
                     }
                 }
                 PlAction::BookmarkSelected => {
@@ -2026,6 +2146,40 @@ fn pl_cursor(x: i32, y: i32, w: i32, h: i32, shade: bool) -> CursorRole {
         _ if hit(x, y, w - 15, w - 7, 20, h - 38) => CursorRole::PvScroll,
         _ if x >= w - 20 && y >= h - 20 => CursorRole::PSize,
         _ => CursorRole::PNormal,
+    }
+}
+
+/// Opens a file or URL with the desktop's default application.
+fn open_path(path: &str) {
+    let r = if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", path])
+            .spawn()
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(path).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(path).spawn()
+    };
+    if let Err(e) = r {
+        log::error!("cannot open {path}: {e}");
+    }
+}
+
+/// Shows a file in the file manager.
+fn show_in_folder(location: &str) {
+    if nulamp_core::playlist::is_url(location) {
+        return;
+    }
+    if cfg!(target_os = "windows") {
+        let _ = std::process::Command::new("explorer")
+            .arg(format!("/select,{location}"))
+            .spawn();
+    } else if cfg!(target_os = "macos") {
+        let _ = std::process::Command::new("open")
+            .args(["-R", location])
+            .spawn();
+    } else if let Some(dir) = std::path::Path::new(location).parent() {
+        open_path(&dir.to_string_lossy());
     }
 }
 

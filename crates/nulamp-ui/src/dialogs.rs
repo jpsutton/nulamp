@@ -18,6 +18,10 @@ pub enum DialogResult {
     LoadSkin(Option<String>),
     /// Tags of a file were written: refresh entries with this location.
     TagsWritten(String),
+    /// The user confirmed moving these files to the trash.
+    DeleteFiles(Vec<String>),
+    /// Change an entry's location (edit playlist entry, 04 §9).
+    SetLocation(EntryId, String),
     /// Replace the bookmark list.
     SetBookmarks(Vec<(String, String)>),
     /// Play a bookmark (clear, add, play).
@@ -743,6 +747,162 @@ impl Dialog for FileInfoDialog {
                         Outcome::Keep
                     }
                 }
+            }
+            FormEvent::Clicked(CANCEL) | FormEvent::Cancel => Outcome::Close,
+            _ => Outcome::Keep,
+        }
+    }
+}
+
+// ----- Confirmation -----
+
+pub struct ConfirmDialog {
+    form: Form,
+    files: Vec<String>,
+}
+
+impl ConfirmDialog {
+    /// Asks before moving files to the trash (04 §9).
+    pub fn delete_files(files: Vec<String>) -> Self {
+        let w = cw(375);
+        let mut lines = vec![
+            format!("Move {} file(s) to the trash?", files.len()),
+            String::new(),
+        ];
+        lines.extend(files.iter().take(6).cloned());
+        if files.len() > 6 {
+            lines.push("…".into());
+        }
+        let form = Form::new(vec![
+            Widget::TextBox {
+                rect: Rect::new(6, 6, w - 12, 116),
+                lines,
+                first: 0,
+            },
+            Widget::Button {
+                rect: Rect::new(w - 128, 130, 58, 18),
+                id: OK,
+                label: "Delete".into(),
+                default: false,
+            },
+            Widget::Button {
+                rect: Rect::new(w - 64, 130, 58, 18),
+                id: CANCEL,
+                label: "Cancel".into(),
+                default: true,
+            },
+        ]);
+        let mut d = Self { form, files };
+        d.form.focus_id(CANCEL);
+        d
+    }
+}
+
+impl Dialog for ConfirmDialog {
+    fn title(&self) -> String {
+        "Confirm".into()
+    }
+
+    fn size(&self) -> (i32, i32) {
+        (375, 203)
+    }
+
+    fn form(&mut self) -> &mut Form {
+        &mut self.form
+    }
+
+    fn kind(&self) -> &'static str {
+        "confirm"
+    }
+
+    fn handle(&mut self, ev: FormEvent) -> Outcome {
+        match ev {
+            FormEvent::Clicked(OK) => {
+                Outcome::Do(vec![DialogResult::DeleteFiles(self.files.clone())], true)
+            }
+            FormEvent::Clicked(CANCEL) | FormEvent::Cancel | FormEvent::Submit => Outcome::Close,
+            _ => Outcome::Keep,
+        }
+    }
+}
+
+// ----- Edit playlist entry -----
+
+pub struct EditEntryDialog {
+    form: Form,
+    /// Entries left to edit; the first is shown.
+    queue: Vec<(EntryId, String)>,
+}
+
+impl EditEntryDialog {
+    pub fn new(queue: Vec<(EntryId, String)>) -> Self {
+        let w = cw(475);
+        let form = Form::new(vec![
+            Widget::Label {
+                rect: Rect::new(6, 6, w - 12, 14),
+                text: "Location (file or URL):".into(),
+            },
+            Widget::Edit {
+                rect: Rect::new(6, 24, w - 12, 18),
+                id: EDIT,
+                text: String::new(),
+                cursor: 0,
+            },
+            Widget::Button {
+                rect: Rect::new(w - 128, 52, 58, 18),
+                id: OK,
+                label: "OK".into(),
+                default: true,
+            },
+            Widget::Button {
+                rect: Rect::new(w - 64, 52, 58, 18),
+                id: CANCEL,
+                label: "Cancel".into(),
+                default: false,
+            },
+        ]);
+        let mut d = Self { form, queue };
+        d.show();
+        d
+    }
+
+    fn show(&mut self) {
+        if let Some((_, loc)) = self.queue.first() {
+            let loc = loc.clone();
+            self.form.set_text(EDIT, &loc);
+            self.form.focus_id(EDIT);
+        }
+    }
+}
+
+impl Dialog for EditEntryDialog {
+    fn title(&self) -> String {
+        "Edit playlist entry".into()
+    }
+
+    fn size(&self) -> (i32, i32) {
+        (475, 116)
+    }
+
+    fn form(&mut self) -> &mut Form {
+        &mut self.form
+    }
+
+    fn kind(&self) -> &'static str {
+        "editentry"
+    }
+
+    fn handle(&mut self, ev: FormEvent) -> Outcome {
+        match ev {
+            FormEvent::Clicked(OK) | FormEvent::Submit => {
+                if self.queue.is_empty() {
+                    return Outcome::Close;
+                }
+                let (id, _) = self.queue.remove(0);
+                let loc = self.form.text(EDIT).trim().to_string();
+                let done = self.queue.is_empty();
+                self.show();
+                Outcome::Do(vec![DialogResult::SetLocation(id, loc)], done)
             }
             FormEvent::Clicked(CANCEL) | FormEvent::Cancel => Outcome::Close,
             _ => Outcome::Keep,
