@@ -10,6 +10,7 @@ case "$(uname -s)" in
       libx11-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
       libxcursor-dev libxrandr-dev libxi-dev libwayland-dev \
       libasound2-dev libpulse-dev libdbus-1-dev libopenmpt-dev libcdio-dev \
+      libavformat-dev libavcodec-dev libavutil-dev libswresample-dev ffmpeg \
       fonts-dejavu-core fonts-liberation
     ;;
   Darwin)
@@ -18,8 +19,10 @@ case "$(uname -s)" in
     brew list libopenmpt >/dev/null 2>&1 || brew install libopenmpt
     # libcdio is only used by the opt-in `cdio` feature (GPL; docs/decisions.md CD1).
     brew list libcdio >/dev/null 2>&1 || brew install libcdio
+    brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
     ;;
   *)
     # Windows: freetype-sys builds a bundled FreeType with CMake (preinstalled on runners).
+    # libopenmpt and FFmpeg are not installed; their decoders are left out of the build.
     ;;
 esac

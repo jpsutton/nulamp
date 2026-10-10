@@ -22,6 +22,36 @@ pub struct TitleReader {
     pub fix_percent20: bool,
 }
 
+/// Tags of files the tag library cannot read (ASF/WMA, TTA, …), through the FFmpeg decoder;
+/// registered with [`nulamp_meta::set_external_reader`].
+pub fn external_tags(
+    path: &std::path::Path,
+) -> Option<(Vec<(String, String)>, nulamp_meta::TechInfo)> {
+    let tags = nulamp_decoders::ffmpeg_tags(path.to_str()?)?;
+    let info = &tags.info;
+    let mime = match nulamp_decoders::extension_of(&path.to_string_lossy()).as_deref() {
+        Some("wma" | "asf") => "audio/x-ms-wma",
+        Some("wv") => "audio/x-wavpack",
+        Some("ape") => "audio/x-ape",
+        Some("mpc" | "mp+" | "mpp") => "audio/x-musepack",
+        Some("tta") => "audio/x-tta",
+        _ => "",
+    };
+    let tech = nulamp_meta::TechInfo {
+        length_ms: info.length_ms.unwrap_or(0),
+        bitrate: tags.kbps,
+        sample_rate: Some(info.sample_rate).filter(|r| *r > 0),
+        channels: u8::try_from(info.channels).ok().filter(|c| *c > 0),
+        bits_per_sample: u8::try_from(info.bits).ok().filter(|b| *b > 0),
+        lossless: info.lossless,
+        family: info.codec.clone(),
+        mime: mime.to_string(),
+        mode: None,
+        file_size: std::fs::metadata(path).ok().map(|m| m.len()),
+    };
+    Some((tags.fields, tech))
+}
+
 /// The title for an item from its tags (10 §5.1): title formatting, else `Artist - Title`,
 /// else `None` (the caller keeps the file-name title).
 pub fn title_from_tags(
@@ -147,4 +177,40 @@ pub fn replaygain_tags(location: &str) -> nulamp_eq::ReplayGainTags {
         }
     }
     tags
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A WMA file's ASF attributes reach `nulamp_meta::read` through the FFmpeg reader.
+    #[test]
+    fn wma_tags_through_ffmpeg() {
+        let path = std::env::temp_dir().join(format!("nulamp-titles-{}.wma", std::process::id()));
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi"])
+            .args(["-i", "sine=duration=1", "-c:a", "wmav2"])
+            .args(["-metadata", "title=Tone", "-metadata", "album_artist=Band"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made || nulamp_decoders::ffmpeg_tags(path.to_str().unwrap()).is_none() {
+            eprintln!("skipping: no ffmpeg tool or FFmpeg decoder");
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        nulamp_meta::set_external_reader(external_tags);
+        let meta = nulamp_meta::read(&path).unwrap();
+        assert_eq!(meta.get("title").as_deref(), Some("Tone"));
+        assert_eq!(meta.get("albumartist").as_deref(), Some("Band"));
+        assert_eq!(meta.get("mime").as_deref(), Some("audio/x-ms-wma"));
+        assert!(meta.get("family").unwrap().contains("Windows Media Audio"));
+        assert!(meta.tech().length_ms.abs_diff(1000) < 100);
+        assert!(meta.supported_fields().is_empty());
+        assert!(matches!(
+            nulamp_meta::write(&path, &[("title".into(), Some("X".into()))]),
+            Err(nulamp_meta::Error::UnsupportedFormat)
+        ));
+        std::fs::remove_file(&path).unwrap();
+    }
 }

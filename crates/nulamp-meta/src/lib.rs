@@ -15,7 +15,8 @@
 //! temporary file renamed over the original. Other formats are written by `lofty` (which
 //! reads the whole file and rewrites it) into a temporary copy that then replaces the
 //! original; an emptied MP4 tag is blanked in place. ASF/WMA files are not supported
-//! (`lofty` has no ASF support). Choices the spec leaves open are recorded as `MD*` rows in
+//! (`lofty` has no ASF support); the application can register an [`ExternalReader`] (FFmpeg)
+//! that reads them, and other formats `lofty` does not know, read-only. Choices the spec leaves open are recorded as `MD*` rows in
 //! `docs/decisions.md`.
 
 pub mod id3v1;
@@ -34,6 +35,7 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use lofty::ape::{ApeFile, ApeTag};
 use lofty::config::{ParseOptions, ParsingMode, WriteOptions};
@@ -278,6 +280,32 @@ impl nulamp_tf::FieldSource for Metadata {
     }
 }
 
+/// Reads files whose format the tag library does not support (ASF/WMA, TTA): tag fields by
+/// nulamp key ([`FIELDS`]) and technical information, or `None` when it cannot read the file.
+pub type ExternalReader = fn(&Path) -> Option<(Vec<(String, String)>, TechInfo)>;
+
+static EXTERNAL_READER: OnceLock<ExternalReader> = OnceLock::new();
+
+/// Registers the reader [`read`] uses for formats the tag library does not support. Such files
+/// are read-only: they report no supported fields, and writes fail with
+/// [`Error::UnsupportedFormat`]. Only the first registration counts (returns `false` after).
+pub fn set_external_reader(reader: ExternalReader) -> bool {
+    EXTERNAL_READER.set(reader).is_ok()
+}
+
+fn read_external(path: &Path) -> Option<Metadata> {
+    let (fields, tech) = EXTERNAL_READER.get()?(path)?;
+    Some(Metadata {
+        fields: fields
+            .into_iter()
+            .filter(|(k, v)| FIELDS.contains(&k.as_str()) && !v.is_empty())
+            .collect(),
+        tech,
+        supported: Vec::new(),
+        path: Some(path.to_path_buf()),
+    })
+}
+
 /// Reads the tags and technical fields of `path` with default [`Options`].
 pub fn read(path: impl AsRef<Path>) -> Result<Metadata> {
     read_with(path, &Options::default())
@@ -286,7 +314,13 @@ pub fn read(path: impl AsRef<Path>) -> Result<Metadata> {
 /// Reads the tags and technical fields of `path`.
 pub fn read_with(path: impl AsRef<Path>, options: &Options) -> Result<Metadata> {
     let path = path.as_ref();
-    let tags = Tags::load(path, probe(path)?, false)?;
+    let kind = match probe(path) {
+        Err(Error::UnsupportedFormat) => {
+            return read_external(path).ok_or(Error::UnsupportedFormat);
+        }
+        kind => kind?,
+    };
+    let tags = Tags::load(path, kind, false)?;
     Ok(Metadata {
         fields: tags.fields(options),
         supported: supported(tags.kind),

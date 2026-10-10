@@ -5,6 +5,8 @@
 //! threads so that [`Decoder::read`] never waits for the network.
 
 pub mod cd;
+#[cfg(nulamp_ffmpeg)]
+pub mod ffmpeg_decoder;
 pub mod midi_decoder;
 #[cfg(nulamp_openmpt)]
 pub mod module_decoder;
@@ -101,6 +103,38 @@ pub trait Decoder: Send {
     }
 }
 
+/// Tags and stream information read by a decoder library, for files the tag library does not
+/// support (see [`ffmpeg_tags`]).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FileTags {
+    /// (nulamp field key (10 §7.1), value) pairs, first value per key.
+    pub fields: Vec<(String, String)>,
+    pub info: StreamInfo,
+    /// Average bit rate in kbps.
+    pub kbps: Option<u32>,
+}
+
+/// Reads the tags of a local file with FFmpeg (ASF/WMA attributes, APEv2 in TTA, …). `None`
+/// when the file cannot be opened or nulamp was built without FFmpeg.
+pub fn ffmpeg_tags(location: &str) -> Option<FileTags> {
+    #[cfg(nulamp_ffmpeg)]
+    return ffmpeg_decoder::read_tags(location);
+    #[cfg(not(nulamp_ffmpeg))]
+    {
+        let _ = location;
+        None
+    }
+}
+
+/// The licence of the FFmpeg libraries in use (for example "LGPL version 2.1 or later"), or
+/// `None` when nulamp was built without FFmpeg.
+pub fn ffmpeg_license() -> Option<String> {
+    #[cfg(nulamp_ffmpeg)]
+    return Some(ffmpeg_decoder::license());
+    #[cfg(not(nulamp_ffmpeg))]
+    None
+}
+
 /// Creates decoders for the locations it claims.
 pub trait DecoderFactory: Send + Sync {
     fn name(&self) -> &str;
@@ -110,6 +144,12 @@ pub trait DecoderFactory: Send + Sync {
 
     /// Optional content check, consulted before extension matching.
     fn claims(&self, _location: &str) -> bool {
+        false
+    }
+
+    /// Whether this factory may also be tried for local files the selected decoder failed to
+    /// open (its library probes the content). See [`Registry::open`].
+    fn fallback(&self) -> bool {
         false
     }
 
@@ -173,6 +213,9 @@ impl Registry {
         r.add(Box::new(midi_decoder::MidiFactory::default()));
         #[cfg(nulamp_openmpt)]
         r.add(Box::new(module_decoder::ModuleFactory::default()));
+        // Last, so the decoders above keep their own extensions.
+        #[cfg(nulamp_ffmpeg)]
+        r.add(Box::new(ffmpeg_decoder::FfmpegFactory));
         r
     }
 
@@ -207,11 +250,31 @@ impl Registry {
             .map(|f| f.as_ref())
     }
 
+    /// Opens a location with the selected factory. When that fails (other than a missing file
+    /// or a network error), the fallback factories ([`DecoderFactory::fallback`]) are tried in
+    /// order; the first error is returned when none succeeds.
     pub fn open(&self, location: &str) -> Result<Box<dyn Decoder>, DecodeError> {
-        let f = self
-            .select(location)
-            .ok_or_else(|| DecodeError::Unsupported(location.into()))?;
-        f.open(location)
+        let selected = self.select(location);
+        let err = match selected {
+            Some(f) => match f.open(location) {
+                Ok(d) => return Ok(d),
+                Err(e @ (DecodeError::NotFound(_) | DecodeError::Stream(_))) => return Err(e),
+                Err(e) => e,
+            },
+            None => DecodeError::Unsupported(location.into()),
+        };
+        let selected = selected.map(|f| f.name());
+        for f in self
+            .factories
+            .iter()
+            .filter(|f| f.fallback() && Some(f.name()) != selected)
+        {
+            if let Ok(d) = f.open(location) {
+                log::debug!("{location}: opened by {} after: {err}", f.name());
+                return Ok(d);
+            }
+        }
+        Err(err)
     }
 
     /// Whether some decoder claims this extension (folder scanning, 10 §2.2).

@@ -1779,6 +1779,7 @@ dependencies = [
 name = "nulamp-decoders"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "encoding_rs",
  "log",
  "nulamp-playlist",
