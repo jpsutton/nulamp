@@ -1,0 +1,16 @@
+#name Echo
+#slider1 0.3 Delay (s)
+#slider2 0.4 Feedback
+@init
+pos = 0;
+@slider
+len = clamp(floor(slider1 * srate), 1, 32767);
+pos = pos % len;
+@sample
+l = buf[pos * 2];
+r = buf[pos * 2 + 1];
+buf[pos * 2] = left + l * slider2;
+buf[pos * 2 + 1] = right + r * slider2;
+left += l;
+right += r;
+pos = (pos + 1) % len;

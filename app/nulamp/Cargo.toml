@@ -18,6 +18,7 @@ nulamp-meta = { version = "0.1.0", path = "../../crates/nulamp-meta" }
 nulamp-playlist = { version = "0.1.0", path = "../../crates/nulamp-playlist" }
 nulamp-plugin-api = { version = "0.1.0", path = "../../crates/nulamp-plugin-api" }
 nulamp-remote = { version = "0.1.0", path = "../../crates/nulamp-remote" }
+nulamp-script = { version = "0.1.0", path = "../../crates/nulamp-script" }
 nulamp-skin = { version = "0.1.0", path = "../../crates/nulamp-skin" }
 nulamp-tf = { version = "0.1.0", path = "../../crates/nulamp-tf" }
 nulamp-ui = { version = "0.1.0", path = "../../crates/nulamp-ui" }

@@ -145,6 +145,14 @@ pub struct PluginRuntime {
     status: Arc<Mutex<PlayerStatus>>,
     store: Arc<Mutex<Store>>,
     seen: Seen,
+    /// Scripted effects (built-in presets, then `<config>/dsp/*.nsp`).
+    scripts: Vec<nulamp_script::Script>,
+    script_dir: PathBuf,
+}
+
+/// `active_dsp` value of a scripted effect.
+fn script_key(name: &str) -> String {
+    format!("script:{name}")
 }
 
 /// The system plugin folder: `<prefix>/lib/nulamp/plugins` for an installed binary in
@@ -193,6 +201,11 @@ impl PluginRuntime {
                 m.info().section
             );
         }
+        let script_dir = config.join("dsp");
+        let (scripts, errors) = nulamp_script::presets(Some(&script_dir));
+        for e in errors {
+            log::warn!("scripted effect {e}");
+        }
         Self {
             plugins,
             commands,
@@ -200,6 +213,8 @@ impl PluginRuntime {
             status,
             store,
             seen: Seen::default(),
+            scripts,
+            script_dir,
         }
     }
 
@@ -216,6 +231,10 @@ impl PluginRuntime {
     /// A new instance of the saved active effect.
     pub fn active_dsp_stage(&self) -> Option<Box<dyn nulamp_audio::chain::Stage>> {
         let section = self.active_dsp()?;
+        if let Some(name) = section.strip_prefix("script:") {
+            let s = self.scripts.iter().find(|s| s.name == name)?;
+            return Some(Box::new(s.stage()));
+        }
         let dsp = self
             .plugins
             .dsps
@@ -257,15 +276,26 @@ impl PluginRuntime {
                     active: i.kind == ModuleKind::Dsp && active.as_deref() == Some(&i.section),
                 }
             })
+            .chain(self.scripts.iter().map(|s| PluginRow {
+                kind: "DSP".into(),
+                name: format!("Signal processor: {}", s.name),
+                file: String::new(),
+                can_configure: true,
+                can_about: false,
+                selectable: true,
+                active: active.as_deref() == Some(&script_key(&s.name)),
+            }))
             .collect();
         (rows, self.plugins.errors.len())
     }
 
     /// Runs a dialog action. Returns true when the active effect changed.
     pub fn action(&mut self, index: usize, action: PluginAction) -> bool {
-        let Some(m) = self.modules().get(index).cloned() else {
-            return false;
-        };
+        let modules = self.modules();
+        if let Some(i) = index.checked_sub(modules.len()) {
+            return self.script_action(i, action);
+        }
+        let m = modules[index].clone();
         match action {
             PluginAction::Configure => {
                 m.configure();
@@ -283,6 +313,45 @@ impl PluginRuntime {
                 }
                 true
             }
+        }
+    }
+
+    fn script_action(&mut self, i: usize, action: PluginAction) -> bool {
+        let Some(s) = self.scripts.get(i) else {
+            return false;
+        };
+        let key = script_key(&s.name);
+        match action {
+            PluginAction::ToggleActive => {
+                let on = self.active_dsp().as_deref() != Some(&key);
+                if let Ok(mut st) = self.store.lock() {
+                    st.set(HOST_SECTION, "active_dsp", on.then_some(key.as_str()));
+                }
+                true
+            }
+            PluginAction::Configure => {
+                // Opens the preset in the text editor; a built-in preset is first copied to
+                // the user's preset folder, where the copy replaces it from the next start.
+                let path = match (&s.path, s.builtin_file) {
+                    (Some(p), _) => p.clone(),
+                    (None, Some(file)) => {
+                        let path = self.script_dir.join(file);
+                        let text = nulamp_script::BUILTIN
+                            .iter()
+                            .find(|(f, _)| *f == file)
+                            .map_or("", |(_, t)| *t);
+                        let _ = std::fs::create_dir_all(&self.script_dir);
+                        if !path.exists() {
+                            let _ = std::fs::write(&path, text);
+                        }
+                        path
+                    }
+                    (None, None) => self.script_dir.clone(),
+                };
+                nulamp_ui::shell::open_path(&path.to_string_lossy());
+                false
+            }
+            PluginAction::About => false,
         }
     }
 

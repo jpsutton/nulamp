@@ -2284,7 +2284,7 @@ fn pl_cursor(x: i32, y: i32, w: i32, h: i32, shade: bool) -> CursorRole {
 }
 
 /// Opens a file or URL with the desktop's default application.
-fn open_path(path: &str) {
+pub fn open_path(path: &str) {
     let r = if cfg!(target_os = "windows") {
         std::process::Command::new("cmd")
             .args(["/C", "start", "", path])

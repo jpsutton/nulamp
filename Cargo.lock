@@ -1747,6 +1747,7 @@ dependencies = [
  "nulamp-playlist",
  "nulamp-plugin-api",
  "nulamp-remote",
+ "nulamp-script",
  "nulamp-skin",
  "nulamp-tf",
  "nulamp-ui",
@@ -1878,6 +1879,14 @@ dependencies = [
  "nulamp-skin",
  "nulamp-vis",
  "png",
+]
+
+[[package]]
+name = "nulamp-script"
+version = "0.1.0"
+dependencies = [
+ "nulamp-audio",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

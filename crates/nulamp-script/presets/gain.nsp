@@ -1,0 +1,7 @@
+#name Gain
+#slider1 0 Gain (dB)
+@slider
+g = 10 ^ (slider1 / 20);
+@sample
+left *= g;
+right *= g;
