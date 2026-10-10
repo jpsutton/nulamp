@@ -165,6 +165,7 @@ impl<P: PlayerHandle> Shell<P> {
                 }
             }
             DialogResult::LoadSkin(path) => self.load_skin(path),
+            DialogResult::EqSave { name, auto } => self.eq_save(&name, auto),
         }
         self.poll_player();
         self.request_redraw_all();

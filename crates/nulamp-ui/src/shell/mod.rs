@@ -792,6 +792,64 @@ impl<P: PlayerHandle> Shell<P> {
         }
     }
 
+    fn eq_library_path(&self) -> std::path::PathBuf {
+        config_dir().join(nulamp_eq::preset::PRESET_LIBRARY_FILE)
+    }
+
+    fn eq_auto_path(&self) -> std::path::PathBuf {
+        config_dir().join(nulamp_eq::preset::AUTOLOAD_LIBRARY_FILE)
+    }
+
+    /// The preset library, created with the first-run presets when missing (03 §5.2).
+    fn eq_library(&self) -> Vec<nulamp_eq::Preset> {
+        let path = self.eq_library_path();
+        let _ = std::fs::create_dir_all(config_dir());
+        nulamp_eq::preset::load_or_create_library(&path).unwrap_or_default()
+    }
+
+    /// Loading a preset changes bands and preamp only (03 §5.3).
+    fn apply_preset(&mut self, bands: [u8; 10], preamp: u8) {
+        self.prefs.eq.bands = bands;
+        self.prefs.eq.preamp = preamp;
+        self.eq_changed();
+    }
+
+    fn eq_save(&mut self, name: &str, auto: bool) {
+        let path = if auto {
+            self.eq_auto_path()
+        } else {
+            self.eq_library_path()
+        };
+        let _ = std::fs::create_dir_all(config_dir());
+        let p = nulamp_eq::Preset::new(name, self.prefs.eq.bands, self.prefs.eq.preamp);
+        if let Err(e) = nulamp_eq::preset::save_preset(&path, &p) {
+            log::error!("cannot save preset {name}: {e}");
+        }
+    }
+
+    /// File name (with extension, no folders) of the current entry, for auto-load presets.
+    fn current_file_name(&self) -> String {
+        let e = self.player.engine();
+        e.playlist
+            .get(self.last_status.position)
+            .map(|x| nulamp_eq::preset::track_file_name(&x.location).to_string())
+            .unwrap_or_default()
+    }
+
+    /// EQ auto-load when a track starts (03 §5.4).
+    fn eq_auto_load(&mut self) {
+        if !self.prefs.eq.auto_load {
+            return;
+        }
+        let q2 = nulamp_eq::preset::read_library_or_empty(&self.eq_auto_path());
+        let q1 = nulamp_eq::preset::read_library_or_empty(&self.eq_library_path());
+        let file = self.current_file_name();
+        if let Some(p) = nulamp_eq::preset::auto_load(&q2, &q1, &file) {
+            let (bands, preamp) = (p.bands, p.preamp);
+            self.apply_preset(bands, preamp);
+        }
+    }
+
     fn eq_changed(&mut self) {
         self.player.set_eq(&self.prefs.eq);
         self.request_redraw(Kind::Equalizer);
@@ -1240,9 +1298,15 @@ impl<P: PlayerHandle> Shell<P> {
             || s.length_ms != self.last_status.length_ms
             || s.playlist_len != self.last_status.playlist_len
             || s.state != self.last_status.state;
+        let started = s.state == PlayState::Playing
+            && (self.last_status.state == PlayState::Stopped
+                || s.position != self.last_status.position);
         self.last_status = s;
         if title_changed {
             self.refresh_title();
+        }
+        if started {
+            self.eq_auto_load();
         }
     }
 
