@@ -6,7 +6,7 @@ use nulamp_core::engine::{Effect, Engine};
 use nulamp_core::{Command, EntryId, PlayState, PlayerStatus};
 use nulamp_decoders::{Registry, StreamInfo};
 
-use crate::engine::{AudioEngine, Control, EngineStatus, Event, Token};
+use crate::engine::{AudioEngine, Control, EngineStatus, Event, OutputPrefs, Token};
 
 /// Notifications for the user interface and remote control.
 #[derive(Debug, Clone, PartialEq)]
@@ -31,10 +31,16 @@ pub struct Player {
     opened: Option<EntryId>,
     /// The engine decided to stop after the current track; keep "playing" until it drains.
     draining: bool,
+    /// Entry opened again to seek in it (see [`Self::seek`]).
+    reopened: Option<EntryId>,
     pending_events: Vec<PlayerEvent>,
     /// Per-track pre-gain (ReplayGain); 1.0 until wired.
     pub gain_for: Box<dyn Fn(&str) -> f32 + Send>,
+    /// Album identity of a location for "gapless for albums" (07 §6.4); `None` when unknown.
+    /// Two tracks belong to the same album when both give the same key.
+    pub album_of: Box<dyn Fn(&str) -> Option<String> + Send>,
     eq: Arc<crate::eq_stage::SharedEq>,
+    prefs: OutputPrefs,
 }
 
 fn token(id: EntryId) -> Token {
@@ -44,6 +50,11 @@ fn token(id: EntryId) -> Token {
 impl Player {
     pub fn new(engine: Engine, registry: Arc<Registry>) -> Self {
         let audio = AudioEngine::start(registry.clone());
+        Self::with_audio(engine, registry, audio)
+    }
+
+    /// A player on an engine started elsewhere (for example [`AudioEngine::start_offline`]).
+    pub fn with_audio(engine: Engine, registry: Arc<Registry>, audio: AudioEngine) -> Self {
         audio.send(Control::Volume(200));
         let eq = crate::eq_stage::SharedEq::new(nulamp_eq::EqSettings::default());
         audio.send(Control::SetStages(vec![Box::new(
@@ -58,9 +69,12 @@ impl Player {
             heard: None,
             opened: None,
             draining: false,
+            reopened: None,
             pending_events: Vec::new(),
             gain_for: Box::new(|_| 1.0),
+            album_of: Box::new(|_| None),
             eq,
+            prefs: OutputPrefs::default(),
         }
     }
 
@@ -72,7 +86,14 @@ impl Player {
         self.engine.playlist.by_id(id).map(|e| e.location.clone())
     }
 
-    fn apply(&mut self, effects: Vec<Effect>) {
+    /// Carries out effects. `manual`: they come from a user command, not the end of a track.
+    fn apply(&mut self, effects: Vec<Effect>, manual: bool) {
+        // Crossfade on manual track changes only while something is heard and not paused.
+        let crossfade = manual
+            && self.prefs.crossfade
+            && self.prefs.crossfade_manual
+            && self.heard.is_some()
+            && !self.audio.status().paused;
         for e in effects {
             match e {
                 Effect::Start(id) => {
@@ -82,11 +103,13 @@ impl Player {
                     let gain = (self.gain_for)(&loc);
                     self.draining = false;
                     self.opened = Some(id);
+                    self.reopened = None;
                     self.audio.send(Control::Open {
                         token: token(id),
                         location: loc,
                         start_ms: 0,
                         gain,
+                        crossfade,
                     });
                 }
                 Effect::Stop => {
@@ -162,7 +185,7 @@ impl Player {
             Command::PlayIndex(i) => self.engine.play_index(i),
         };
         // A command that changes the track invalidates any queued gapless successor.
-        self.apply(effects);
+        self.apply(effects, true);
     }
 
     fn set_volume(&mut self, v: u8) {
@@ -174,7 +197,9 @@ impl Player {
         if self.engine.state == PlayState::Stopped || self.heard.is_none() {
             return;
         }
-        // Seeking re-anchors the stream on the heard track.
+        self.draining = false;
+        // Seeking re-anchors the stream on the heard track. When the engine already decodes
+        // the next track (gapless or crossfade), the heard one is opened again.
         if let Some((id, _)) = &self.heard
             && self.opened != Some(*id)
         {
@@ -183,8 +208,19 @@ impl Player {
                 self.engine.playlist.set_current(i);
             }
             self.opened = Some(id);
+            if let Some(loc) = self.location(id) {
+                self.reopened = Some(id);
+                let gain = (self.gain_for)(&loc);
+                self.audio.send(Control::Open {
+                    token: token(id),
+                    location: loc,
+                    start_ms: ms,
+                    gain,
+                    crossfade: false,
+                });
+                return;
+            }
         }
-        self.draining = false;
         self.audio.send(Control::Seek(ms));
     }
 
@@ -204,8 +240,11 @@ impl Player {
                     self.heard = Some((id_of(token), info));
                     self.engine.track_started();
                     self.refresh_metadata(id_of(token));
-                    self.pending_events
-                        .push(PlayerEvent::TrackStarted(id_of(token)));
+                    // Opened again for a seek: the same play continues.
+                    if self.reopened.take() != Some(id_of(token)) {
+                        self.pending_events
+                            .push(PlayerEvent::TrackStarted(id_of(token)));
+                    }
                 }
             }
             Event::TrackChanged { token, info } => {
@@ -221,13 +260,14 @@ impl Player {
                     return;
                 }
                 let effects = self.engine.open_failed();
-                self.apply(effects);
+                self.apply(effects, false);
             }
             Event::NeedNext { token } => {
                 if self.opened != Some(id_of(token)) {
                     return;
                 }
-                // Decide the next track now so it can be written gaplessly.
+                // Decide the next track now so it can be written gaplessly or crossfaded.
+                let ending = self.location(id_of(token));
                 let effects = self.engine.track_ended();
                 let mut queued = false;
                 for e in &effects {
@@ -235,11 +275,15 @@ impl Player {
                         && let Some(loc) = self.location(*id)
                     {
                         let gain = (self.gain_for)(&loc);
+                        let crossfade = self.prefs.crossfade
+                            && !(self.prefs.gapless_albums
+                                && ending.as_deref().is_some_and(|a| self.same_album(a, &loc)));
                         self.opened = Some(*id);
                         self.audio.send(Control::Queue {
                             token: token_of(*id),
                             location: loc,
                             gain,
+                            crossfade,
                         });
                         queued = true;
                     }
@@ -261,7 +305,7 @@ impl Player {
                 } else {
                     // A seek failed or the stream ended unexpectedly: advance.
                     let effects = self.engine.track_ended();
-                    self.apply(effects);
+                    self.apply(effects, false);
                 }
             }
             Event::DeviceError(e) => {
@@ -293,9 +337,22 @@ impl Player {
         }
     }
 
-    /// Updates fades and buffering (07 §6).
-    pub fn set_output_prefs(&mut self, p: crate::engine::OutputPrefs) {
+    /// Whether two locations belong to the same album (see [`Self::album_of`]).
+    fn same_album(&self, a: &str, b: &str) -> bool {
+        if a == b {
+            return true;
+        }
+        matches!(((self.album_of)(a), (self.album_of)(b)), (Some(x), Some(y)) if x == y)
+    }
+
+    /// Updates fades, crossfade and buffering (07 §6).
+    pub fn set_output_prefs(&mut self, p: OutputPrefs) {
+        self.prefs = p;
         self.audio.send(Control::SetPrefs(p));
+    }
+
+    pub fn output_prefs(&self) -> OutputPrefs {
+        self.prefs
     }
 
     /// Updates the equalizer.

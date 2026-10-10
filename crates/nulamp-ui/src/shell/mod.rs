@@ -156,6 +156,13 @@ pub struct UiPrefs {
     pub fade_seek: bool,
     /// Output buffer length in ms (07 §6.1).
     pub buffer_ms: u32,
+    /// Crossfade at the end of each track (07 §6.4), its length, curve, manual changes.
+    pub crossfade: bool,
+    pub crossfade_ms: u32,
+    pub crossfade_equal_power: bool,
+    pub crossfade_manual: bool,
+    /// Join tracks of one album gaplessly even with crossfade on.
+    pub gapless_albums: bool,
     /// Show the tray icon (11 §7).
     pub show_tray: bool,
     /// Global hotkeys (11 §5).
@@ -207,6 +214,11 @@ impl Default for UiPrefs {
             fade_pause_stop: true,
             fade_seek: true,
             buffer_ms: 2000,
+            crossfade: false,
+            crossfade_ms: 333,
+            crossfade_equal_power: false,
+            crossfade_manual: false,
+            gapless_albums: true,
             show_tray: false,
             hotkeys: nulamp_remote::HotkeySettings::default(),
         }

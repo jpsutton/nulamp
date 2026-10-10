@@ -16,13 +16,14 @@ pub struct PlaylistOptions {
     pub old_school_buttons: bool,
 }
 
-const PAGES: [&str; 6] = [
+const PAGES: [&str; 7] = [
     "Classic skins",
     "Playlist",
     "Playback",
     "Equalizer",
     "Visualization",
     "Skins",
+    "Crossfade",
 ];
 const PAGE_LIST: u32 = 1;
 const OK: u32 = 2;
@@ -115,6 +116,15 @@ fn page_options(page: usize) -> Vec<CheckOpt> {
         4 => vec![
             opt!("Show peaks", p.vis.peaks),
             opt!("Thick bands", p.vis.thick_bands),
+        ],
+        6 => vec![
+            opt!("Crossfade at the end of each track", p.crossfade),
+            opt!(
+                "Equal-power curve (instead of linear)",
+                p.crossfade_equal_power
+            ),
+            opt!("Also crossfade on manual track changes", p.crossfade_manual),
+            opt!("No crossfade within an album (gapless)", p.gapless_albums),
         ],
         _ => vec![],
     }
@@ -219,6 +229,12 @@ impl PrefsDialog {
                     secret: false,
                 });
             }
+            6 => num(
+                "Crossfade length (ms):",
+                self.prefs.crossfade_ms.to_string(),
+                NUM,
+                &mut widgets,
+            ),
             _ => {}
         }
         widgets.push(Widget::Button {
@@ -280,6 +296,11 @@ impl PrefsDialog {
             }
             5 if !text.trim().is_empty() => {
                 self.prefs.skins_dir = std::path::PathBuf::from(text.trim());
+            }
+            6 => {
+                if let Ok(v) = text.trim().parse::<u32>() {
+                    self.prefs.crossfade_ms = v.min(20_000);
+                }
             }
             _ => {}
         }
@@ -358,6 +379,26 @@ mod tests {
                 DialogResult::Prefs(b) => {
                     assert!(!b.0.dim_inactive);
                     assert!(b.1.zero_pad);
+                }
+                _ => panic!(),
+            },
+            _ => panic!("expected OK result"),
+        }
+    }
+
+    #[test]
+    fn crossfade_page() {
+        let mut d = PrefsDialog::new(UiPrefs::default(), pl());
+        d.handle(FormEvent::Selected(PAGE_LIST, 6));
+        // First option: crossfade (default off) → on.
+        d.form.mouse_down(140, 10);
+        d.form.mouse_up(140, 10);
+        d.form.set_text(NUM, "5000");
+        match d.handle(FormEvent::Clicked(OK)) {
+            Outcome::Do(r, true) => match &r[0] {
+                DialogResult::Prefs(b) => {
+                    assert!(b.0.crossfade && b.0.gapless_albums);
+                    assert_eq!(b.0.crossfade_ms, 5000);
                 }
                 _ => panic!(),
             },

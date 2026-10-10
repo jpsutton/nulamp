@@ -8,5 +8,8 @@ pub mod output;
 pub mod player;
 pub mod resample;
 
-pub use engine::{AudioEngine, Control, EngineStatus, Event, OutputPrefs};
+pub use engine::{
+    AudioEngine, Backend, Control, EngineStatus, Event, FadeCurve, OfflineSlot, OutputPrefs,
+};
+pub use output::DeviceSide;
 pub use player::{Player, PlayerEvent};
