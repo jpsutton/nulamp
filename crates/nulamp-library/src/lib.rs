@@ -21,7 +21,7 @@ pub use local::{ExtensionFilter, LocalLibrary, ScanHandle, ScanMode, WatchFolder
 pub use mock::MockProvider;
 pub use model::{
     BrowseNode, Capabilities, LibraryEvent, NodeKind, Page, PlaybackLocation, PlaylistInfo,
-    ReplayGain, ScanSummary, Track, TrackId, TrackPage,
+    ReplayGain, ScanSummary, Track, TrackId, TrackPage, TrackSummary,
 };
 pub use provider::{LibraryProvider, Registry, Subscribers};
 pub use query::{CmpOp, NumField, Query, Sort, SortKey, Term, TextField, fold, tokenize};

@@ -216,6 +216,8 @@ impl Capabilities {
     /// Ratings are stored only in the library, not in the files' tags; an app that wants
     /// them in the tags writes them itself.
     pub const RATING_DB_ONLY: Self = Self(1 << 7);
+    /// [`crate::LibraryProvider::remove_tracks`] works.
+    pub const REMOVE: Self = Self(1 << 8);
 
     pub const fn bits(self) -> u32 {
         self.0
@@ -355,6 +357,14 @@ pub struct TrackPage {
     /// Number of matching tracks over all pages.
     pub total: u64,
     pub offset: u64,
+}
+
+/// Size of a track listing over all pages.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TrackSummary {
+    pub count: u64,
+    /// Sum of the known track lengths.
+    pub length_ms: u64,
 }
 
 /// Where to play a track from: a file path, or a URL plus the HTTP headers the request

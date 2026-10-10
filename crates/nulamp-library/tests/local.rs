@@ -855,3 +855,49 @@ fn ffmpeg_encoded_formats() {
     }
     assert_eq!(search(&lib, "album:signals track=3").len(), 2);
 }
+
+#[test]
+fn summary_and_remove_tracks() {
+    let fx = Fixture::new();
+    let lib = fx.scanned();
+    assert!(lib.capabilities().contains(Capabilities::REMOVE));
+    let all = lib.summary(&BrowseNode::root(), &Query::all()).unwrap();
+    assert_eq!(all.count, 7);
+    let total: u64 = search(&lib, "").iter().map(|t| t.length_ms).sum();
+    assert_eq!(all.length_ms, total);
+    let beatles = lib
+        .summary(&BrowseNode::root(), &Query::parse("artist:beatles"))
+        .unwrap();
+    assert_eq!(beatles.count, 4);
+    let playlists = child(&lib, &BrowseNode::root(), "Playlists");
+    assert_eq!(
+        lib.summary(&playlists, &Query::all()).unwrap(),
+        Default::default()
+    );
+
+    let hunter = find(&lib, "Hunter");
+    let pl = lib.create_playlist("Mix").unwrap();
+    lib.set_playlist_tracks(&pl.id, std::slice::from_ref(&hunter.id))
+        .unwrap();
+    let node = lib.playlist_node(&pl.id).unwrap();
+    assert_eq!(
+        (node.label.as_str(), node.kind),
+        ("Mix", NodeKind::Playlist)
+    );
+    assert_eq!(node_titles(&lib, &node), ["Hunter"]);
+    assert!(matches!(
+        lib.playlist_node("424242"),
+        Err(Error::NotFound(_))
+    ));
+    let events = lib.subscribe();
+    let gone = TrackId::new(LocalLibrary::ID, "999999");
+    assert_eq!(lib.remove_tracks(&[hunter.id.clone(), gone]).unwrap(), 1);
+    assert!(lib.track(&hunter.id).unwrap().is_none());
+    assert!(search(&lib, "hunter").is_empty(), "removed from the index");
+    assert_eq!(lib.playlists().unwrap()[0].track_count, 0);
+    assert_eq!(events.try_recv().unwrap(), LibraryEvent::TracksChanged);
+    assert!(fx.music().join("Bjork/Homogenic/hunter.wav").exists());
+    // A rescan adds the file back while it is under a watch folder.
+    scan(&lib, ScanMode::Incremental);
+    assert_eq!(search(&lib, "hunter").len(), 1);
+}
