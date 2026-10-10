@@ -1272,6 +1272,23 @@ dependencies = [
 [[package]]
 name = "nulamp-plugin-api"
 version = "0.1.0"
+dependencies = [
+ "libloading",
+ "log",
+ "nulamp-audio",
+ "nulamp-core",
+ "nulamp-decoders",
+ "nulamp-plugin-example",
+ "nulamp-vis",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nulamp-plugin-example"
+version = "0.1.0"
+dependencies = [
+ "nulamp-plugin-api",
+]
 
 [[package]]
 name = "nulamp-remote"

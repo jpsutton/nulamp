@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use nulamp_decoders::{Decoder, Registry, StreamInfo};
 
-use crate::chain::{Stage, VIS_BLOCK, VisBlock, VisTap, map_channels};
+use crate::chain::{Stage, VIS_BLOCK, VisBlock, VisTap, map_channels, run_stages};
 use crate::mixer::{MixCmd, Shared};
 use crate::output::Output;
 use crate::resample::Resampler;
@@ -603,9 +603,7 @@ impl Worker {
             }
             self.stage_format = (rate, ch);
         }
-        for s in &mut self.stages {
-            s.process(&mut self.decoded);
-        }
+        run_stages(&mut self.stages, &mut self.decoded);
         let out = self.out.as_ref().expect("output");
         let (out_rate, out_ch) = (out.rate, out.channels);
         self.mapped.clear();

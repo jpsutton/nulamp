@@ -9,8 +9,21 @@ pub trait Stage: Send {
     fn configure(&mut self, sample_rate: u32, channels: usize);
     /// Processes interleaved samples in place.
     fn process(&mut self, samples: &mut [f32]);
+    /// Processes a block whose frame count the stage may change (time-stretch, pitch; 08 §5),
+    /// typically to between half and twice the input. The default processes in place.
+    fn process_resizing(&mut self, samples: &mut Vec<f32>) {
+        self.process(samples);
+    }
     /// Clears internal state after a seek.
     fn reset(&mut self) {}
+}
+
+/// Runs a block through the stages in order. Each stage sees the previous stage's output,
+/// whose frame count may differ from the input's.
+pub fn run_stages(stages: &mut [Box<dyn Stage>], samples: &mut Vec<f32>) {
+    for s in stages {
+        s.process_resizing(samples);
+    }
 }
 
 /// One block of audio for visualizers, stamped with the output frame at which it is heard.
@@ -117,6 +130,37 @@ mod tests {
         let mut out = Vec::new();
         map_channels(&[1.0, 1.0, 1.0, 0.0, 1.0, 1.0], 6, 2, &mut out);
         assert!(out.iter().all(|s| (*s - 1.0).abs() < 1e-6));
+    }
+
+    struct Gain(f32);
+
+    impl Stage for Gain {
+        fn configure(&mut self, _: u32, _: usize) {}
+        fn process(&mut self, samples: &mut [f32]) {
+            samples.iter_mut().for_each(|s| *s *= self.0);
+        }
+    }
+
+    /// Repeats every sample (a mono time-stretch to twice the length).
+    struct Stretch;
+
+    impl Stage for Stretch {
+        fn configure(&mut self, _: u32, _: usize) {}
+        fn process(&mut self, _: &mut [f32]) {
+            unreachable!("the chain uses the resizing path");
+        }
+        fn process_resizing(&mut self, samples: &mut Vec<f32>) {
+            *samples = samples.iter().flat_map(|&s| [s, s]).collect();
+        }
+    }
+
+    #[test]
+    fn stages_may_change_the_frame_count() {
+        let mut stages: Vec<Box<dyn Stage>> =
+            vec![Box::new(Gain(2.0)), Box::new(Stretch), Box::new(Gain(0.5))];
+        let mut v = vec![1.0, -3.0];
+        run_stages(&mut stages, &mut v);
+        assert_eq!(v, [1.0, 1.0, -3.0, -3.0]);
     }
 
     #[test]
