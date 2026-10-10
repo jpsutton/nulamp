@@ -23,6 +23,7 @@ use winit::window::{Cursor, CursorIcon, CustomCursor, Window, WindowId, WindowLe
 mod dialog_host;
 mod dialogs;
 mod popup;
+mod remote;
 
 use crate::docking::{self, DEFAULT_SNAP};
 use crate::eq_input::{EqAction, EqContext, EqInput};
@@ -220,6 +221,10 @@ pub struct Shell<P: PlayerHandle> {
     dialogs: HashMap<WindowId, dialog_host::DialogWin>,
     /// A dialog requested by code without an event-loop handle; opened in `about_to_wait`.
     pending_dialog: Option<Box<dyn crate::dialogs::Dialog>>,
+    remote: Option<nulamp_remote::Server>,
+    mpris: Option<nulamp_remote::Mpris>,
+    mpris_updated: Instant,
+    coalescer: nulamp_remote::OpenCoalescer,
     /// Files dropped during this event batch, and the window they were dropped on.
     dropped: Vec<(Kind, String)>,
     menu_focus_check: Option<Instant>,
@@ -283,6 +288,10 @@ impl<P: PlayerHandle> Shell<P> {
             menus: Vec::new(),
             dialogs: HashMap::new(),
             pending_dialog: None,
+            remote: None,
+            mpris: None,
+            mpris_updated: Instant::now(),
+            coalescer: nulamp_remote::OpenCoalescer::new(std::time::Duration::from_secs(1)),
             dropped: Vec::new(),
             menu_focus_check: None,
             pending_menu: None,
@@ -2190,6 +2199,9 @@ pub fn default_skins_dir() -> std::path::PathBuf {
 
 /// The per-user settings folder (11 §1.1).
 pub fn config_dir() -> std::path::PathBuf {
+    if let Some(d) = std::env::var_os("NULAMP_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return std::path::PathBuf::from(d);
+    }
     if let Some(d) = std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()) {
         return std::path::PathBuf::from(d).join(APP_NAME);
     }
@@ -2373,6 +2385,7 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
             return;
         }
         self.check_menu_focus();
+        self.poll_remote(el);
         if !self.dropped.is_empty() {
             self.handle_drop();
         }
