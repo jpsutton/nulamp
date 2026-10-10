@@ -150,9 +150,13 @@ pub fn save_playlist(p: &Playlist, path: &str, relative: bool) -> Result<(), Str
             x
         })
         .collect();
-    let dir = Path::new(path)
-        .parent()
-        .map(|d| d.to_string_lossy().into_owned());
+    // The folder in the same canonical form as added files, so that 8.3 short names or a
+    // symlinked folder still give relative paths.
+    let dir = Path::new(path).parent().map(|d| {
+        std::fs::canonicalize(d)
+            .map(|c| strip_verbatim(&c.to_string_lossy()))
+            .unwrap_or_else(|_| d.to_string_lossy().into_owned())
+    });
     let opts = WriteOptions {
         relative_to: if relative { dir } else { None },
         ..WriteOptions::default()
@@ -217,6 +221,20 @@ mod tests {
         save_playlist(&p, &out, true).unwrap();
         let text = std::fs::read_to_string(&out).unwrap();
         assert!(text.contains("File1=b.mp3"), "{text}");
+        // The playlist's folder named another way (here a symlink; on Windows an 8.3 short
+        // name) still gives relative paths.
+        #[cfg(unix)]
+        {
+            let link =
+                std::env::temp_dir().join(format!("nulamp-files-link-{}", std::process::id()));
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(&dir, &link).unwrap();
+            let out = link.join("out2.pls");
+            save_playlist(&p, &out.to_string_lossy(), true).unwrap();
+            let text = std::fs::read_to_string(&out).unwrap();
+            assert!(text.contains("File1=b.mp3"), "{text}");
+            std::fs::remove_file(&link).unwrap();
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

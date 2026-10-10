@@ -99,7 +99,8 @@ fn seek_after_the_next_track_was_queued_stays_in_the_heard_track() {
     assert_eq!(right, 4 * RATE as usize);
 }
 
-/// Encodes a WAV file with ffmpeg; `None` when ffmpeg is not installed.
+/// Encodes a WAV file with ffmpeg; `None` when ffmpeg is not installed or lacks the encoder
+/// (Homebrew's ffmpeg, for example, has no libvorbis).
 fn ffmpeg(input: &Path, output: &Path, args: &[&str]) -> Option<()> {
     let status = Process::new("ffmpeg")
         .args(["-v", "error", "-y", "-i"])
@@ -108,7 +109,10 @@ fn ffmpeg(input: &Path, output: &Path, args: &[&str]) -> Option<()> {
         .arg(output)
         .status()
         .ok()?;
-    assert!(status.success(), "ffmpeg failed for {}", output.display());
+    if !status.success() {
+        eprintln!("ffmpeg could not encode {}", output.display());
+        return None;
+    }
     Some(())
 }
 
@@ -117,7 +121,7 @@ fn flac_album_parts_play_sample_identical() {
     let (whole, a, b) = split_sine("gaplessflac");
     let (fa, fb) = (a.with_extension("flac"), b.with_extension("flac"));
     if ffmpeg(&a, &fa, &[]).is_none() || ffmpeg(&b, &fb, &[]).is_none() {
-        eprintln!("ffmpeg not found: skipped");
+        eprintln!("ffmpeg or its encoder not available: skipped");
         return;
     }
     let mut rig = Rig::new(None, 2);
@@ -139,8 +143,8 @@ fn lossy_album_parts_join_without_gap() {
     ] {
         let (ea, eb) = (a.with_extension(ext), b.with_extension(ext));
         if ffmpeg(&a, &ea, &args).is_none() || ffmpeg(&b, &eb, &args).is_none() {
-            eprintln!("ffmpeg not found: skipped");
-            return;
+            eprintln!("{ext}: ffmpeg or its encoder not available: skipped");
+            continue;
         }
         let mut rig = Rig::new(None, 2);
         play(&mut rig, &[&ea, &eb]);
