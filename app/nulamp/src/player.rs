@@ -8,6 +8,7 @@ use nulamp_ui::PlayerHandle;
 
 pub struct AppPlayer {
     pub player: Player,
+    pub titles: crate::titles::TitleReader,
 }
 
 impl PlayerHandle for AppPlayer {
@@ -54,8 +55,21 @@ impl PlayerHandle for AppPlayer {
     }
 
     fn tick(&mut self) {
+        self.titles.tick(&mut self.player.engine);
         for e in self.player.poll() {
             match e {
+                PlayerEvent::TrackStarted(id) => {
+                    // Always re-read an entry's metadata when it starts playing (04 §10).
+                    if let Some(loc) = self
+                        .player
+                        .engine
+                        .playlist
+                        .by_id(id)
+                        .map(|e| e.location.clone())
+                    {
+                        self.titles.request(id, &loc);
+                    }
+                }
                 PlayerEvent::Error(msg) => log::error!("{msg}"),
                 PlayerEvent::OpenFileDialog => log::info!("playlist is empty"),
                 other => log::debug!("{other:?}"),
