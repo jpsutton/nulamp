@@ -1,7 +1,8 @@
 //! Non-rectangular windows from `region.txt` (01 §4.4).
 //!
-//! X11 uses the SHAPE extension for both the visible (bounding) and the input shape. Other
-//! platforms are not implemented yet; their windows stay rectangular.
+//! X11 uses the SHAPE extension for both the visible (bounding) and the input shape. Windows
+//! uses a window region (`SetWindowRgn`), which clips both drawing and input. Other platforms
+//! are not implemented yet; their windows stay rectangular.
 
 use nulamp_render::region::Mask;
 use raw_window_handle::HasWindowHandle;
@@ -10,8 +11,44 @@ use raw_window_handle::HasWindowHandle;
 pub fn apply(window: &impl HasWindowHandle, mask: Option<&Mask>) {
     #[cfg(all(unix, not(target_os = "macos")))]
     x11::apply(window, mask);
-    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    #[cfg(windows)]
+    win32::apply(window, mask);
+    #[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
     let _ = (window, mask);
+}
+
+#[cfg(windows)]
+mod win32 {
+    use super::*;
+    use raw_window_handle::RawWindowHandle;
+    use windows_sys::Win32::Graphics::Gdi::{
+        CombineRgn, CreateRectRgn, DeleteObject, RGN_OR, SetWindowRgn,
+    };
+
+    pub fn apply(window: &impl HasWindowHandle, mask: Option<&Mask>) {
+        let Ok(handle) = window.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(h) = handle.as_raw() else {
+            return;
+        };
+        let hwnd = h.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+        // SAFETY: `hwnd` is a live window owned by this process; region handles are created
+        // here and either handed to the system (SetWindowRgn takes ownership) or deleted.
+        unsafe {
+            let Some(m) = mask else {
+                SetWindowRgn(hwnd, std::ptr::null_mut(), 1);
+                return;
+            };
+            let region = CreateRectRgn(0, 0, 0, 0);
+            for (x, y, w) in m.runs() {
+                let row = CreateRectRgn(x as i32, y as i32, (x + w) as i32, y as i32 + 1);
+                CombineRgn(region, region, row, RGN_OR);
+                DeleteObject(row);
+            }
+            SetWindowRgn(hwnd, region, 1);
+        }
+    }
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
