@@ -256,11 +256,12 @@ impl MainInput {
             return vec![];
         }
         if ctx.clutterbar_shown
-            && let Some(i) = clutter_at(x, y) {
-                self.drag = Some(Drag::Clutter(i));
-                self.clutter_pressed = Some(i);
-                return vec![Action::DragMessage(CLUTTER_HINTS[i as usize].into())];
-            }
+            && let Some(i) = clutter_at(x, y)
+        {
+            self.drag = Some(Drag::Clutter(i));
+            self.clutter_pressed = Some(i);
+            return vec![Action::DragMessage(CLUTTER_HINTS[i as usize].into())];
+        }
         if hit(x, y, 36, 96, 26, 39) {
             return vec![Action::ToggleTimeMode];
         }

@@ -112,10 +112,11 @@ impl Marquee {
     pub fn tick(&mut self, now: u64, autoscroll: bool) -> bool {
         let mut changed = false;
         if let Some((_, MessageEnd::At(t))) = &self.message
-            && now >= *t {
-                self.message = None;
-                changed = true;
-            }
+            && now >= *t
+        {
+            self.message = None;
+            changed = true;
+        }
         if autoscroll
             && self.message.is_none()
             && self.drag_last_x.is_none()
@@ -186,11 +187,7 @@ pub fn balance_message(balance: i8) -> String {
 
 /// `Seek to: M:SS/M:SS (P%)`.
 pub fn seek_message(target_ms: u64, length_ms: u64) -> String {
-    let pct = if length_ms > 0 {
-        target_ms * 100 / length_ms
-    } else {
-        0
-    };
+    let pct = (target_ms * 100).checked_div(length_ms).unwrap_or(0);
     format!(
         "Seek to: {}/{} ({}%)",
         format_length(target_ms / 1000),
