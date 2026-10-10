@@ -63,7 +63,7 @@ impl<P: PlayerHandle> Shell<P> {
             peak_falloff: self.prefs.vis.peak_falloff as u8,
             skins,
             current_skin: self.prefs.skin_path.clone(),
-            bookmarks: Vec::new(),
+            bookmarks: self.bookmarks(),
             eq_enabled: self.prefs.eq.enabled,
             eq_auto: self.prefs.eq.auto_load,
             eq_presets: self.eq_library().into_iter().map(|p| p.name).collect(),
@@ -451,6 +451,30 @@ impl<P: PlayerHandle> Shell<P> {
             MenuCmd::PlFileInfo => {
                 let pl = self.ids.get(&Kind::Playlist).copied().unwrap_or(id);
                 self.handle_pl_actions(pl, vec![PlAction::FileInfoSelected], el);
+            }
+            MenuCmd::Bookmark(loc) => self.play_bookmark(&loc),
+            MenuCmd::Rate(r) => {
+                let loc = self
+                    .player
+                    .engine()
+                    .playlist
+                    .get(self.last_status.position)
+                    .map(|e| e.location.clone());
+                if let Some(loc) = loc {
+                    self.rate_files(&[loc], r);
+                }
+            }
+            MenuCmd::PlRateSelected(r) => {
+                let locs: Vec<String> = self
+                    .player
+                    .engine()
+                    .playlist
+                    .entries()
+                    .iter()
+                    .filter(|e| e.selected)
+                    .map(|e| e.location.clone())
+                    .collect();
+                self.rate_files(&locs, r);
             }
             MenuCmd::PlPlaySelected => {
                 if let Some(i) = self.player.engine().playlist.first_selected() {
