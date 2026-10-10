@@ -46,8 +46,41 @@ impl<P: PlayerHandle> Shell<P> {
         out
     }
 
-    /// Replaces the list with `items` and plays (open) or appends them (add).
+    /// Replaces the list with `items` and plays (open) or appends them (add). Playlist URLs
+    /// are downloaded in the background and added when they arrive.
     pub(super) fn add_items(&mut self, items: Vec<String>, replace: bool) {
+        let mut local = Vec::new();
+        for item in items {
+            let is_url = item.contains("://") && !item.starts_with("file://");
+            match is_url && files::is_playlist_location(&item) {
+                true => match self.player.resolve_playlist_url(&item) {
+                    Some(rx) => self.url_expansions.push((rx, replace)),
+                    None => local.push(item),
+                },
+                false => local.push(item),
+            }
+        }
+        self.add_expanded(local, replace);
+    }
+
+    /// Adds playlist entries downloaded from a playlist URL.
+    pub(super) fn poll_url_expansions(&mut self) {
+        let mut done = Vec::new();
+        self.url_expansions
+            .retain(|(rx, replace)| match rx.try_recv() {
+                Ok(items) => {
+                    done.push((items, *replace));
+                    false
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => true,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+            });
+        for (items, replace) in done {
+            self.add_expanded(items, replace);
+        }
+    }
+
+    fn add_expanded(&mut self, items: Vec<String>, replace: bool) {
         let entries = self.expand(&items);
         if entries.is_empty() {
             return;

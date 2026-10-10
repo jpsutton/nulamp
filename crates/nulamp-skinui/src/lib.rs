@@ -170,6 +170,8 @@ pub enum Widget {
         id: Id,
         text: String,
         cursor: usize,
+        /// Shows `*` for every character (passwords).
+        secret: bool,
     },
     List {
         rect: Rect,
@@ -401,8 +403,18 @@ impl Form {
                     }
                 }
                 Widget::Edit {
-                    text: t, cursor, ..
+                    text: t,
+                    cursor,
+                    secret,
+                    ..
                 } => {
+                    let masked;
+                    let t = if *secret {
+                        masked = "*".repeat(t.chars().count());
+                        &masked
+                    } else {
+                        t
+                    };
                     frame.fill_rect(x, y, r.w, r.h, c.item_bg);
                     frame_rect(
                         frame,
@@ -858,6 +870,7 @@ mod tests {
                 id: 1,
                 text: String::new(),
                 cursor: 0,
+                secret: false,
             },
             Widget::List {
                 rect: Rect::new(0, 20, 100, 44),

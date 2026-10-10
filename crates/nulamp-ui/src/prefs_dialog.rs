@@ -169,6 +169,7 @@ impl PrefsDialog {
                 id,
                 text: value,
                 cursor: 0,
+                secret: false,
             });
             y += 24;
         };
@@ -215,6 +216,7 @@ impl PrefsDialog {
                     id: NUM,
                     text: self.prefs.skins_dir.to_string_lossy().into_owned(),
                     cursor: 0,
+                    secret: false,
                 });
             }
             _ => {}

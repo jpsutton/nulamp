@@ -82,6 +82,7 @@ impl UrlDialog {
                 id: EDIT,
                 text: String::new(),
                 cursor: 0,
+                secret: false,
             },
             Widget::Button {
                 rect: Rect::new(w - 128, 52, 58, 18),
@@ -160,6 +161,122 @@ impl Dialog for UrlDialog {
     }
 }
 
+// ----- Network login (07 §8.5) -----
+
+const USER: u32 = 6;
+const PASSWORD: u32 = 7;
+
+/// Asks for a user name and password for a stream server. Closing it without OK answers
+/// "no credentials".
+pub struct LoginDialog {
+    form: Form,
+    reply: Option<std::sync::mpsc::Sender<Option<(String, String)>>>,
+}
+
+impl LoginDialog {
+    pub fn new(request: crate::shell::CredentialRequest) -> Self {
+        let w = cw(300);
+        let host = request
+            .url
+            .split_once("://")
+            .map(|(_, r)| r.split('/').next().unwrap_or(r))
+            .unwrap_or(&request.url)
+            .to_string();
+        let mut form = Form::new(vec![
+            Widget::Label {
+                rect: Rect::new(6, 6, w - 12, 14),
+                text: format!("{host} asks for a login"),
+            },
+            Widget::Label {
+                rect: Rect::new(6, 20, w - 12, 14),
+                text: format!("Realm: {}", request.realm),
+            },
+            Widget::Label {
+                rect: Rect::new(6, 42, 70, 14),
+                text: "User name:".into(),
+            },
+            Widget::Edit {
+                rect: Rect::new(80, 40, w - 86, 18),
+                id: USER,
+                text: String::new(),
+                cursor: 0,
+                secret: false,
+            },
+            Widget::Label {
+                rect: Rect::new(6, 66, 70, 14),
+                text: "Password:".into(),
+            },
+            Widget::Edit {
+                rect: Rect::new(80, 64, w - 86, 18),
+                id: PASSWORD,
+                text: String::new(),
+                cursor: 0,
+                secret: true,
+            },
+            Widget::Button {
+                rect: Rect::new(w - 128, 92, 58, 18),
+                id: OK,
+                label: "OK".into(),
+                default: true,
+            },
+            Widget::Button {
+                rect: Rect::new(w - 64, 92, 58, 18),
+                id: CANCEL,
+                label: "Cancel".into(),
+                default: false,
+            },
+        ]);
+        form.focus_id(USER);
+        Self {
+            form,
+            reply: Some(request.reply),
+        }
+    }
+
+    fn answer(&mut self, value: Option<(String, String)>) {
+        if let Some(r) = self.reply.take() {
+            let _ = r.send(value);
+        }
+    }
+}
+
+impl Drop for LoginDialog {
+    fn drop(&mut self) {
+        self.answer(None);
+    }
+}
+
+impl Dialog for LoginDialog {
+    fn title(&self) -> String {
+        "Login".into()
+    }
+
+    fn size(&self) -> (i32, i32) {
+        (300, 145)
+    }
+
+    fn form(&mut self) -> &mut Form {
+        &mut self.form
+    }
+
+    fn kind(&self) -> &'static str {
+        "login"
+    }
+
+    fn handle(&mut self, ev: FormEvent) -> Outcome {
+        match ev {
+            FormEvent::Clicked(OK) | FormEvent::Submit => {
+                let user = self.form.text(USER);
+                let password = self.form.text(PASSWORD);
+                self.answer(Some((user, password)));
+                Outcome::Close
+            }
+            FormEvent::Clicked(CANCEL) | FormEvent::Cancel => Outcome::Close,
+            _ => Outcome::Keep,
+        }
+    }
+}
+
 // ----- Jump to time -----
 
 pub struct JumpTimeDialog {
@@ -196,6 +313,7 @@ impl JumpTimeDialog {
                 id: EDIT,
                 text: String::new(),
                 cursor: 0,
+                secret: false,
             },
             Widget::Button {
                 rect: Rect::new(w - 128, 60, 58, 18),
@@ -295,6 +413,7 @@ impl JumpFileDialog {
                 id: EDIT,
                 text: String::new(),
                 cursor: 0,
+                secret: false,
             },
             Widget::List {
                 rect: Rect::new(6, 30, cw - 12, ch - 62),
@@ -648,6 +767,7 @@ impl FileInfoDialog {
                 id: FIELD_BASE + i as u32,
                 text: value,
                 cursor: 0,
+                secret: false,
             });
         }
         let info: Vec<String> = match &meta {
@@ -847,6 +967,7 @@ impl EditEntryDialog {
                 id: EDIT,
                 text: String::new(),
                 cursor: 0,
+                secret: false,
             },
             Widget::Button {
                 rect: Rect::new(w - 128, 52, 58, 18),
@@ -1063,6 +1184,7 @@ impl PresetSaveDialog {
                 id: EDIT,
                 text: String::new(),
                 cursor: 0,
+                secret: false,
             },
             Widget::List {
                 rect: Rect::new(6, 30, cw - 12, ch - 62),
@@ -1143,6 +1265,38 @@ impl Dialog for PresetSaveDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn login() -> (
+        LoginDialog,
+        std::sync::mpsc::Receiver<Option<(String, String)>>,
+    ) {
+        let (reply, answer) = std::sync::mpsc::channel();
+        let d = LoginDialog::new(crate::shell::CredentialRequest {
+            url: "http://radio.example:8000/live".into(),
+            realm: "Members".into(),
+            reply,
+        });
+        (d, answer)
+    }
+
+    #[test]
+    fn login_answers_once() {
+        let (mut d, answer) = login();
+        d.form().text_input("bob");
+        d.form().key(nulamp_skinui::Key::Tab);
+        d.form().text_input("pw");
+        assert!(matches!(d.handle(FormEvent::Submit), Outcome::Close));
+        drop(d);
+        assert_eq!(answer.recv().unwrap(), Some(("bob".into(), "pw".into())));
+        assert!(answer.recv().is_err());
+    }
+
+    #[test]
+    fn closed_login_gives_up() {
+        let (d, answer) = login();
+        drop(d);
+        assert_eq!(answer.recv().unwrap(), None);
+    }
 
     #[test]
     fn url_normalisation() {

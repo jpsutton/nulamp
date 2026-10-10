@@ -103,7 +103,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let files = inv.files.clone();
     let skin = load_skin(prefs.skin_path.as_deref());
 
-    let registry = Arc::new(Registry::with_defaults());
+    let streams = nulamp_decoders::stream::StreamFactory::default();
+    let mut stream_config = streams.config();
+    stream_config.proxy = nulamp_decoders::stream::Proxy::from_env();
+    streams.set_config(stream_config);
+    let (login_tx, login_rx) = std::sync::mpsc::channel();
+    streams.set_credential_prompt(Arc::new(player::LoginPrompt(std::sync::Mutex::new(
+        login_tx,
+    ))));
+    let registry = Arc::new(Registry::with_stream(streams.clone()));
     let mut player = Player::new(Engine::default(), registry.clone());
     let replaygain = std::sync::Arc::new(std::sync::Mutex::new(prefs.replaygain));
     let rg = replaygain.clone();
@@ -156,6 +164,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             player,
             titles,
             replaygain,
+            streams,
+            logins: login_rx,
         },
         prefs,
         skin,
