@@ -60,7 +60,7 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             archive: tar.gz
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             archive: tar.gz
     runs-on: ${{ matrix.os }}
@@ -84,7 +84,9 @@ jobs:
           mkdir -p "dist/$name"
           bin="target/${{ matrix.target }}/release/nulamp"
           [ -f "$bin.exe" ] && bin="$bin.exe"
-          cp "$bin" README.md "dist/$name/"
+          cp "$bin" README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          mkdir -p "dist/$name/plugin-sdk"
+          cp include/nulamp_plugin.h docs/plugins.md "dist/$name/plugin-sdk/"
           cd dist
           if [ "${{ matrix.archive }}" = zip ]; then
             7z a "$name.zip" "$name" >/dev/null
