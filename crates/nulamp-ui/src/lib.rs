@@ -5,6 +5,7 @@ pub mod docking;
 pub mod eq_input;
 pub mod files;
 pub mod geom;
+pub mod hotkeys;
 pub mod input;
 pub mod keys;
 pub mod main_input;

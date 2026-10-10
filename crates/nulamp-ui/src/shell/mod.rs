@@ -123,6 +123,8 @@ pub struct UiPrefs {
     pub buffer_ms: u32,
     /// Show the tray icon (11 §7).
     pub show_tray: bool,
+    /// Global hotkeys (11 §5).
+    pub hotkeys: nulamp_remote::HotkeySettings,
 }
 
 impl Default for UiPrefs {
@@ -171,6 +173,7 @@ impl Default for UiPrefs {
             fade_seek: true,
             buffer_ms: 2000,
             show_tray: false,
+            hotkeys: nulamp_remote::HotkeySettings::default(),
         }
     }
 }
@@ -233,6 +236,10 @@ pub struct Shell<P: PlayerHandle> {
     tray_rx: std::sync::mpsc::Receiver<nulamp_remote::Request>,
     /// Windows hidden by "minimize to tray", to show again on Raise.
     hidden_to_tray: Vec<Kind>,
+    /// OS hotkey registration; created when global hotkeys are first enabled.
+    global_hotkeys: Option<crate::hotkeys::GlobalHotkeys>,
+    /// Kept alive: on X11 the clipboard owner must stay to serve pastes.
+    clipboard: Option<arboard::Clipboard>,
     /// Files dropped during this event batch, and the window they were dropped on.
     dropped: Vec<(Kind, String)>,
     menu_focus_check: Option<Instant>,
@@ -305,6 +312,8 @@ impl<P: PlayerHandle> Shell<P> {
             tray_tx,
             tray_rx,
             hidden_to_tray: Vec::new(),
+            global_hotkeys: None,
+            clipboard: None,
             dropped: Vec::new(),
             menu_focus_check: None,
             pending_menu: None,
@@ -1394,11 +1403,22 @@ impl<P: PlayerHandle> Shell<P> {
         } else if self.hidden_to_tray.is_empty() {
             self.tray = None;
         }
+        self.apply_hotkeys();
         if eq_double_changed {
             self.resize_window(Kind::Equalizer);
         }
         self.refresh_title_force();
         self.request_redraw_all();
+    }
+
+    /// Registers the enabled global hotkeys with the OS, or releases them.
+    fn apply_hotkeys(&mut self) {
+        if self.global_hotkeys.is_none() && self.prefs.hotkeys.enabled {
+            self.global_hotkeys = crate::hotkeys::GlobalHotkeys::new();
+        }
+        if let Some(h) = &mut self.global_hotkeys {
+            h.apply(&self.prefs.hotkeys);
+        }
     }
 
     fn ensure_tray(&mut self) {
@@ -1409,7 +1429,7 @@ impl<P: PlayerHandle> Shell<P> {
     }
 
     /// Hides every player window and shows the tray icon (02 §12.2, Shift+minimize).
-    fn minimize_to_tray(&mut self) {
+    pub(super) fn minimize_to_tray(&mut self) {
         self.ensure_tray();
         if self.tray.is_none() {
             for w in self.windows.values() {
@@ -2251,7 +2271,7 @@ fn open_path(path: &str) {
 }
 
 /// Shows a file in the file manager.
-fn show_in_folder(location: &str) {
+pub(super) fn show_in_folder(location: &str) {
     if nulamp_core::playlist::is_url(location) {
         return;
     }
@@ -2367,6 +2387,7 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         if p.show_tray {
             self.ensure_tray();
         }
+        self.apply_hotkeys();
         self.update_pl_font();
         self.create_window(el, Kind::Playlist, p.pl_pos, p.pl_visible);
         self.create_window(el, Kind::Equalizer, p.eq_pos, p.eq_visible);

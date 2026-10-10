@@ -127,6 +127,15 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
         ("manual_advance", b(st.manual_advance)),
         ("position", st.position.to_string()),
     ];
+    let mut rows: Vec<(String, String)> =
+        rows.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+    rows.push(("hotkeys_enabled".into(), b(p.hotkeys.enabled)));
+    for (i, hk) in p.hotkeys.bindings.iter().enumerate() {
+        rows.push((
+            format!("hotkey_{i}"),
+            format!("{} {}", hk.action.name(), hk.hotkey),
+        ));
+    }
     let mut out = String::from("[nulamp]\n");
     for (k, v) in rows {
         out.push_str(&format!("{k}={}\n", v.replace(['\n', '\r'], " ")));
@@ -266,6 +275,19 @@ pub fn from_ini(text: &str) -> (UiPrefs, PlayerState) {
     p.fade_pause_stop = flag("fade_pause_stop", p.fade_pause_stop);
     p.fade_seek = flag("fade_seek", p.fade_seek);
     p.show_tray = flag("show_tray", p.show_tray);
+    p.hotkeys.enabled = flag("hotkeys_enabled", p.hotkeys.enabled);
+    if get("hotkey_0").is_some() {
+        p.hotkeys.bindings = (0..)
+            .map_while(|i| get(&format!("hotkey_{i}")))
+            .filter_map(|v| {
+                let (action, hotkey) = v.trim().split_once(' ')?;
+                Some(nulamp_remote::hotkey::Binding {
+                    hotkey: nulamp_remote::Hotkey::parse(hotkey)?,
+                    action: nulamp_remote::Assignable::from_name(action)?,
+                })
+            })
+            .collect();
+    }
     if let Some(n) = num("buffer_ms") {
         p.buffer_ms = n.clamp(200, 20_000) as u32;
     }
@@ -315,6 +337,9 @@ mod tests {
         p.eq.bands[3] = 5;
         p.vis.mode = VisMode::Oscilloscope;
         p.pl_size = (450, 290);
+        p.hotkeys.enabled = true;
+        p.hotkeys.bindings.truncate(3);
+        p.hotkeys.bindings[2].hotkey = nulamp_remote::Hotkey::parse("Shift+F7").unwrap();
         let st = PlayerState {
             volume: 128,
             balance: -20,
@@ -329,6 +354,7 @@ mod tests {
         assert_eq!(p2.eq.bands[3], 5);
         assert_eq!(p2.vis.mode, VisMode::Oscilloscope);
         assert_eq!(p2.pl_size, (450, 290));
+        assert_eq!(p2.hotkeys, p.hotkeys);
         assert_eq!(st2, st);
     }
 
