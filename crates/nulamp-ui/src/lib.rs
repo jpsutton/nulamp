@@ -16,5 +16,6 @@ pub mod playlist;
 pub mod prefs_dialog;
 pub mod shell;
 pub mod title;
+pub mod tray;
 
 pub use shell::{PlayerHandle, Shell, UiPrefs};

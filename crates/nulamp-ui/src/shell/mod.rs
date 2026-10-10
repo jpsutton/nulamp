@@ -121,6 +121,8 @@ pub struct UiPrefs {
     pub fade_seek: bool,
     /// Output buffer length in ms (07 §6.1).
     pub buffer_ms: u32,
+    /// Show the tray icon (11 §7).
+    pub show_tray: bool,
 }
 
 impl Default for UiPrefs {
@@ -168,6 +170,7 @@ impl Default for UiPrefs {
             fade_pause_stop: true,
             fade_seek: true,
             buffer_ms: 2000,
+            show_tray: false,
         }
     }
 }
@@ -225,6 +228,11 @@ pub struct Shell<P: PlayerHandle> {
     mpris: Option<nulamp_remote::Mpris>,
     mpris_updated: Instant,
     coalescer: nulamp_remote::OpenCoalescer,
+    tray: Option<crate::tray::Tray>,
+    tray_tx: std::sync::mpsc::Sender<nulamp_remote::Request>,
+    tray_rx: std::sync::mpsc::Receiver<nulamp_remote::Request>,
+    /// Windows hidden by "minimize to tray", to show again on Raise.
+    hidden_to_tray: Vec<Kind>,
     /// Files dropped during this event batch, and the window they were dropped on.
     dropped: Vec<(Kind, String)>,
     menu_focus_check: Option<Instant>,
@@ -254,6 +262,7 @@ pub struct Shell<P: PlayerHandle> {
 
 impl<P: PlayerHandle> Shell<P> {
     pub fn new(mut player: P, prefs: UiPrefs, skin: Skin) -> Self {
+        let (tray_tx, tray_rx) = std::sync::mpsc::channel();
         player.set_eq(&prefs.eq);
         player.set_playback_prefs(&prefs);
         let mut pl = PlaylistUi::default();
@@ -292,6 +301,10 @@ impl<P: PlayerHandle> Shell<P> {
             mpris: None,
             mpris_updated: Instant::now(),
             coalescer: nulamp_remote::OpenCoalescer::new(std::time::Duration::from_secs(1)),
+            tray: None,
+            tray_tx,
+            tray_rx,
+            hidden_to_tray: Vec::new(),
             dropped: Vec::new(),
             menu_focus_check: None,
             pending_menu: None,
@@ -531,17 +544,11 @@ impl<P: PlayerHandle> Shell<P> {
             .get(&Kind::Main)
             .and_then(|id| self.windows.get(id))
         {
-            let caption = if self.prefs.show_number_in_title && !self.last_status.title.is_empty() {
-                format!(
-                    "{}. {} - {}",
-                    self.last_status.position + 1,
-                    self.last_status.title,
-                    APP_NAME
-                )
-            } else {
-                APP_NAME.to_string()
-            };
+            let caption = self.window_caption();
             w.window.set_title(&caption);
+            if let Some(t) = &self.tray {
+                t.set_tooltip(&caption);
+            }
         }
     }
 
@@ -1054,6 +1061,7 @@ impl<P: PlayerHandle> Shell<P> {
                     self.resize_window(Kind::Main);
                 }
             },
+            Action::Minimize { to_tray: true } => self.minimize_to_tray(),
             Action::Minimize { .. } => {
                 for w in self.windows.values() {
                     w.window.set_minimized(true);
@@ -1381,11 +1389,79 @@ impl<P: PlayerHandle> Shell<P> {
                 w.window.set_window_level(level);
             }
         }
+        if self.prefs.show_tray {
+            self.ensure_tray();
+        } else if self.hidden_to_tray.is_empty() {
+            self.tray = None;
+        }
         if eq_double_changed {
             self.resize_window(Kind::Equalizer);
         }
         self.refresh_title_force();
         self.request_redraw_all();
+    }
+
+    fn ensure_tray(&mut self) {
+        if self.tray.is_none() {
+            let tip = self.window_caption();
+            self.tray = crate::tray::Tray::start(self.tray_tx.clone(), &tip);
+        }
+    }
+
+    /// Hides every player window and shows the tray icon (02 §12.2, Shift+minimize).
+    fn minimize_to_tray(&mut self) {
+        self.ensure_tray();
+        if self.tray.is_none() {
+            for w in self.windows.values() {
+                w.window.set_minimized(true);
+            }
+            return;
+        }
+        self.hidden_to_tray = [Kind::Main, Kind::Equalizer, Kind::Playlist]
+            .into_iter()
+            .filter(|k| self.is_visible(*k))
+            .collect();
+        for k in self.hidden_to_tray.clone() {
+            if let Some(w) = self.ids.get(&k).and_then(|id| self.windows.get(id)) {
+                w.window.set_visible(false);
+            }
+        }
+    }
+
+    /// Shows windows hidden to the tray and brings the player to the front.
+    pub(super) fn raise(&mut self) {
+        for k in std::mem::take(&mut self.hidden_to_tray) {
+            if let Some(w) = self.ids.get(&k).and_then(|id| self.windows.get(id)) {
+                w.window.set_visible(true);
+            }
+        }
+        if !self.prefs.show_tray {
+            self.tray = None;
+        }
+        for w in self.windows.values().filter(|w| w.visible) {
+            w.window.set_minimized(false);
+        }
+        if let Some(w) = self
+            .ids
+            .get(&Kind::Main)
+            .and_then(|id| self.windows.get(id))
+        {
+            w.window.focus_window();
+        }
+        self.request_redraw_all();
+    }
+
+    fn window_caption(&self) -> String {
+        if self.prefs.show_number_in_title && !self.last_status.title.is_empty() {
+            format!(
+                "{}. {} - {}",
+                self.last_status.position + 1,
+                self.last_status.title,
+                APP_NAME
+            )
+        } else {
+            APP_NAME.to_string()
+        }
     }
 
     fn pl_font(&self) -> nulamp_text::FontSpec {
@@ -2288,6 +2364,9 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
             return;
         }
         let p = self.prefs.clone();
+        if p.show_tray {
+            self.ensure_tray();
+        }
         self.update_pl_font();
         self.create_window(el, Kind::Playlist, p.pl_pos, p.pl_visible);
         self.create_window(el, Kind::Equalizer, p.eq_pos, p.eq_visible);

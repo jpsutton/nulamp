@@ -119,6 +119,7 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
         ("fade_pause_stop", b(p.fade_pause_stop)),
         ("fade_seek", b(p.fade_seek)),
         ("buffer_ms", p.buffer_ms.to_string()),
+        ("show_tray", b(p.show_tray)),
         ("volume", st.volume.to_string()),
         ("balance", st.balance.to_string()),
         ("shuffle", b(st.shuffle)),
@@ -264,6 +265,7 @@ pub fn from_ini(text: &str) -> (UiPrefs, PlayerState) {
     }
     p.fade_pause_stop = flag("fade_pause_stop", p.fade_pause_stop);
     p.fade_seek = flag("fade_seek", p.fade_seek);
+    p.show_tray = flag("show_tray", p.show_tray);
     if let Some(n) = num("buffer_ms") {
         p.buffer_ms = n.clamp(200, 20_000) as u32;
     }
