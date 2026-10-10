@@ -99,6 +99,7 @@ pub enum PlAction {
     FontReset,
     JumpToFile,
     FileInfoSelected,
+    BookmarkSelected,
     ScrollToPlaying,
 }
 
@@ -758,6 +759,7 @@ impl PlaylistUi {
                 vec![PlAction::Menu(PlMenuChoice::AddUrl)]
             }
             (Digit3, false, true, false) => vec![PlAction::FileInfoSelected],
+            (KeyI, false, true, false) => vec![PlAction::BookmarkSelected],
             (F4, true, false, false) => vec![PlAction::Close],
             (Numpad8, false, false, false) => {
                 vec![PlAction::Do(Action::Player(Command::VolumeBy(4)))]

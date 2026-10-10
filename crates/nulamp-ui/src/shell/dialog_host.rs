@@ -166,6 +166,8 @@ impl<P: PlayerHandle> Shell<P> {
             }
             DialogResult::LoadSkin(path) => self.load_skin(path),
             DialogResult::EqSave { name, auto } => self.eq_save(&name, auto),
+            DialogResult::SetBookmarks(items) => self.save_bookmarks(&items),
+            DialogResult::PlayBookmark(loc) => self.play_bookmark(&loc),
             DialogResult::Prefs(b) => {
                 let (prefs, pl) = *b;
                 self.apply_prefs(prefs, pl);

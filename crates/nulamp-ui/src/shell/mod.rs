@@ -1171,6 +1171,66 @@ impl<P: PlayerHandle> Shell<P> {
         self.request_redraw_all();
     }
 
+    fn bookmarks_path(&self) -> std::path::PathBuf {
+        config_dir().join("nulamp.bm8")
+    }
+
+    /// Bookmarks as (location, title) pairs.
+    pub(super) fn bookmarks(&self) -> Vec<(String, String)> {
+        std::fs::read(self.bookmarks_path())
+            .map(|b| {
+                nulamp_playlist::read_bookmarks(&b)
+                    .into_iter()
+                    .map(|x| (x.location, x.title))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(super) fn save_bookmarks(&self, items: &[(String, String)]) {
+        let list: Vec<nulamp_playlist::Bookmark> = items
+            .iter()
+            .map(|(location, title)| nulamp_playlist::Bookmark {
+                location: location.clone(),
+                title: title.clone(),
+            })
+            .collect();
+        let _ = std::fs::create_dir_all(config_dir());
+        let path = self.bookmarks_path();
+        let tmp = path.with_extension("bm8.tmp");
+        if std::fs::write(&tmp, nulamp_playlist::write_bookmarks(&list))
+            .and_then(|_| std::fs::rename(&tmp, &path))
+            .is_err()
+        {
+            log::error!("cannot save bookmarks");
+        }
+    }
+
+    fn add_bookmarks(&mut self, new: Vec<(String, String)>) {
+        let mut all = self.bookmarks();
+        all.extend(new);
+        self.save_bookmarks(&all);
+    }
+
+    /// Plays a bookmark: clear, add and play; with Shift, append (10 §9).
+    pub(super) fn play_bookmark(&mut self, location: &str) {
+        let replace = !self.mods.shift;
+        self.add_items(vec![location.to_string()], replace);
+    }
+
+    /// Writes a 0–5 rating to the files' tags.
+    pub(super) fn rate_files(&mut self, locations: &[String], rating: u8) {
+        for loc in locations
+            .iter()
+            .filter(|l| !nulamp_core::playlist::is_url(l))
+        {
+            let value = (rating > 0).then(|| rating.to_string());
+            if let Err(e) = nulamp_meta::write(loc, &[("rating".to_string(), value)]) {
+                log::warn!("cannot rate {loc}: {e}");
+            }
+        }
+    }
+
     /// Applies preferences from the preferences dialog.
     fn apply_prefs(&mut self, prefs: UiPrefs, pl: crate::prefs_dialog::PlaylistOptions) {
         let aot_changed = prefs.always_on_top != self.prefs.always_on_top;
@@ -1333,6 +1393,18 @@ impl<P: PlayerHandle> Shell<P> {
                         self.pl.clamp_scroll(n);
                         self.resize_window(Kind::Playlist);
                     }
+                }
+                PlAction::BookmarkSelected => {
+                    let items: Vec<(String, String)> = self
+                        .player
+                        .engine()
+                        .playlist
+                        .entries()
+                        .iter()
+                        .filter(|e| e.selected)
+                        .map(|e| (e.location.clone(), e.title.clone()))
+                        .collect();
+                    self.add_bookmarks(items);
                 }
                 PlAction::FileInfoSelected => {
                     let e = self.player.engine();
@@ -1746,6 +1818,17 @@ impl<P: PlayerHandle> Shell<P> {
                     old_school_buttons: self.pl.old_school_buttons,
                 };
                 let d = crate::prefs_dialog::PrefsDialog::new(self.prefs.clone(), pl);
+                self.open_dialog(el, Box::new(d));
+            }
+            KeyAction::BookmarkCurrent => {
+                let e = self.player.engine();
+                if let Some(x) = e.playlist.get(self.last_status.position) {
+                    let b = (x.location.clone(), x.title.clone());
+                    self.add_bookmarks(vec![b]);
+                }
+            }
+            KeyAction::EditBookmarks => {
+                let d = crate::dialogs::BookmarksDialog::new(self.bookmarks());
                 self.open_dialog(el, Box::new(d));
             }
             KeyAction::OpenPlaylist => self.dialog_load_playlist(),

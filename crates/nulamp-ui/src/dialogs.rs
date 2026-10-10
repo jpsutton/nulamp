@@ -18,6 +18,10 @@ pub enum DialogResult {
     LoadSkin(Option<String>),
     /// Tags of a file were written: refresh entries with this location.
     TagsWritten(String),
+    /// Replace the bookmark list.
+    SetBookmarks(Vec<(String, String)>),
+    /// Play a bookmark (clear, add, play).
+    PlayBookmark(String),
     /// New preferences from the preferences dialog.
     Prefs(Box<(crate::shell::UiPrefs, crate::prefs_dialog::PlaylistOptions)>),
     /// Save the current EQ under a name, in the preset or auto-load library.
@@ -738,6 +742,140 @@ impl Dialog for FileInfoDialog {
                         }
                         Outcome::Keep
                     }
+                }
+            }
+            FormEvent::Clicked(CANCEL) | FormEvent::Cancel => Outcome::Close,
+            _ => Outcome::Keep,
+        }
+    }
+}
+
+// ----- Bookmarks (10 §9) -----
+
+const REMOVE: u32 = 6;
+const UP: u32 = 7;
+const DOWN: u32 = 8;
+
+pub struct BookmarksDialog {
+    form: Form,
+    /// (location, title).
+    items: Vec<(String, String)>,
+}
+
+impl BookmarksDialog {
+    pub fn new(items: Vec<(String, String)>) -> Self {
+        let (w, h) = (400, 290);
+        let (cw, ch) = (cw(w), h - 34);
+        let mut d = Self {
+            form: Form::new(vec![
+                Widget::List {
+                    rect: Rect::new(6, 6, cw - 12, ch - 40),
+                    id: LIST,
+                    rows: vec![],
+                    selected: None,
+                    first: 0,
+                },
+                Widget::Button {
+                    rect: Rect::new(6, ch - 26, 50, 18),
+                    id: UP,
+                    label: "Up".into(),
+                    default: false,
+                },
+                Widget::Button {
+                    rect: Rect::new(60, ch - 26, 50, 18),
+                    id: DOWN,
+                    label: "Down".into(),
+                    default: false,
+                },
+                Widget::Button {
+                    rect: Rect::new(cw - 196, ch - 26, 60, 18),
+                    id: OK,
+                    label: "Play".into(),
+                    default: true,
+                },
+                Widget::Button {
+                    rect: Rect::new(cw - 130, ch - 26, 60, 18),
+                    id: REMOVE,
+                    label: "Remove".into(),
+                    default: false,
+                },
+                Widget::Button {
+                    rect: Rect::new(cw - 64, ch - 26, 58, 18),
+                    id: CANCEL,
+                    label: "Close".into(),
+                    default: false,
+                },
+            ]),
+            items,
+        };
+        d.refresh(Some(0));
+        d.form.focus_id(LIST);
+        d
+    }
+
+    fn refresh(&mut self, sel: Option<usize>) {
+        let rows = self
+            .items
+            .iter()
+            .map(|(loc, title)| format!("{title}  —  {loc}"))
+            .collect();
+        self.form.set_rows(LIST, rows, sel);
+    }
+}
+
+impl Dialog for BookmarksDialog {
+    fn title(&self) -> String {
+        "Edit Bookmarks".into()
+    }
+
+    fn size(&self) -> (i32, i32) {
+        (400, 290)
+    }
+
+    fn form(&mut self) -> &mut Form {
+        &mut self.form
+    }
+
+    fn kind(&self) -> &'static str {
+        "bookmarks"
+    }
+
+    fn handle(&mut self, ev: FormEvent) -> Outcome {
+        let sel = self.form.selected(LIST);
+        match ev {
+            FormEvent::Clicked(OK) | FormEvent::Activated(LIST, _) | FormEvent::Submit => match sel
+                .and_then(|i| self.items.get(i))
+            {
+                Some((loc, _)) => Outcome::Do(vec![DialogResult::PlayBookmark(loc.clone())], false),
+                None => Outcome::Keep,
+            },
+            FormEvent::Clicked(REMOVE) => match sel {
+                Some(i) if i < self.items.len() => {
+                    self.items.remove(i);
+                    let next = if self.items.is_empty() {
+                        None
+                    } else {
+                        Some(i.min(self.items.len() - 1))
+                    };
+                    self.refresh(next);
+                    Outcome::Do(vec![DialogResult::SetBookmarks(self.items.clone())], false)
+                }
+                _ => Outcome::Keep,
+            },
+            FormEvent::Clicked(UP) | FormEvent::Clicked(DOWN) => {
+                let Some(i) = sel else { return Outcome::Keep };
+                let j = if ev == FormEvent::Clicked(UP) {
+                    i.checked_sub(1)
+                } else {
+                    (i + 1 < self.items.len()).then_some(i + 1)
+                };
+                match j {
+                    Some(j) => {
+                        self.items.swap(i, j);
+                        self.refresh(Some(j));
+                        Outcome::Do(vec![DialogResult::SetBookmarks(self.items.clone())], false)
+                    }
+                    None => Outcome::Keep,
                 }
             }
             FormEvent::Clicked(CANCEL) | FormEvent::Cancel => Outcome::Close,
