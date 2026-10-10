@@ -4,6 +4,7 @@
 //! no threading code; the network stream input ([`stream`]) runs its own network and decoding
 //! threads so that [`Decoder::read`] never waits for the network.
 
+pub mod cd;
 pub mod midi_decoder;
 #[cfg(nulamp_openmpt)]
 pub mod module_decoder;
@@ -166,6 +167,7 @@ impl Registry {
     pub fn with_stream(stream: stream::StreamFactory) -> Self {
         let mut r = Self::empty();
         r.add(Box::new(stream));
+        r.add(Box::new(cd::CdFactory::system()));
         r.add(Box::new(symphonia_decoder::SymphoniaFactory));
         r.add(Box::new(opus_decoder::OpusFactory));
         r.add(Box::new(midi_decoder::MidiFactory::default()));

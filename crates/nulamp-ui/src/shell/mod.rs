@@ -85,6 +85,15 @@ pub trait PlayerHandle {
     fn resolve_playlist_url(&self, _url: &str) -> Option<std::sync::mpsc::Receiver<Vec<String>>> {
         None
     }
+    /// Audio CD drives as (whole-disc location, label), in drive order (09 §5).
+    fn cd_drives(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    /// The entries of a location that stands for several (a whole audio CD, 10 §2.5);
+    /// `None` for other locations.
+    fn expand_location(&self, _location: &str) -> Option<Vec<nulamp_core::NewEntry>> {
+        None
+    }
 }
 
 /// A server asks for Basic-authentication credentials. Answer through `reply`; `None` gives up.
@@ -1220,14 +1229,7 @@ impl<P: PlayerHandle> Shell<P> {
         }
         match kind {
             Kind::Playlist => {
-                let entries: Vec<_> = items
-                    .iter()
-                    .flat_map(|i| {
-                        crate::files::add_anything(i, true, false, &|e| {
-                            self.player.is_supported_extension(e)
-                        })
-                    })
-                    .collect();
+                let entries = self.expand(&items);
                 let (_, y) = self
                     .ids
                     .get(&Kind::Playlist)

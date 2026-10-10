@@ -29,6 +29,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Lint the opt-in audio CD backend
+        run: cargo clippy -p nulamp-decoders --all-targets --features cdio -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})

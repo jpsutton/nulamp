@@ -283,7 +283,14 @@ impl<P: PlayerHandle> Shell<P> {
                 };
             }
             Request::GetCurrentTitle => return Response::Title(self.last_status.title.clone()),
-            Request::SavePlaylist | Request::PlayCd(_) | Request::GetVersion => {
+            Request::PlayCd(n) => {
+                // `/CD<n>` (11 §4.2): replace the list with the disc in drive n and play.
+                match self.player.cd_drives().into_iter().nth(n as usize) {
+                    Some((location, _)) => self.add_items(vec![location], true),
+                    None => return Response::Error(format!("no CD drive {n}")),
+                }
+            }
+            Request::SavePlaylist | Request::GetVersion => {
                 return Response::Error("not supported".into());
             }
         }
