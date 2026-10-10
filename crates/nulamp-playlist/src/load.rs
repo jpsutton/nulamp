@@ -294,11 +294,15 @@ mod tests {
         assert_eq!(read_file(&path), Err(Error::UnknownFormat));
     }
 
-    // Case fallback exists for case-sensitive file systems; Windows needs none.
+    // Case fallback exists for case-sensitive file systems (checked at run time).
     #[cfg(unix)]
     #[test]
     fn nested_on_disk_with_case_fallback() {
         let t = TempDir::new("nested");
+        if !t.case_sensitive() {
+            // The fallback only matters where names differ by case.
+            return;
+        }
         t.write("Music/Song.MP3", b"x");
         t.write("Lists/Inner.M3U", b"../music/song.mp3\n../top/outer.m3u\n");
         let outer = t.write("top/outer.m3u", b"#EXTM3U\n../LISTS/inner.m3u\n");

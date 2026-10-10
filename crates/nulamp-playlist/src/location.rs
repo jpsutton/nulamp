@@ -563,11 +563,15 @@ mod tests {
         assert_eq!(unix("http://h", "a.mp3"), "http://h/a.mp3");
     }
 
-    // Case fallback exists for case-sensitive file systems; Windows needs none.
+    // Case fallback exists for case-sensitive file systems (checked at run time).
     #[cfg(unix)]
     #[test]
     fn case_insensitive_fallback() {
         let t = TempDir::new("case");
+        if !t.case_sensitive() {
+            // The fallback only matters where names differ by case.
+            return;
+        }
         t.write("Music/Sub Dir/Song.MP3", b"x");
         let base = t.path("lists/x.m3u");
         let r = Resolver::new(Some(&base), PathStyle::Unix, &StdFs);

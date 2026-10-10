@@ -23,6 +23,13 @@ impl TempDir {
         Self { root }
     }
 
+    /// Whether the folder's file system tells names apart by case (most Linux file systems do;
+    /// macOS and Windows defaults do not).
+    pub fn case_sensitive(&self) -> bool {
+        std::fs::write(self.root.join("CaseProbe"), b"").unwrap();
+        !self.root.join("caseprobe").exists()
+    }
+
     /// Absolute path of `rel` (with `/` separators) inside the folder.
     pub fn path(&self, rel: &str) -> String {
         self.root
