@@ -128,6 +128,16 @@ impl Playlist {
         self.entries.get_mut(i)
     }
 
+    /// Entries whose location equals `location`.
+    pub fn entries_mut_by_location<'a>(
+        &'a mut self,
+        location: &'a str,
+    ) -> impl Iterator<Item = &'a mut Entry> + 'a {
+        self.entries
+            .iter_mut()
+            .filter(move |e| e.location == location)
+    }
+
     pub fn index_of(&self, id: EntryId) -> Option<usize> {
         self.entries.iter().position(|e| e.id == id)
     }

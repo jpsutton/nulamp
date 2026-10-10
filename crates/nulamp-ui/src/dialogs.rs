@@ -16,6 +16,8 @@ pub enum DialogResult {
     PlayEntry(EntryId),
     EnqueueEntry(EntryId),
     LoadSkin(Option<String>),
+    /// Tags of a file were written: refresh entries with this location.
+    TagsWritten(String),
     /// Save the current EQ under a name, in the preset or auto-load library.
     EqSave {
         name: String,
@@ -567,6 +569,176 @@ impl Dialog for SkinBrowser {
                 Outcome::Do(vec![DialogResult::LoadSkin(path)], false)
             }
             FormEvent::Clicked(CANCEL) | FormEvent::Cancel | FormEvent::Submit => Outcome::Close,
+            _ => Outcome::Keep,
+        }
+    }
+}
+
+// ----- File info (10 §8) -----
+
+/// Editable fields of the basic tab: (key, label).
+const INFO_FIELDS: [(&str, &str); 13] = [
+    ("title", "Title"),
+    ("artist", "Artist"),
+    ("album", "Album"),
+    ("albumartist", "Album artist"),
+    ("year", "Year"),
+    ("genre", "Genre"),
+    ("track", "Track"),
+    ("disc", "Disc"),
+    ("composer", "Composer"),
+    ("publisher", "Publisher"),
+    ("bpm", "BPM"),
+    ("rating", "Rating (0-5)"),
+    ("comment", "Comment"),
+];
+
+const FIELD_BASE: u32 = 100;
+
+pub struct FileInfoDialog {
+    form: Form,
+    location: String,
+    original: Vec<(String, String)>,
+    error: Option<String>,
+}
+
+impl FileInfoDialog {
+    pub fn new(location: &str) -> Self {
+        let (w, h) = (475, 348);
+        let (cw, ch) = (cw(w), h - 34);
+        let meta = nulamp_meta::read(location);
+        let supported: Vec<&str> = match &meta {
+            Ok(m) => m.supported_fields().to_vec(),
+            Err(_) => Vec::new(),
+        };
+        let mut widgets = vec![Widget::Label {
+            rect: Rect::new(6, 4, cw - 12, 14),
+            text: location.to_string(),
+        }];
+        let mut original = Vec::new();
+        for (i, (key, label)) in INFO_FIELDS.iter().enumerate() {
+            let y = 22 + i as i32 * 20;
+            let value = meta
+                .as_ref()
+                .ok()
+                .and_then(|m| m.get(key))
+                .unwrap_or_default();
+            original.push((key.to_string(), value.clone()));
+            let label = if supported.contains(key) {
+                label.to_string()
+            } else {
+                format!("{label} (n/a)")
+            };
+            widgets.push(Widget::Label {
+                rect: Rect::new(6, y + 2, 84, 14),
+                text: label,
+            });
+            widgets.push(Widget::Edit {
+                rect: Rect::new(92, y, 200, 18),
+                id: FIELD_BASE + i as u32,
+                text: value,
+                cursor: 0,
+            });
+        }
+        let info: Vec<String> = match &meta {
+            Ok(m) => {
+                let mut v: Vec<String> = m
+                    .get("formatinformation")
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::to_string)
+                    .collect();
+                for k in ["replaygain_track_gain", "replaygain_album_gain"] {
+                    v.push(format!(
+                        "{k}: {}",
+                        m.get(k).unwrap_or_else(|| "not present".into())
+                    ));
+                }
+                v
+            }
+            Err(e) => vec![format!("Cannot read tags: {e}")],
+        };
+        widgets.push(Widget::TextBox {
+            rect: Rect::new(300, 22, cw - 306, ch - 56),
+            lines: info,
+            first: 0,
+        });
+        widgets.push(Widget::Button {
+            rect: Rect::new(cw - 128, ch - 26, 58, 18),
+            id: OK,
+            label: "OK".into(),
+            default: true,
+        });
+        widgets.push(Widget::Button {
+            rect: Rect::new(cw - 64, ch - 26, 58, 18),
+            id: CANCEL,
+            label: "Cancel".into(),
+            default: false,
+        });
+        let mut form = Form::new(widgets);
+        form.focus_id(FIELD_BASE);
+        Self {
+            form,
+            location: location.to_string(),
+            original,
+            error: None,
+        }
+    }
+
+    fn changes(&self) -> Vec<(String, Option<String>)> {
+        self.original
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (key, old))| {
+                let new = self.form.text(FIELD_BASE + i as u32);
+                (new != *old).then(|| (key.clone(), (!new.is_empty()).then_some(new)))
+            })
+            .collect()
+    }
+}
+
+impl Dialog for FileInfoDialog {
+    fn title(&self) -> String {
+        "File Info".into()
+    }
+
+    fn size(&self) -> (i32, i32) {
+        (475, 348)
+    }
+
+    fn form(&mut self) -> &mut Form {
+        &mut self.form
+    }
+
+    fn kind(&self) -> &'static str {
+        "fileinfo"
+    }
+
+    fn handle(&mut self, ev: FormEvent) -> Outcome {
+        match ev {
+            FormEvent::Clicked(OK) | FormEvent::Submit => {
+                let changes = self.changes();
+                if changes.is_empty() {
+                    return Outcome::Close;
+                }
+                match nulamp_meta::write(&self.location, &changes) {
+                    Ok(()) => {
+                        Outcome::Do(vec![DialogResult::TagsWritten(self.location.clone())], true)
+                    }
+                    Err(e) => {
+                        self.error = Some(e.to_string());
+                        for w in &mut self.form.widgets {
+                            if let Widget::Label { rect, text } = w
+                                && rect.y == 4
+                            {
+                                *text = format!("Error: {e}");
+                            }
+                        }
+                        Outcome::Keep
+                    }
+                }
+            }
+            FormEvent::Clicked(CANCEL) | FormEvent::Cancel => Outcome::Close,
             _ => Outcome::Keep,
         }
     }

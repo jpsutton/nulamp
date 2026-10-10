@@ -166,6 +166,17 @@ impl<P: PlayerHandle> Shell<P> {
             }
             DialogResult::LoadSkin(path) => self.load_skin(path),
             DialogResult::EqSave { name, auto } => self.eq_save(&name, auto),
+            DialogResult::TagsWritten(location) => {
+                // Re-read titles of every entry with this file (10 §8).
+                for e in self
+                    .player
+                    .engine_mut()
+                    .playlist
+                    .entries_mut_by_location(&location)
+                {
+                    e.metadata_read = false;
+                }
+            }
         }
         self.poll_player();
         self.request_redraw_all();
