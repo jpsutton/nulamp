@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 interprocess = "2.4.5"
 log = "0.4.34"
-nulamp-core = { version = "0.1.0", path = "../nulamp-core" }
+nulamp-core = { version = "0.2.0", path = "../nulamp-core" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.152"
 thiserror = "2.0.21"

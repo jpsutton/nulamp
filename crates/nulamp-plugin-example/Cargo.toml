@@ -12,7 +12,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-nulamp-plugin-api = { version = "0.1.0", path = "../nulamp-plugin-api", default-features = false }
+nulamp-plugin-api = { version = "0.2.0", path = "../nulamp-plugin-api", default-features = false }
 
 [lints]
 workspace = true
