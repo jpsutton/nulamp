@@ -953,6 +953,17 @@ impl<P: PlayerHandle> Shell<P> {
                 let d = crate::dialogs::UrlDialog::new(false, &self.prefs.recent_urls);
                 self.open_dialog(el, Box::new(d));
             }
+            Action::FileInfoCurrent => {
+                let loc = self
+                    .player
+                    .engine()
+                    .playlist
+                    .get(self.last_status.position)
+                    .map(|e| e.location.clone());
+                if let Some(loc) = loc.filter(|l| !nulamp_core::playlist::is_url(l)) {
+                    self.open_dialog(el, Box::new(crate::dialogs::FileInfoDialog::new(&loc)));
+                }
+            }
             Action::About => {
                 let d = crate::dialogs::AboutDialog::new(APP_NAME, env!("CARGO_PKG_VERSION"));
                 self.open_dialog(el, Box::new(d));
@@ -1208,6 +1219,17 @@ impl<P: PlayerHandle> Shell<P> {
                         let n = self.player.engine().playlist.len();
                         self.pl.clamp_scroll(n);
                         self.resize_window(Kind::Playlist);
+                    }
+                }
+                PlAction::FileInfoSelected => {
+                    let e = self.player.engine();
+                    let loc = e
+                        .playlist
+                        .first_selected()
+                        .and_then(|i| e.playlist.get(i))
+                        .map(|x| x.location.clone());
+                    if let Some(loc) = loc.filter(|l| !nulamp_core::playlist::is_url(l)) {
+                        self.open_dialog(el, Box::new(crate::dialogs::FileInfoDialog::new(&loc)));
                     }
                 }
                 PlAction::FontBigger => {
@@ -1867,6 +1889,7 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
                 "url" => self.handle_action(id, Action::OpenUrl, el),
                 "jumpfile" => self.key_action(id, KeyAction::JumpToFile, el),
                 "skins" => self.key_action(id, KeyAction::SkinBrowser, el),
+                "fileinfo" => self.handle_action(id, Action::FileInfoCurrent, el),
                 _ => {}
             }
         }

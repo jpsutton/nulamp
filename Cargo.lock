@@ -1328,6 +1328,7 @@ dependencies = [
  "log",
  "nulamp-core",
  "nulamp-eq",
+ "nulamp-meta",
  "nulamp-playlist",
  "nulamp-render",
  "nulamp-skin",

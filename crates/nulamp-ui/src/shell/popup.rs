@@ -448,6 +448,10 @@ impl<P: PlayerHandle> Shell<P> {
                         && std::fs::File::open(&e.location).is_err()
                 });
             }
+            MenuCmd::PlFileInfo => {
+                let pl = self.ids.get(&Kind::Playlist).copied().unwrap_or(id);
+                self.handle_pl_actions(pl, vec![PlAction::FileInfoSelected], el);
+            }
             MenuCmd::PlPlaySelected => {
                 if let Some(i) = self.player.engine().playlist.first_selected() {
                     self.player.command(Command::PlayIndex(i));
