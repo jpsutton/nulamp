@@ -19,6 +19,10 @@ impl PlayerHandle for AppPlayer {
         self.player.command(command);
     }
 
+    fn set_eq(&mut self, settings: &nulamp_eq::EqSettings) {
+        self.player.set_eq(settings);
+    }
+
     fn tick(&mut self) {
         for e in self.player.poll() {
             match e {
