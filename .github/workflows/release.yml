@@ -119,15 +119,59 @@ jobs:
             dist/ffmpeg-*.tar.xz
             dist/*-plugin-sdk.tar.gz
 
+  deb:
+    name: Build (Ubuntu ${{ matrix.ubuntu }} .deb)
+    needs: [version]
+    runs-on: ubuntu-latest
+    container: ubuntu:${{ matrix.ubuntu }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Supported LTS releases and the newest release.
+        ubuntu: ["24.04", "26.04"]
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/packages/build-deb.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nulamp-deb-${{ matrix.ubuntu }}
+          path: dist/*.deb
+
+  arch:
+    name: Build (Arch Linux package and repository)
+    needs: [version]
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/packages/build-arch.sh
+        env:
+          NULAMP_SIGNING_KEY: ${{ secrets.NULAMP_SIGNING_KEY }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nulamp-arch
+          path: dist/arch/*
+
   publish:
     name: Publish GitHub release
-    needs: [version, build, appimage]
+    needs: [version, build, appimage, deb, arch]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - name: Signed checksums and the public key
+        env:
+          NULAMP_SIGNING_KEY: ${{ secrets.NULAMP_SIGNING_KEY }}
+        run: |
+          cp packaging/nulamp-signing-key.asc dist/
+          cd dist
+          sha256sum * > SHA256SUMS
+          export GNUPGHOME="$(mktemp -d)"
+          printf '%s\n' "$NULAMP_SIGNING_KEY" | gpg --batch --quiet --import
+          gpg --batch --yes --armor --detach-sign SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.version.outputs.version }}
