@@ -293,6 +293,11 @@ impl Player {
         }
     }
 
+    /// Updates fades and buffering (07 §6).
+    pub fn set_output_prefs(&mut self, p: crate::engine::OutputPrefs) {
+        self.audio.send(Control::SetPrefs(p));
+    }
+
     /// Updates the equalizer.
     pub fn set_eq(&mut self, s: &nulamp_eq::EqSettings) {
         self.eq.set(s);

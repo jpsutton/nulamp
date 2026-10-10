@@ -44,6 +44,8 @@ pub trait PlayerHandle {
     fn tick(&mut self) {}
     /// Equalizer settings changed.
     fn set_eq(&mut self, _settings: &EqSettings) {}
+    /// Playback preferences changed (ReplayGain, fades, buffer).
+    fn set_playback_prefs(&mut self, _prefs: &UiPrefs) {}
     /// The play-order engine and playlist.
     fn engine(&self) -> &nulamp_core::Engine;
     fn engine_mut(&mut self) -> &mut nulamp_core::Engine;
@@ -112,6 +114,12 @@ pub struct UiPrefs {
     pub pl_page_lines: usize,
     pub pl_wheel_double: bool,
     pub pl_old_school_buttons: bool,
+    pub replaygain: nulamp_eq::ReplayGainSettings,
+    /// Fade on pause and stop (07 §6.2).
+    pub fade_pause_stop: bool,
+    pub fade_seek: bool,
+    /// Output buffer length in ms (07 §6.1).
+    pub buffer_ms: u32,
 }
 
 impl Default for UiPrefs {
@@ -155,6 +163,10 @@ impl Default for UiPrefs {
             pl_page_lines: 1,
             pl_wheel_double: true,
             pl_old_school_buttons: false,
+            replaygain: nulamp_eq::ReplayGainSettings::default(),
+            fade_pause_stop: true,
+            fade_seek: true,
+            buffer_ms: 2000,
         }
     }
 }
@@ -238,6 +250,7 @@ pub struct Shell<P: PlayerHandle> {
 impl<P: PlayerHandle> Shell<P> {
     pub fn new(mut player: P, prefs: UiPrefs, skin: Skin) -> Self {
         player.set_eq(&prefs.eq);
+        player.set_playback_prefs(&prefs);
         let mut pl = PlaylistUi::default();
         pl.w = prefs.pl_size.0.max(275);
         pl.h = prefs.pl_size.1.max(116);
@@ -1261,6 +1274,7 @@ impl<P: PlayerHandle> Shell<P> {
         self.update_pl_font();
         self.visualizer.set_settings(self.prefs.vis);
         self.player.set_eq(&self.prefs.eq);
+        self.player.set_playback_prefs(&self.prefs);
         if aot_changed {
             let level = if self.prefs.always_on_top {
                 WindowLevel::AlwaysOnTop

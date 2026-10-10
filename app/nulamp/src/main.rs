@@ -42,12 +42,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let registry = Arc::new(Registry::with_defaults());
     let mut player = Player::new(Engine::default(), registry.clone());
-    let rg_settings = nulamp_eq::ReplayGainSettings::default();
+    let replaygain = std::sync::Arc::new(std::sync::Mutex::new(prefs.replaygain));
+    let rg = replaygain.clone();
     player.gain_for = Box::new(move |loc| {
-        if !rg_settings.enabled {
+        let settings = *rg.lock().expect("replaygain lock");
+        if !settings.enabled {
             return 1.0;
         }
-        nulamp_eq::replaygain::gain_factor(&rg_settings, &titles::replaygain_tags(loc))
+        nulamp_eq::replaygain::gain_factor(&settings, &titles::replaygain_tags(loc))
     });
     player.command(Command::SetVolume(state.volume));
     player.command(Command::SetBalance(state.balance));
@@ -74,7 +76,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let titles = titles::TitleReader::new(nulamp_tf::DEFAULT_FORMAT);
-    let (prefs, app) = Shell::new(player::AppPlayer { player, titles }, prefs, skin).run()?;
+    let (prefs, app) = Shell::new(
+        player::AppPlayer {
+            player,
+            titles,
+            replaygain,
+        },
+        prefs,
+        skin,
+    )
+    .run()?;
 
     let status = app.status();
     let state = settings::PlayerState {
