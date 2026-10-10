@@ -1083,8 +1083,19 @@ impl<P: PlayerHandle> Shell<P> {
         self.request_redraw(Kind::Main);
     }
 
+    /// The playlist shows the visualizer when it is wide, unshaded and the main window is hidden.
+    fn pl_mini_vis(&self) -> bool {
+        self.is_visible(Kind::Playlist)
+            && !self.is_visible(Kind::Main)
+            && self.pl.w >= 350
+            && !self.pl.shade
+    }
+
     fn vis_size(&self) -> nulamp_vis::VisSize {
         use nulamp_vis::VisSize::*;
+        if !self.is_visible(Kind::Main) {
+            return Main;
+        }
         match (self.prefs.shade, self.prefs.double_size) {
             (false, false) => Main,
             (false, true) => MainDouble,
@@ -1116,7 +1127,7 @@ impl<P: PlayerHandle> Shell<P> {
     fn tick_vis(&mut self) -> bool {
         let running = self.prefs.vis.mode != nulamp_vis::VisMode::Off
             && self.last_status.state == PlayState::Playing
-            && self.is_visible(Kind::Main);
+            && (self.is_visible(Kind::Main) || self.pl_mini_vis());
         if !running {
             let changed = self.vis_was_running;
             if changed {
@@ -1375,6 +1386,20 @@ impl<P: PlayerHandle> Shell<P> {
                 &self.pl,
                 self.player.engine(),
             );
+            if self.pl_mini_vis() && self.prefs.vis.mode != nulamp_vis::VisMode::Off {
+                // Left 72×16 of the 1x main-window visualizer image (06 §5.4).
+                let mut img = Frame::new(76, 16, 0);
+                if self.visualizer.size() != nulamp_vis::VisSize::Main {
+                    self.visualizer.set_size(nulamp_vis::VisSize::Main);
+                }
+                let colors = self.skin.vis_colors;
+                if self.last_status.state == PlayState::Stopped {
+                    nulamp_vis::draw_background(nulamp_vis::VisSize::Main, &colors, &mut img, 0, 0);
+                } else {
+                    self.visualizer.draw(&colors, &mut img, 0, 0);
+                }
+                nulamp_render::blit(&mut f, &img, 0, 0, 72, 16, self.pl.w - 223, self.pl.h - 26);
+            }
         }
         f
     }
@@ -2223,6 +2248,9 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         }
         if self.tick_vis() {
             self.request_redraw(Kind::Main);
+            if self.pl_mini_vis() {
+                self.request_redraw(Kind::Playlist);
+            }
         }
         if self.last_status.state == PlayState::Paused && now / 1200 != self.last_blink {
             self.last_blink = now / 1200;
