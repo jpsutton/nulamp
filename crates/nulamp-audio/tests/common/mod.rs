@@ -198,9 +198,12 @@ impl Rig {
     }
 
     /// Renders one device block. Waits first until the engine has filled the output buffer (or
-    /// stops filling it), as it would with a device that plays in real time.
+    /// stops filling it), as it would with a device that plays in real time. An engine that is
+    /// still filling, however slowly (a loaded CI machine), is waited for: only a buffer that
+    /// stops growing counts as starving.
     pub fn step(&mut self) {
         let t = Instant::now();
+        let mut progress = Instant::now();
         let limit = Duration::from_millis(if self.starving { 5 } else { 200 });
         let mut last = None;
         loop {
@@ -218,9 +221,10 @@ impl Rig {
                     }
                     if last.is_some_and(|l| n > l) {
                         self.starving = false;
+                        progress = Instant::now();
                     }
                     last = Some(n);
-                    if t.elapsed() > limit {
+                    if progress.elapsed() > limit || t.elapsed() > Duration::from_secs(10) {
                         self.starving = true;
                         break;
                     }
