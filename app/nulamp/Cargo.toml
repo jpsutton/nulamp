@@ -17,6 +17,7 @@ nulamp-meta = { version = "0.1.0", path = "../../crates/nulamp-meta" }
 nulamp-skin = { version = "0.1.0", path = "../../crates/nulamp-skin" }
 nulamp-tf = { version = "0.1.0", path = "../../crates/nulamp-tf" }
 nulamp-ui = { version = "0.1.0", path = "../../crates/nulamp-ui" }
+nulamp-vis = { version = "0.1.0", path = "../../crates/nulamp-vis" }
 
 [lints]
 workspace = true

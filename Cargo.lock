@@ -1199,6 +1199,7 @@ dependencies = [
  "nulamp-skin",
  "nulamp-tf",
  "nulamp-ui",
+ "nulamp-vis",
 ]
 
 [[package]]
