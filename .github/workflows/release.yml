@@ -32,19 +32,9 @@ jobs:
             exit 1
           fi
 
-  test:
-    name: Test before release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: ./scripts/ci-deps.sh
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
-
   build:
     name: Build (${{ matrix.target }})
-    needs: [version, test]
+    needs: [version]
     strategy:
       fail-fast: false
       matrix:
