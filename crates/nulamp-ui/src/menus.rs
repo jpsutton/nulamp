@@ -40,6 +40,8 @@ pub struct MenuState {
     pub skins: Vec<(String, Option<String>)>,
     pub current_skin: Option<String>,
     pub bookmarks: Vec<(String, String)>,
+    /// Audio CD drives: (whole-disc location, label).
+    pub cd_drives: Vec<(String, String)>,
     pub eq_enabled: bool,
     pub eq_auto: bool,
     pub eq_presets: Vec<String>,
@@ -291,6 +293,18 @@ pub fn main_menu(s: &MenuState) -> Vec<Item> {
         Item::Sep,
     ];
     bookmarks.extend(bookmark_items(s));
+    let mut play = vec![
+        Item::key("File...", "L", act(Action::OpenFiles)),
+        Item::key("URL...", "Ctrl+L", act(Action::OpenUrl)),
+        Item::key("Folder...", "Shift+L", act(Action::OpenFolder)),
+        Item::Sep,
+    ];
+    play.extend(
+        s.cd_drives.iter().map(|(loc, label)| {
+            Item::cmd(&format!("Audio CD {label}"), MenuCmd::PlayCd(loc.clone()))
+        }),
+    );
+    play.push(Item::sub("Bookmark", bookmark_items(s)));
     vec![
         Item::key(
             &format!("About {}...", s.app_name),
@@ -298,16 +312,7 @@ pub fn main_menu(s: &MenuState) -> Vec<Item> {
             act(Action::About),
         ),
         Item::Sep,
-        Item::sub(
-            "Play",
-            vec![
-                Item::key("File...", "L", act(Action::OpenFiles)),
-                Item::key("URL...", "Ctrl+L", act(Action::OpenUrl)),
-                Item::key("Folder...", "Shift+L", act(Action::OpenFolder)),
-                Item::Sep,
-                Item::sub("Bookmark", bookmark_items(s)),
-            ],
-        ),
+        Item::sub("Play", play),
         Item::key("View file info...", "Alt+3", act(Action::FileInfoCurrent)),
         Item::sub("Bookmarks", bookmarks),
         Item::Sep,
@@ -662,5 +667,64 @@ pub fn eq_toggle_menu(auto: bool, s: &MenuState) -> Vec<Item> {
             s.eq_enabled,
             MenuCmd::EqEnabled,
         )]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn labels(items: &[Item]) -> Vec<String> {
+        items
+            .iter()
+            .map(|i| match i {
+                Item::Cmd { label, .. } | Item::Sub { label, .. } => label.clone(),
+                Item::Sep => "-".into(),
+            })
+            .collect()
+    }
+
+    fn play_menu(s: &MenuState) -> Vec<Item> {
+        main_menu(s)
+            .into_iter()
+            .find_map(|i| match i {
+                Item::Sub { label, items } if label == "Play" => Some(items),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn play_menu_lists_cd_drives() {
+        let none = play_menu(&MenuState::default());
+        assert_eq!(
+            labels(&none),
+            ["File...", "URL...", "Folder...", "-", "Bookmark"]
+        );
+
+        let s = MenuState {
+            cd_drives: vec![
+                ("cda://sr0".into(), "/dev/sr0".into()),
+                ("cda://sr1".into(), "/dev/sr1".into()),
+            ],
+            ..MenuState::default()
+        };
+        let items = play_menu(&s);
+        assert_eq!(
+            labels(&items),
+            [
+                "File...",
+                "URL...",
+                "Folder...",
+                "-",
+                "Audio CD /dev/sr0",
+                "Audio CD /dev/sr1",
+                "Bookmark",
+            ]
+        );
+        assert!(matches!(
+            &items[5],
+            Item::Cmd { cmd: MenuCmd::PlayCd(loc), .. } if loc == "cda://sr1"
+        ));
     }
 }

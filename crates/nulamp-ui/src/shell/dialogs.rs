@@ -36,9 +36,14 @@ impl<P: PlayerHandle> Shell<P> {
         self.prefs.last_dir = Some(dir);
     }
 
-    fn expand(&self, items: &[String]) -> Vec<nulamp_core::NewEntry> {
+    /// Expands opened or dropped items into entries (10 §2.5).
+    pub(super) fn expand(&self, items: &[String]) -> Vec<nulamp_core::NewEntry> {
         let mut out = Vec::new();
         for i in items {
+            if let Some(entries) = self.player.expand_location(i) {
+                out.extend(entries);
+                continue;
+            }
             out.extend(files::add_anything(i, true, false, &|ext| {
                 self.player.is_supported_extension(ext)
             }));

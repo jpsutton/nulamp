@@ -146,13 +146,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let mut entries = Vec::new();
         for f in &files {
-            entries.extend(nulamp_ui::files::add_anything(f, true, false, &supported));
+            entries.extend(player::expand_item(f, &supported));
         }
         player.engine.append(entries);
     } else if start {
         let mut entries = Vec::new();
         for f in &files {
-            entries.extend(nulamp_ui::files::add_anything(f, true, false, &supported));
+            entries.extend(player::expand_item(f, &supported));
         }
         player.engine.append(entries);
         player.command(Command::Play);

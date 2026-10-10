@@ -21,5 +21,10 @@ nulamp-tf = { version = "0.1.0", path = "../../crates/nulamp-tf" }
 nulamp-ui = { version = "0.1.0", path = "../../crates/nulamp-ui" }
 nulamp-vis = { version = "0.1.0", path = "../../crates/nulamp-vis" }
 
+[features]
+# Audio CD playback through libcdio. Off by default: libcdio is GPL-3.0-or-later, so a binary
+# built with this feature must be distributed under the GPL (docs/decisions.md CD1).
+audio-cd = ["nulamp-decoders/cdio"]
+
 [lints]
 workspace = true

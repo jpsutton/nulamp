@@ -55,6 +55,8 @@ pub enum MenuCmd {
     PlRebuildTitles,
     PlRateSelected(u8),
     Bookmark(String),
+    /// Play an audio CD (whole-disc location).
+    PlayCd(String),
     Plugins,
     None,
 }

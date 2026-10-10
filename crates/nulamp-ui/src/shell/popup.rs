@@ -64,6 +64,7 @@ impl<P: PlayerHandle> Shell<P> {
             skins,
             current_skin: self.prefs.skin_path.clone(),
             bookmarks: self.bookmarks(),
+            cd_drives: self.player.cd_drives(),
             eq_enabled: self.prefs.eq.enabled,
             eq_auto: self.prefs.eq.auto_load,
             eq_presets: self.eq_library().into_iter().map(|p| p.name).collect(),
@@ -459,7 +460,7 @@ impl<P: PlayerHandle> Shell<P> {
                 let pl = self.ids.get(&Kind::Playlist).copied().unwrap_or(id);
                 self.handle_pl_actions(pl, vec![PlAction::FileInfoSelected], el);
             }
-            MenuCmd::Bookmark(loc) => self.play_bookmark(&loc),
+            MenuCmd::Bookmark(loc) | MenuCmd::PlayCd(loc) => self.play_bookmark(&loc),
             MenuCmd::Plugins => {
                 let (rows, errors) = self.player.plugins();
                 self.open_dialog(

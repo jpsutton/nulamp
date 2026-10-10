@@ -25,6 +25,9 @@ pkg-config = "0.3.34"
 default = ["openmpt"]
 # Tracker modules through the system libopenmpt (found with pkg-config).
 openmpt = []
+# Audio CD playback through the system libcdio (found with pkg-config). Off by default because
+# libcdio is GPL-3.0-or-later: a binary built with it must be distributed under the GPL.
+cdio = []
 
 [lints]
 workspace = true

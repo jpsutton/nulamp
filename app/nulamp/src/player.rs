@@ -19,6 +19,36 @@ pub struct AppPlayer {
     pub plugins: crate::plugins::PluginRuntime,
 }
 
+/// Expands a whole audio CD (`cda://<drive>`) into one entry per track (09 §5). `None` for
+/// other locations; an empty list (with the error logged) when the disc cannot be read.
+pub fn cd_entries(location: &str) -> Option<Vec<nulamp_core::NewEntry>> {
+    use nulamp_decoders::cd;
+    if !cd::is_whole_disc(location) {
+        return None;
+    }
+    match cd::CdFactory::system().disc_entries(location) {
+        Ok(entries) => Some(
+            entries
+                .into_iter()
+                .map(|e| nulamp_core::NewEntry {
+                    title: Some(e.title),
+                    length_ms: e.length_ms,
+                    ..nulamp_core::NewEntry::new(e.location)
+                })
+                .collect(),
+        ),
+        Err(e) => {
+            log::error!("cannot read the audio CD {location}: {e}");
+            Some(Vec::new())
+        }
+    }
+}
+
+/// The "add anything" rule (10 §2.5) including audio CDs.
+pub fn expand_item(item: &str, supported: &dyn Fn(&str) -> bool) -> Vec<nulamp_core::NewEntry> {
+    cd_entries(item).unwrap_or_else(|| nulamp_ui::files::add_anything(item, true, false, supported))
+}
+
 /// Forwards login requests from network threads to the user interface and waits for the
 /// answer (07 §8.5).
 pub struct LoginPrompt(
@@ -76,6 +106,29 @@ impl PlayerHandle for AppPlayer {
             })
             .ok()?;
         Some(rx)
+    }
+
+    fn cd_drives(&self) -> Vec<(String, String)> {
+        // Menus ask on every opening; probing the devices is cached for a few seconds.
+        type Cache = Option<(std::time::Instant, Vec<(String, String)>)>;
+        static CACHE: std::sync::Mutex<Cache> = std::sync::Mutex::new(None);
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, drives)) = cache.as_ref()
+            && at.elapsed() < std::time::Duration::from_secs(5)
+        {
+            return drives.clone();
+        }
+        let drives: Vec<_> = nulamp_decoders::cd::CdFactory::system()
+            .drives()
+            .into_iter()
+            .map(|d| (d.location, d.label))
+            .collect();
+        *cache = Some((std::time::Instant::now(), drives.clone()));
+        drives
+    }
+
+    fn expand_location(&self, location: &str) -> Option<Vec<nulamp_core::NewEntry>> {
+        cd_entries(location)
     }
 
     fn status(&self) -> PlayerStatus {
