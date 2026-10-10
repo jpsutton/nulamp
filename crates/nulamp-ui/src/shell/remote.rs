@@ -30,6 +30,9 @@ impl<P: PlayerHandle> Shell<P> {
     }
 
     pub(super) fn poll_remote(&mut self, el: &ActiveEventLoop) {
+        while let Ok(req) = self.tray_rx.try_recv() {
+            self.handle_request(el, req);
+        }
         loop {
             let Some((req, reply)) = self.remote.as_ref().and_then(|s| s.try_recv()) else {
                 break;
@@ -78,12 +81,7 @@ impl<P: PlayerHandle> Shell<P> {
                 }
             }
             Request::LoadSkin(p) => self.load_skin(Some(p)),
-            Request::Raise => {
-                if let Some(w) = main.and_then(|id| self.windows.get(&id)) {
-                    w.window.set_minimized(false);
-                    w.window.focus_window();
-                }
-            }
+            Request::Raise => self.raise(),
             Request::Play => cmd(self, Command::Play),
             Request::Pause => cmd(self, Command::Pause),
             Request::PlayPause => {
