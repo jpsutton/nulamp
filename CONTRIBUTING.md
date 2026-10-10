@@ -29,6 +29,7 @@ Use Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `test:`, `refactor
 ## Tests
 
 - `./scripts/check.sh` runs formatting, clippy and every test; it must pass before each commit.
+  CI does not lint: it only builds and runs the tests on Linux, macOS and Windows.
 - Golden images (spec 12 §3) live in `tests/golden/` and are produced by nulamp itself. After an
   intended visual change, regenerate them with `NULAMP_BLESS=1 cargo test -p nulamp-render --test golden`
   and review the changed PNGs in the diff. A failing comparison writes the actual image to
