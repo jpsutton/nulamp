@@ -1261,6 +1261,10 @@ dependencies = [
 [[package]]
 name = "nulamp-vis"
 version = "0.1.0"
+dependencies = [
+ "nulamp-skin",
+ "realfft",
+]
 
 [[package]]
 name = "num-complex"
