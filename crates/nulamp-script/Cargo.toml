@@ -1,0 +1,14 @@
+[package]
+name = "nulamp-script"
+description = "Scripted effects: a small per-sample expression language (08 §5)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nulamp-audio = { version = "0.1.0", path = "../nulamp-audio" }
+thiserror = "2.0.21"
+
+[lints]
+workspace = true

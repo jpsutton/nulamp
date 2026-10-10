@@ -1,0 +1,5 @@
+#name Swap channels
+@sample
+t = left;
+left = right;
+right = t;
