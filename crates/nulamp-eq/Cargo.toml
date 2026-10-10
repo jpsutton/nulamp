@@ -1,0 +1,12 @@
+[package]
+name = "nulamp-eq"
+description = "10-band equalizer, limiter and preset files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

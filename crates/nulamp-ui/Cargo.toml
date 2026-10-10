@@ -1,0 +1,12 @@
+[package]
+name = "nulamp-ui"
+description = "Window manager, input handling, docking and platform layer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

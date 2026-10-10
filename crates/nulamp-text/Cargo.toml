@@ -1,0 +1,12 @@
+[package]
+name = "nulamp-text"
+description = "1-bit (non-antialiased) text rendering, font resolution and shaping"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "nulamp-core"
+description = "Player state machine, playlist model, commands and settings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

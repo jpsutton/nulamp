@@ -1,0 +1,12 @@
+[package]
+name = "nulamp-tf"
+description = "Title formatting language"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
