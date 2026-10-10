@@ -11,3 +11,7 @@ nulamp-skin = { version = "0.1.0", path = "../nulamp-skin" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+nulamp-vis = { path = "../nulamp-vis" }
+png = "0.18"
