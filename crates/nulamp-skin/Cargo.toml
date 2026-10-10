@@ -7,6 +7,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+encoding_rs = "0.8.42"
+thiserror = "2.0.21"
+unicode-normalization = "0.1.25"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true
