@@ -60,6 +60,7 @@ pub enum Action {
     ToggleRepeat,
     ToggleEqWindow,
     TogglePlaylistWindow,
+    ToggleLibraryWindow,
     About,
     ToggleTimeMode,
     CycleVisMode,

@@ -7,6 +7,12 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+lofty = "0.24.0"
+nulamp-tf = { version = "0.1.0", path = "../nulamp-tf" }
+thiserror = "2.0.21"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

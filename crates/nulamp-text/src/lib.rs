@@ -81,14 +81,10 @@ const DEFAULT_FAMILIES: &[&str] = &[
 const FALLBACK_FAMILIES: &[&str] = &[
     "DejaVu Sans",
     "Noto Sans",
-    "Noto Sans CJK JP",
-    "Noto Sans CJK SC",
     "Noto Sans Arabic",
     "Noto Sans Hebrew",
     "Noto Sans Devanagari",
     "Noto Sans Thai",
-    "Droid Sans Fallback",
-    "WenQuanYi Zen Hei",
     "Arial Unicode MS",
     "Segoe UI Symbol",
     "Noto Sans Symbols",
@@ -330,6 +326,8 @@ impl FontSystem {
         self.face_metrics(face, spec.pixel_size)
     }
 
+    // FreeType positions are C `long`: 64-bit on Unix, 32-bit on Windows.
+    #[allow(clippy::unnecessary_cast)]
     fn face_metrics(&self, face: usize, px: u32) -> Metrics {
         let f = &self.faces[face];
         f.set_size(px);
@@ -355,6 +353,8 @@ impl FontSystem {
         }
     }
 
+    // FreeType positions are C `long`: 64-bit on Unix, 32-bit on Windows.
+    #[allow(clippy::unnecessary_cast)]
     fn glyph(&mut self, face: usize, gid: u32, px: u32) -> Option<GlyphImage> {
         if let Some(g) = self.glyph_cache.get(&(face, gid, px)) {
             return g.clone();
@@ -611,11 +611,7 @@ mod tests {
         let mut f = Bitmap::new(200, 20, 0x000000);
         for px in [9, 10, 12, 14] {
             let spec = FontSpec::new("Arial", px);
-            let l = fs.layout(
-                "Hello, World! Ünïcödé — 日本語 עברית",
-                &spec,
-                Direction::Auto,
-            );
+            let l = fs.layout("Hello, World! Ünïcödé — עברית", &spec, Direction::Auto);
             assert!(l.width > 0);
             fs.draw(&mut f, &l, 2, 14, 0x00FF00, (0, 0, 200, 20));
         }

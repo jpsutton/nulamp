@@ -1,0 +1,5 @@
+#name Vocal removal
+// Removes what is the same in both channels (often the voice).
+@sample
+left = left - right;
+right = left;

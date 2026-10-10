@@ -1,0 +1,7 @@
+#name Stereo width
+#slider1 1.5 Width (0 = mono, 1 = unchanged)
+@sample
+m = (left + right) * 0.5;
+s = (left - right) * 0.5 * slider1;
+left = m + s;
+right = m - s;

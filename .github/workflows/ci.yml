@@ -1,0 +1,56 @@
+# Pull requests into staging (features and fixes) get a quick compile check on Linux. Pull
+# requests into release get the full build and tests on Linux, macOS and Windows. Pushes do not
+# run CI; merging into release runs the release workflow.
+name: CI
+
+on:
+  pull_request:
+    branches: ["staging", "release"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Compile check
+    if: github.base_ref != 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install system libraries
+        run: ./scripts/ci-deps.sh
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets
+      - name: Check the opt-in audio CD backend
+        run: cargo check -p nulamp-decoders --all-targets --features cdio
+
+  test:
+    name: Test (${{ matrix.os }})
+    if: github.base_ref == 'release'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install system libraries
+        shell: bash
+        run: ./scripts/ci-deps.sh
+      - name: zlib headers for the bundled FreeType (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ./scripts/windows-zlib.sh
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --all-targets
+      - name: Check the opt-in audio CD backend
+        if: runner.os == 'Linux'
+        run: cargo check -p nulamp-decoders --all-targets --features cdio
+      - run: cargo test --workspace
