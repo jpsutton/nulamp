@@ -148,3 +148,22 @@ pub fn replaygain_tags(location: &str) -> nulamp_eq::ReplayGainTags {
     }
     tags
 }
+
+/// Album identity for "gapless for albums" (07 §6.4, decision XF4): the album tag together with
+/// the album artist, or with the folder when there is no album artist. `None` without an album
+/// tag (and for streams).
+pub fn album_key(location: &str) -> Option<String> {
+    let meta = nulamp_meta::read(location).ok()?;
+    let album = meta.get("album")?.trim().to_lowercase();
+    if album.is_empty() {
+        return None;
+    }
+    let by = match meta.get("albumartist") {
+        Some(a) if !a.trim().is_empty() => format!("artist:{}", a.trim().to_lowercase()),
+        _ => {
+            let dir = std::path::Path::new(location).parent()?;
+            format!("dir:{}", dir.to_string_lossy())
+        }
+    };
+    Some(format!("{album}\n{by}"))
+}

@@ -126,6 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         nulamp_eq::replaygain::gain_factor(&settings, &titles::replaygain_tags(loc))
     });
+    player.album_of = Box::new(titles::album_key);
     if let Some(dsp) = plugins.active_dsp_stage() {
         player.set_dsp(Some(dsp));
     }

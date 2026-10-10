@@ -119,6 +119,11 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
         ("fade_pause_stop", b(p.fade_pause_stop)),
         ("fade_seek", b(p.fade_seek)),
         ("buffer_ms", p.buffer_ms.to_string()),
+        ("crossfade", b(p.crossfade)),
+        ("crossfade_ms", p.crossfade_ms.to_string()),
+        ("crossfade_equal_power", b(p.crossfade_equal_power)),
+        ("crossfade_manual", b(p.crossfade_manual)),
+        ("gapless_albums", b(p.gapless_albums)),
         ("show_tray", b(p.show_tray)),
         ("volume", st.volume.to_string()),
         ("balance", st.balance.to_string()),
@@ -291,6 +296,13 @@ pub fn from_ini(text: &str) -> (UiPrefs, PlayerState) {
     if let Some(n) = num("buffer_ms") {
         p.buffer_ms = n.clamp(200, 20_000) as u32;
     }
+    p.crossfade = flag("crossfade", p.crossfade);
+    if let Some(n) = num("crossfade_ms") {
+        p.crossfade_ms = n.clamp(0, nulamp_audio::engine::MAX_CROSSFADE_MS as i64) as u32;
+    }
+    p.crossfade_equal_power = flag("crossfade_equal_power", p.crossfade_equal_power);
+    p.crossfade_manual = flag("crossfade_manual", p.crossfade_manual);
+    p.gapless_albums = flag("gapless_albums", p.gapless_albums);
     if let Some(n) = num("volume") {
         st.volume = n.clamp(0, 255) as u8;
     }
@@ -340,6 +352,10 @@ mod tests {
         p.hotkeys.enabled = true;
         p.hotkeys.bindings.truncate(3);
         p.hotkeys.bindings[2].hotkey = nulamp_remote::Hotkey::parse("Shift+F7").unwrap();
+        p.crossfade = true;
+        p.crossfade_ms = 5000;
+        p.crossfade_equal_power = true;
+        p.gapless_albums = false;
         let st = PlayerState {
             volume: 128,
             balance: -20,
@@ -355,6 +371,9 @@ mod tests {
         assert_eq!(p2.vis.mode, VisMode::Oscilloscope);
         assert_eq!(p2.pl_size, (450, 290));
         assert_eq!(p2.hotkeys, p.hotkeys);
+        assert!(p2.crossfade && p2.crossfade_equal_power && !p2.crossfade_manual);
+        assert_eq!(p2.crossfade_ms, 5000);
+        assert!(!p2.gapless_albums);
         assert_eq!(st2, st);
     }
 

@@ -124,6 +124,15 @@ impl PlayerHandle for AppPlayer {
             buffer_ms: prefs.buffer_ms,
             fade_pause_stop: prefs.fade_pause_stop,
             fade_seek: prefs.fade_seek,
+            crossfade: prefs.crossfade,
+            crossfade_ms: prefs.crossfade_ms,
+            crossfade_curve: if prefs.crossfade_equal_power {
+                nulamp_audio::FadeCurve::EqualPower
+            } else {
+                nulamp_audio::FadeCurve::Linear
+            },
+            crossfade_manual: prefs.crossfade_manual,
+            gapless_albums: prefs.gapless_albums,
             ..nulamp_audio::OutputPrefs::default()
         });
     }

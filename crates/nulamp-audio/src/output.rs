@@ -17,9 +17,10 @@ pub enum OutputError {
     Device(String),
 }
 
-/// An open device stream. Dropping it closes the device.
+/// An open device stream (or an offline sink, see [`Output::offline`]). Dropping it closes the
+/// device.
 pub struct Output {
-    _stream: cpal::Stream,
+    _stream: Option<cpal::Stream>,
     pub rate: u32,
     pub channels: usize,
     /// Interleaved samples for the callback.
@@ -129,7 +130,7 @@ impl Output {
             .map_err(|e| OutputError::Device(e.to_string()))?;
         log::info!("audio output: {rate} Hz, {ch} channels, {format}");
         Ok(Self {
-            _stream: stream,
+            _stream: Some(stream),
             rate,
             channels: ch,
             producer,
@@ -138,6 +139,39 @@ impl Output {
             capacity_frames,
             failed,
         })
+    }
+
+    /// An output with no device: the returned [`DeviceSide`] plays the part of the device
+    /// callback and is driven by the caller (offline rendering, tests).
+    pub fn offline(
+        rate: u32,
+        channels: usize,
+        buffer_ms: u32,
+        shared: Arc<Shared>,
+    ) -> (Self, DeviceSide) {
+        let ch = channels.max(1);
+        let capacity_frames = (rate as usize * buffer_ms.max(200) as usize / 1000).max(4096);
+        let (producer, consumer) = RingBuffer::<f32>::new(capacity_frames * ch);
+        let (commands, cmd_rx) = RingBuffer::<MixCmd>::new(64);
+        let device = DeviceSide {
+            mixer: Mixer::new(shared.clone(), rate, ch),
+            consumer,
+            cmd_rx,
+            shared: shared.clone(),
+            rate,
+            channels: ch,
+        };
+        let out = Self {
+            _stream: None,
+            rate,
+            channels: ch,
+            producer,
+            commands,
+            shared,
+            capacity_frames,
+            failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        (out, device)
     }
 
     pub fn send(&mut self, cmd: MixCmd) {
@@ -193,9 +227,9 @@ impl Output {
 fn build<T>(
     device: &cpal::Device,
     config: &StreamConfig,
-    mut mixer: Mixer,
-    mut consumer: Consumer<f32>,
-    mut cmd_rx: Consumer<MixCmd>,
+    mixer: Mixer,
+    consumer: Consumer<f32>,
+    cmd_rx: Consumer<MixCmd>,
     shared: Arc<Shared>,
     failed: Arc<std::sync::atomic::AtomicBool>,
     int_bits: u32,
@@ -203,30 +237,19 @@ fn build<T>(
 where
     T: SizedSample + FromSample<f32> + Send + 'static,
 {
+    let mut side = DeviceSide {
+        mixer,
+        consumer,
+        cmd_rx,
+        shared,
+        rate: config.sample_rate,
+        channels: config.channels as usize,
+    };
     let mut float_buf: Vec<f32> = Vec::new();
     let mut rng = 0x9E37_79B9u32;
     let data = move |out: &mut [T], _: &cpal::OutputCallbackInfo| {
-        while let Ok(cmd) = cmd_rx.pop() {
-            if let Some(g) = mixer.command(cmd) {
-                let n = consumer.slots();
-                if let Ok(chunk) = consumer.read_chunk(n) {
-                    chunk.commit_all();
-                }
-                shared.flush_ack.store(g, Ordering::Release);
-            }
-        }
         float_buf.resize(out.len(), 0.0);
-        let available = consumer.slots();
-        mixer.fill(&mut float_buf, available, |dst| {
-            let n = dst.len().min(consumer.slots());
-            if let Ok(chunk) = consumer.read_chunk(n) {
-                let (a, b) = chunk.as_slices();
-                dst[..a.len()].copy_from_slice(a);
-                dst[a.len()..a.len() + b.len()].copy_from_slice(b);
-                chunk.commit_all();
-            }
-            n
-        });
+        side.render(&mut float_buf);
         for (o, s) in out.iter_mut().zip(float_buf.iter()) {
             *o = if int_bits == 0 {
                 T::from_sample(*s)
@@ -249,4 +272,56 @@ where
     device
         .build_output_stream::<T, _, _>(*config, data, err, None)
         .map_err(|e| OutputError::Device(e.to_string()))
+}
+
+/// The consuming end of an output: what a device callback runs. For a device it lives inside the
+/// callback; for an offline output the caller drives it.
+pub struct DeviceSide {
+    mixer: Mixer,
+    consumer: Consumer<f32>,
+    cmd_rx: Consumer<MixCmd>,
+    shared: Arc<Shared>,
+    pub rate: u32,
+    pub channels: usize,
+}
+
+impl DeviceSide {
+    /// Applies pending commands, then fills `out` (interleaved, a whole number of frames) as
+    /// the device callback would. Returns the number of frames taken from the buffer; frames
+    /// after those are silence (underrun, prebuffering or pause).
+    pub fn render(&mut self, out: &mut [f32]) -> usize {
+        while let Ok(cmd) = self.cmd_rx.pop() {
+            if let Some(g) = self.mixer.command(cmd) {
+                let n = self.consumer.slots();
+                if let Ok(chunk) = self.consumer.read_chunk(n) {
+                    chunk.commit_all();
+                }
+                self.shared.flush_ack.store(g, Ordering::Release);
+            }
+        }
+        let before = self.shared.frames_played.load(Ordering::Relaxed);
+        let available = self.consumer.slots();
+        let consumer = &mut self.consumer;
+        self.mixer.fill(out, available, |dst| {
+            let n = dst.len().min(consumer.slots());
+            if let Ok(chunk) = consumer.read_chunk(n) {
+                let (a, b) = chunk.as_slices();
+                dst[..a.len()].copy_from_slice(a);
+                dst[a.len()..a.len() + b.len()].copy_from_slice(b);
+                chunk.commit_all();
+            }
+            n
+        });
+        (self.shared.frames_played.load(Ordering::Relaxed) - before) as usize
+    }
+
+    /// Frames waiting in the buffer.
+    pub fn buffered_frames(&self) -> usize {
+        self.consumer.slots() / self.channels
+    }
+
+    /// Buffer size in frames.
+    pub fn capacity_frames(&self) -> usize {
+        self.consumer.buffer().capacity() / self.channels
+    }
 }
