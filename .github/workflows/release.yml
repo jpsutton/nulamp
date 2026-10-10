@@ -96,8 +96,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install system libraries
+        # Not the distribution's FFmpeg or libopenmpt: the binary must link the bundled builds.
         run: |
-          ./scripts/ci-deps.sh
+          NULAMP_NO_CODEC_DEV=1 ./scripts/ci-deps.sh
           sudo apt-get install -y --no-install-recommends nasm
       - uses: Swatinem/rust-cache@v2
       - name: Build the bundled LGPL FFmpeg and libopenmpt
