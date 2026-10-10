@@ -1,8 +1,10 @@
 //! Decoder modules and decoder selection (07 §7, 08 §3).
 //!
-//! Decoders use a pull model: the host asks for audio, seeks and closes. Decoders contain no
-//! threading code.
+//! Decoders use a pull model: the host asks for audio, seeks and closes. File decoders contain
+//! no threading code; the network stream input ([`stream`]) runs its own network and decoding
+//! threads so that [`Decoder::read`] never waits for the network.
 
+pub mod stream;
 pub mod symphonia_decoder;
 
 use std::fmt;
@@ -33,15 +35,29 @@ pub enum DecodeError {
     Decode(String),
     #[error("seek failed: {0}")]
     Seek(String),
+    #[error(transparent)]
+    Stream(#[from] stream::StreamError),
+}
+
+/// Outcome of [`Decoder::read`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadStatus {
+    /// This many frames (at least one) were appended.
+    Frames(usize),
+    /// No audio is ready yet (a network stream is connecting or buffering). The stream has not
+    /// ended: call again later.
+    Pending,
+    /// All audio was decoded.
+    End,
 }
 
 /// An opened stream that produces interleaved 32-bit float PCM.
 pub trait Decoder: Send {
     fn info(&self) -> &StreamInfo;
 
-    /// Decodes the next block and appends its interleaved samples to `out`.
-    /// Returns the number of frames appended; 0 means the end of the stream.
-    fn read(&mut self, out: &mut Vec<f32>) -> Result<usize, DecodeError>;
+    /// Decodes the next block and appends its interleaved samples to `out`. Returns quickly;
+    /// [`ReadStatus::Pending`] means nothing is ready yet, not the end.
+    fn read(&mut self, out: &mut Vec<f32>) -> Result<ReadStatus, DecodeError>;
 
     /// Seeks to a position in milliseconds. Returns the position actually reached.
     fn seek(&mut self, ms: u64) -> Result<u64, DecodeError>;
@@ -56,6 +72,11 @@ pub trait Decoder: Send {
 
     /// A changed stream title (ICY metadata, chained Ogg), if any since the last call.
     fn take_title(&mut self) -> Option<String> {
+        None
+    }
+
+    /// Station and song fields of a network stream (`streamtitle`, `streamname`, …).
+    fn stream_fields(&self) -> Option<stream::StreamFields> {
         None
     }
 }
@@ -116,9 +137,16 @@ impl Registry {
         }
     }
 
-    /// The built-in decoders.
+    /// The built-in decoders, with a default network stream input.
     pub fn with_defaults() -> Self {
+        Self::with_stream(stream::StreamFactory::default())
+    }
+
+    /// The built-in decoders, with `stream` as the network stream input. Keep a clone of the
+    /// factory to change its settings, set the credentials prompt or read stream fields.
+    pub fn with_stream(stream: stream::StreamFactory) -> Self {
         let mut r = Self::empty();
+        r.add(Box::new(stream));
         r.add(Box::new(symphonia_decoder::SymphoniaFactory));
         r
     }
@@ -189,7 +217,15 @@ mod tests {
     #[test]
     fn unknown_extension_uses_assumed() {
         let r = Registry::with_defaults();
-        assert!(r.select("http://radio.example/live").is_some());
+        assert_eq!(
+            r.select("http://radio.example/live").map(|f| f.name()),
+            Some("Network stream")
+        );
+        assert_eq!(
+            r.select("ICY://radio.example/x.mp3").map(|f| f.name()),
+            Some("Network stream")
+        );
+        assert_eq!(r.select("/a/b.mp3").map(|f| f.name()), Some("Symphonia"));
         assert!(r.is_supported_extension("FLAC"));
         assert!(!r.is_supported_extension("txt"));
     }

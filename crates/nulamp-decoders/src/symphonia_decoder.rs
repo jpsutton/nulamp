@@ -4,15 +4,17 @@
 use std::collections::VecDeque;
 use std::fs::File;
 
+use symphonia::core::codecs::audio::AudioCodecParameters;
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymError;
+use symphonia::core::formats::Track;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
 use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
+use symphonia::core::meta::{MetadataOptions, StandardTag};
 use symphonia::core::units::{Time, TimeBase};
 
-use crate::{DecodeError, Decoder, DecoderFactory, StreamInfo};
+use crate::{DecodeError, Decoder, DecoderFactory, ReadStatus, StreamInfo};
 
 pub struct SymphoniaFactory;
 
@@ -106,6 +108,9 @@ pub struct SymphoniaDecoder {
     scratch: Vec<f32>,
     /// Frames to drop after an accurate seek landed before the requested time.
     skip_frames: u64,
+    seek_mode: SeekMode,
+    /// Title of a new chained Ogg stream, not yet taken.
+    chain_title: Option<String>,
 }
 
 fn codec_name(id: symphonia::core::codecs::audio::AudioCodecId) -> (String, bool) {
@@ -121,21 +126,29 @@ fn codec_name(id: symphonia::core::codecs::audio::AudioCodecId) -> (String, bool
     (name, lossless)
 }
 
+/// The default audio track of `format`, its parameters and a decoder for them.
+fn open_track(
+    format: &dyn FormatReader,
+) -> Result<(Track, AudioCodecParameters, Box<dyn AudioDecoder>), DecodeError> {
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or_else(|| DecodeError::Open("no audio track".into()))?
+        .clone();
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .ok_or_else(|| DecodeError::Open("no audio codec parameters".into()))?
+        .clone();
+    let decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(&params, &AudioDecoderOptions::default())
+        .map_err(|e| DecodeError::Unsupported(e.to_string()))?;
+    Ok((track, params, decoder))
+}
+
 impl SymphoniaDecoder {
-    fn new(format: Box<dyn FormatReader + 'static>) -> Result<Self, DecodeError> {
-        let track = format
-            .default_track(TrackType::Audio)
-            .ok_or_else(|| DecodeError::Open("no audio track".into()))?
-            .clone();
-        let params = track
-            .codec_params
-            .as_ref()
-            .and_then(|p| p.audio())
-            .ok_or_else(|| DecodeError::Open("no audio codec parameters".into()))?
-            .clone();
-        let decoder = symphonia::default::get_codecs()
-            .make_audio_decoder(&params, &AudioDecoderOptions::default())
-            .map_err(|e| DecodeError::Unsupported(e.to_string()))?;
+    pub(crate) fn new(format: Box<dyn FormatReader + 'static>) -> Result<Self, DecodeError> {
+        let (track, params, decoder) = open_track(format.as_ref())?;
         let sample_rate = params.sample_rate.unwrap_or(44_100);
         let channels = params
             .channels
@@ -168,7 +181,53 @@ impl SymphoniaDecoder {
             recent: VecDeque::new(),
             scratch: Vec::new(),
             skip_frames: 0,
+            seek_mode: SeekMode::Accurate,
+            chain_title: None,
         })
+    }
+
+    /// Seeks by a byte position estimate instead of parsing from the start (network streams).
+    pub(crate) fn with_coarse_seek(mut self) -> Self {
+        self.seek_mode = SeekMode::Coarse;
+        self
+    }
+
+    /// A chained Ogg stream started a new logical stream: select its track and take its title
+    /// from the newest metadata.
+    fn restart_track(&mut self) -> Result<(), DecodeError> {
+        let (track, params, decoder) = open_track(self.format.as_ref())?;
+        self.decoder = decoder;
+        self.track_id = track.id;
+        self.time_base = track.time_base;
+        if let Some(rate) = params.sample_rate {
+            self.info.sample_rate = rate;
+        }
+        if let Some(ch) = &params.channels {
+            self.info.channels = ch.count() as u16;
+        }
+        self.recent.clear();
+        let mut meta = self.format.metadata();
+        if let Some(rev) = meta.skip_to_latest() {
+            let tags = rev
+                .media
+                .tags
+                .iter()
+                .chain(rev.per_track.iter().flat_map(|t| t.metadata.tags.iter()));
+            let (mut artist, mut title) = (None, None);
+            for tag in tags {
+                match &tag.std {
+                    Some(StandardTag::Artist(a)) if artist.is_none() => artist = Some(a.clone()),
+                    Some(StandardTag::TrackTitle(t)) if title.is_none() => title = Some(t.clone()),
+                    _ => {}
+                }
+            }
+            self.chain_title = match (artist, title) {
+                (Some(a), Some(t)) => Some(format!("{a} - {t}")),
+                (None, Some(t)) => Some(t.to_string()),
+                _ => None,
+            };
+        }
+        Ok(())
     }
 
     fn packet_seconds(&self, dur: u64) -> f64 {
@@ -187,17 +246,17 @@ impl Decoder for SymphoniaDecoder {
         &self.info
     }
 
-    fn read(&mut self, out: &mut Vec<f32>) -> Result<usize, DecodeError> {
+    fn read(&mut self, out: &mut Vec<f32>) -> Result<ReadStatus, DecodeError> {
         loop {
             let packet = match self.format.next_packet() {
                 Ok(Some(p)) => p,
-                Ok(None) => return Ok(0),
+                Ok(None) => return Ok(ReadStatus::End),
                 Err(SymError::ResetRequired) => {
-                    self.decoder.reset();
+                    self.restart_track()?;
                     continue;
                 }
                 Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    return Ok(0);
+                    return Ok(ReadStatus::End);
                 }
                 Err(e) => return Err(DecodeError::Decode(e.to_string())),
             };
@@ -237,7 +296,7 @@ impl Decoder for SymphoniaDecoder {
                             }
                         }
                     }
-                    return Ok(frames);
+                    return Ok(ReadStatus::Frames(frames));
                 }
                 Err(SymError::DecodeError(_)) => continue,
                 Err(e) => return Err(DecodeError::Decode(e.to_string())),
@@ -251,7 +310,7 @@ impl Decoder for SymphoniaDecoder {
         let seeked = self
             .format
             .seek(
-                SeekMode::Accurate,
+                self.seek_mode,
                 SeekTo::Time {
                     time,
                     track_id: Some(self.track_id),
@@ -282,6 +341,10 @@ impl Decoder for SymphoniaDecoder {
             .iter()
             .fold((0usize, 0f64), |(b, s), (pb, ps)| (b + pb, s + ps));
         (secs > 0.0).then(|| ((bytes as f64 * 8.0 / secs) / 1000.0).round() as u32)
+    }
+
+    fn take_title(&mut self) -> Option<String> {
+        self.chain_title.take()
     }
 }
 
@@ -329,11 +392,7 @@ mod tests {
         assert!(d.info().seekable);
         let mut out = Vec::new();
         let mut frames = 0;
-        loop {
-            let n = d.read(&mut out).unwrap();
-            if n == 0 {
-                break;
-            }
+        while let ReadStatus::Frames(n) = d.read(&mut out).unwrap() {
             frames += n;
         }
         assert_eq!(frames, 88_200);
@@ -343,11 +402,7 @@ mod tests {
         assert!((990..=1010).contains(&pos), "{pos}");
         let mut rest = 0;
         let mut out = Vec::new();
-        loop {
-            let n = d.read(&mut out).unwrap();
-            if n == 0 {
-                break;
-            }
+        while let ReadStatus::Frames(n) = d.read(&mut out).unwrap() {
             rest += n;
         }
         assert!((44_000..=44_200).contains(&rest), "{rest}");
