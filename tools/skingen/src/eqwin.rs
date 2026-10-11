@@ -3,14 +3,7 @@
 use crate::canvas::{Canvas, lerp, pal};
 
 fn eq_title(c: &mut Canvas, y: i32, active: bool, label: &str) {
-    let (a, b, ink) = if active {
-        (pal::TITLE_A, pal::TITLE_B, pal::TITLE_TEXT)
-    } else {
-        (pal::TITLE_IN_A, pal::TITLE_IN_B, pal::TITLE_TEXT_IN)
-    };
-    c.vgrad(0, y, 275, 14, a, b);
-    c.hline(0, y + 13, 275, pal::SHADOW);
-    c.text_centered(0, y, 275, 14, label, ink);
+    c.title_bar(0, y, 275, active, label, 6, 250);
 }
 
 fn small_x(c: &mut Canvas, x: i32, y: i32, pressed: bool) {
@@ -35,7 +28,13 @@ fn small_shade(c: &mut Canvas, x: i32, y: i32, pressed: bool, unshade: bool) {
     };
     if unshade {
         c.rect(x + 2, y + 2, 5, 5, ink);
-        c.rect(x + 3, y + 4, 3, 2, pal::FACE_DARK);
+        c.rect(
+            x + 3,
+            y + 4,
+            3,
+            2,
+            if pressed { pal::FACE_DARK } else { pal::BTN },
+        );
     } else {
         c.hline(x + 2, y + 2, 5, ink);
         c.hline(x + 2, y + 3, 5, ink);
@@ -54,24 +53,18 @@ const ISO_LABELS: [&str; 10] = [
 pub fn eqmain(iso: bool) -> Canvas {
     let mut c = Canvas::new(275, 315, pal::FACE_DARK);
     // Window background (0,0) 275×116.
-    c.vgrad(0, 0, 275, 116, pal::FACE, pal::FACE_DARK);
+    c.rect(0, 0, 275, 116, pal::FACE);
     c.bevel(0, 0, 275, 116, false);
     eq_title(&mut c, 0, true, "EQUALIZER");
-    // Slider recesses and labels.
-    let slider_x: Vec<i32> = std::iter::once(21)
-        .chain((0..10).map(|i| 78 + i * 18))
-        .collect();
-    for &x in &slider_x {
-        c.bevel(x - 1, 37, 16, 65, true);
-    }
+    // Labels (the sliders draw their own tracks).
     let labels = if iso { ISO_LABELS } else { WINAMP_LABELS };
     for (i, label) in labels.iter().enumerate() {
         c.text_centered(78 + i as i32 * 18 - 3, 104, 20, 7, label, pal::LABEL);
     }
     c.text_centered(10, 104, 36, 7, "PREAMP", pal::LABEL);
-    c.text(45, 35, "+12DB", pal::LABEL);
-    c.text(49, 67, "0DB", pal::LABEL);
-    c.text(45, 94, "-12DB", pal::LABEL);
+    c.text(45, 35, "+12DB", pal::LABEL_DIM);
+    c.text(49, 67, "0DB", pal::LABEL_DIM);
+    c.text(45, 94, "-12DB", pal::LABEL_DIM);
     // Graph recess.
     c.bevel(85, 16, 115, 21, true);
 
@@ -112,7 +105,8 @@ pub fn eqmain(iso: bool) -> Canvas {
     // Slider thumbs (0,164) normal / (0,176) pressed, 11×11.
     for (y, pressed) in [(164, false), (176, true)] {
         c.button(0, y, 11, 11, pressed);
-        c.hline(2, y + 5, 7, if pressed { pal::ACCENT } else { pal::LABEL });
+        let ink = if pressed { pal::ACCENT } else { pal::BTN_SH };
+        c.hline(2, y + 5, 7, ink);
     }
     // Slider background frames 0..27: frame n shows a fill proportional to n.
     for n in 0..28 {
@@ -121,15 +115,12 @@ pub fn eqmain(iso: bool) -> Canvas {
         } else {
             (13 + (n - 14) * 15, 229)
         };
-        c.rect(x, y, 14, 63, pal::SHADOW);
-        c.vline(x + 6, y + 2, 59, pal::FACE_DARK);
-        c.vline(x + 7, y + 2, 59, pal::FACE_DARK);
+        // Face with a sunken 4 px track, filled green from the bottom up to the level.
+        c.rect(x, y, 14, 63, pal::FACE);
+        c.rect(x + 5, y, 4, 63, pal::LCD_BG);
+        c.edges(x + 5, y, 4, 63, pal::SHADOW, pal::HILITE);
         let h = 1 + n * 58 / 27;
-        for k in 0..h {
-            let t = k as f32 / 58.0;
-            let col = lerp(0x2E9E58, 0xE8B040, t);
-            c.hline(x + 6, y + 61 - k, 2, col);
-        }
+        c.rect(x + 6, y + 62 - h, 2, h, pal::ACCENT);
     }
     // PRESETS button normal / pressed.
     for (y, pressed) in [(164, false), (176, true)] {
@@ -143,23 +134,14 @@ pub fn eqmain(iso: bool) -> Canvas {
             pal::TITLE_TEXT,
         );
     }
-    // Graph background (0,294) 113×19 with grid.
-    c.rect(0, 294, 113, 19, pal::LCD_BG);
-    for gy in [294, 303, 312] {
-        for gx in (0..113).step_by(2) {
-            c.px(gx, gy, pal::LCD_DIM);
-        }
-    }
+    // Graph background (0,294) 113×19: dotted display with a 0 dB line.
+    c.lcd_dots(0, 294, 113, 19, 0, 294);
+    c.hline(0, 303, 113, pal::LCD_LINE);
     // Preamp line (0,314) 113×1.
-    c.hline(0, 314, 113, 0x8080A0);
-    // Curve colours (115, 294..312): red at the top (+12 dB) to green at the bottom.
+    c.hline(0, 314, 113, pal::CAP);
+    // Curve colours (115, 294..312): green throughout, lighter towards +12 dB.
     for row in 0..19 {
-        let t = row as f32 / 18.0;
-        let col = if t < 0.5 {
-            lerp(0xFF4030, 0xFFE040, t * 2.0)
-        } else {
-            lerp(0xFFE040, 0x40E060, (t - 0.5) * 2.0)
-        };
+        let col = lerp(0xA6F5B0, pal::LCD_FG, (row as f32 / 6.0).min(1.0));
         c.px(115, 294 + row, col);
     }
     c
@@ -169,13 +151,14 @@ pub fn eqmain(iso: bool) -> Canvas {
 pub fn eq_ex() -> Canvas {
     let mut c = Canvas::new(275, 82, pal::FACE_DARK);
     for (y, active) in [(0, true), (15, false)] {
-        let (a, b, ink) = if active {
-            (pal::TITLE_A, pal::TITLE_B, pal::TITLE_TEXT)
+        let (bg, ink) = if active {
+            (pal::TITLE_BG, pal::TITLE_TEXT)
         } else {
-            (pal::TITLE_IN_A, pal::TITLE_IN_B, pal::TITLE_TEXT_IN)
+            (pal::TITLE_BG_IN, pal::TITLE_TEXT_IN)
         };
-        c.vgrad(0, y, 275, 14, a, b);
-        c.text(8, y + 5, "EQ", ink);
+        c.rect(0, y, 275, 14, bg);
+        c.hline(0, y + 13, 275, pal::TITLE_LINE);
+        c.text(8, y + 4, "EQ", ink);
         // Volume groove 61..162 and balance groove 163..206.
         c.rect(61, y + 6, 101, 2, pal::SHADOW);
         c.rect(166, y + 6, 40, 2, pal::SHADOW);
@@ -196,7 +179,7 @@ pub fn eq_ex() -> Canvas {
             30,
             3,
             7,
-            lerp(0x806020, 0xE8B040, k as f32 / 2.0),
+            lerp(pal::CAP, 0xD9DDE5, k as f32 / 2.0),
         );
     }
     // Pressed shade button for normal mode (1,38), close normal/pressed, unshade pressed.

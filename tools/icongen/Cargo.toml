@@ -1,0 +1,15 @@
+[package]
+name = "nulamp-icongen"
+description = "Writes nulamp's packaged icon files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+nulamp-icon = { path = "../../crates/nulamp-icon" }
+png = "0.18"
+
+[lints]
+workspace = true

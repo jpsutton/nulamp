@@ -50,26 +50,23 @@ impl Tray {
     }
 }
 
-/// 22×22 ARGB icon: a play triangle on a dark rounded square.
-pub fn icon_argb() -> (i32, i32, Vec<u8>) {
-    let (w, h) = (22i32, 22i32);
-    let mut data = Vec::with_capacity((w * h * 4) as usize);
-    for y in 0..h {
-        for x in 0..w {
-            let corner = (x < 2 || x > w - 3) && (y < 2 || y > h - 3);
-            // Triangle pointing right: half-height shrinks from 7 at x = 7 to 0 at x = 16.
-            let in_tri = (7..=16).contains(&x) && (y - 11).abs() <= 7 - (x - 7) * 7 / 9;
-            let (a, r, g, b) = if corner {
-                (0, 0, 0, 0)
-            } else if in_tri {
-                (255, 0x3C, 0xF0, 0x6E)
-            } else {
-                (255, 0x2C, 0x30, 0x39)
-            };
-            data.extend_from_slice(&[a, r, g, b]);
-        }
-    }
-    (w, h, data)
+/// The application icon at each hand-drawn pixel size as `(width, height, ARGB32
+/// big-endian)`; the tray host picks the closest size.
+pub fn icons_argb() -> Vec<(i32, i32, Vec<u8>)> {
+    nulamp_icon::PIXEL_SIZES
+        .iter()
+        .map(|&s| {
+            let img = nulamp_icon::icon(s);
+            let data = img
+                .rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|&[r, g, b, a]| [a, r, g, b])
+                .collect();
+            (img.width as i32, img.height as i32, data)
+        })
+        .collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -97,12 +94,14 @@ mod sni {
         }
 
         fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-            let (width, height, data) = icon_argb();
-            vec![ksni::Icon {
-                width,
-                height,
-                data,
-            }]
+            icons_argb()
+                .into_iter()
+                .map(|(width, height, data)| ksni::Icon {
+                    width,
+                    height,
+                    data,
+                })
+                .collect()
         }
 
         fn tool_tip(&self) -> ksni::ToolTip {
@@ -150,8 +149,12 @@ mod sni {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn icon_size() {
-        let (w, h, d) = super::icon_argb();
-        assert_eq!(d.len(), (w * h * 4) as usize);
+    fn icon_sizes() {
+        let icons = super::icons_argb();
+        let sizes: Vec<_> = icons.iter().map(|(w, _, _)| *w).collect();
+        assert_eq!(sizes, [16, 22, 24, 32, 48]);
+        for (w, h, d) in &icons {
+            assert_eq!(d.len(), (w * h * 4) as usize);
+        }
     }
 }

@@ -1,30 +1,44 @@
 //! Playlist, generic-window, `genex.bmp` and video bitmaps of the built-in skin
 //! (layouts from spec 04 and 05).
 
-use crate::canvas::{Canvas, lerp, pal};
+use crate::canvas::{Canvas, pal};
 use crate::font;
 use crate::mainwin::{Icon, icon};
 
+/// A 20-row title tile: a 14-row bar like the main and equalizer windows' title bars, then
+/// six rows of window face above the list.
 fn title_piece(c: &mut Canvas, x: i32, y: i32, w: i32, active: bool) {
-    let (a, b) = if active {
-        (pal::TITLE_A, pal::TITLE_B)
+    let bg = if active {
+        pal::TITLE_BG
     } else {
-        (pal::TITLE_IN_A, pal::TITLE_IN_B)
+        pal::TITLE_BG_IN
     };
-    c.vgrad(x, y, w, 20, pal::FACE, pal::FACE_DARK);
-    c.vgrad(x, y + 2, w, 12, a, b);
-    c.hline(x, y + 19, w, pal::FACE_DARK);
+    c.rect(x, y, w, 14, bg);
+    c.hline(x, y + 13, w, pal::TITLE_LINE);
+    c.rect(x, y + 14, w, 6, pal::FACE);
 }
 
 fn grip(c: &mut Canvas, x: i32, y: i32, w: i32, active: bool) {
-    let col = if active {
-        lerp(pal::TITLE_A, 0xFFFFFF, 0.25)
+    let hi = if active {
+        pal::GROOVE_HI
     } else {
-        lerp(pal::TITLE_IN_A, 0xFFFFFF, 0.15)
+        pal::GROOVE_HI_IN
     };
-    for gy in [y + 6, y + 9] {
-        c.hline(x, gy, w, col);
-    }
+    c.grooves(x, y, w, hi);
+}
+
+/// A centred title in a title tile, with grooves filling the tile on both sides of it.
+fn title_label(c: &mut Canvas, x: i32, y: i32, w: i32, label: &str, active: bool) {
+    let ink = if active {
+        pal::TITLE_TEXT
+    } else {
+        pal::TITLE_TEXT_IN
+    };
+    let tw = font::text_width(label);
+    let tx = x + (w - tw) / 2;
+    grip(c, x, y, tx - 5 - x, active);
+    grip(c, tx + tw + 5, y, x + w - (tx + tw + 5), active);
+    c.text(tx, y + 4, label, ink);
 }
 
 fn btn_x(c: &mut Canvas, x: i32, y: i32, pressed: bool) {
@@ -49,7 +63,13 @@ fn btn_shade(c: &mut Canvas, x: i32, y: i32, pressed: bool, unshade: bool) {
     };
     if unshade {
         c.rect(x + 2, y + 2, 5, 5, ink);
-        c.rect(x + 3, y + 4, 3, 2, pal::FACE_DARK);
+        c.rect(
+            x + 3,
+            y + 4,
+            3,
+            2,
+            if pressed { pal::FACE_DARK } else { pal::BTN },
+        );
     } else {
         c.hline(x + 2, y + 2, 5, ink);
         c.hline(x + 2, y + 3, 5, ink);
@@ -66,7 +86,7 @@ fn side(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, inner_right: bool) {
 }
 
 fn bottom_bar(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32) {
-    c.vgrad(x, y, w, h, pal::FACE, pal::FACE_DARK);
+    c.rect(x, y, w, h, pal::FACE);
     c.hline(x, y, w, pal::HILITE);
 }
 
@@ -74,11 +94,6 @@ fn bottom_bar(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32) {
 pub fn pledit() -> Canvas {
     let mut c = Canvas::new(280, 186, pal::FACE_DARK);
     for (y, active) in [(0, true), (21, false)] {
-        let ink = if active {
-            pal::TITLE_TEXT
-        } else {
-            pal::TITLE_TEXT_IN
-        };
         title_piece(&mut c, 0, y, 25, active);
         title_piece(&mut c, 26, y, 100, active);
         title_piece(&mut c, 127, y, 25, active);
@@ -86,42 +101,50 @@ pub fn pledit() -> Canvas {
         grip(&mut c, 4, y, 21, active);
         grip(&mut c, 127, y, 25, active);
         grip(&mut c, 153, y, 4, active);
-        c.text_centered(26, y + 2, 100, 12, "PLAYLIST", ink);
+        title_label(&mut c, 26, y, 100, "PLAYLIST", active);
         btn_shade(&mut c, 158, y + 3, false, false);
         btn_x(&mut c, 167, y + 3, false);
-        // Outer right edge, dark like the main and equalizer windows' bevel.
-        c.vline(177, y, 20, pal::SHADOW);
+        // Outer edges below the bar, like the side tiles under them.
+        c.vline(0, y + 14, 6, pal::HILITE);
+        c.vline(177, y + 14, 6, pal::SHADOW);
+        c.vline(177, y, 14, pal::TITLE_LINE);
     }
     // Side tiles and scroll bar parts (y 42, 29 tall).
     side(&mut c, 0, 42, 12, 29, true);
     side(&mut c, 31, 42, 5, 29, false);
-    c.rect(36, 42, 8, 29, pal::SHADOW);
-    c.vline(39, 42, 29, pal::FACE_DARK);
-    c.vline(40, 42, 29, pal::FACE_DARK);
+    c.rect(36, 42, 8, 29, pal::LCD_BG);
     side(&mut c, 44, 42, 7, 29, false);
     c.vline(50, 42, 29, pal::SHADOW);
     // Scroll thumb normal / pressed 8×18.
     for (x, pressed) in [(52, false), (61, true)] {
         c.button(x, 53, 8, 18, pressed);
         for gy in [60, 62, 64] {
-            c.hline(x + 2, gy, 4, if pressed { pal::ACCENT } else { pal::LABEL });
+            c.hline(
+                x + 2,
+                gy,
+                4,
+                if pressed { pal::ACCENT } else { pal::BTN_SH },
+            );
         }
     }
     btn_x(&mut c, 52, 42, true);
     btn_shade(&mut c, 62, 42, true, false);
     // Shade bar pieces.
     for (y, active) in [(42, true), (57, false)] {
-        let (a, b) = if active {
-            (pal::TITLE_A, pal::TITLE_B)
+        let bg = if active {
+            pal::TITLE_BG
         } else {
-            (pal::TITLE_IN_A, pal::TITLE_IN_B)
+            pal::TITLE_BG_IN
         };
-        c.vgrad(99, y, 50, 14, a, b);
+        c.rect(99, y, 50, 14, bg);
+        c.hline(99, y + 13, 50, pal::TITLE_LINE);
         btn_shade(&mut c, 99 + 29, y + 3, false, true);
         btn_x(&mut c, 99 + 39, y + 3, false);
     }
-    c.vgrad(72, 42, 25, 14, pal::TITLE_A, pal::TITLE_B);
-    c.vgrad(72, 57, 25, 14, pal::TITLE_A, pal::TITLE_B);
+    for y in [42, 57] {
+        c.rect(72, y, 25, 14, pal::TITLE_BG);
+        c.hline(72, y + 13, 25, pal::TITLE_LINE);
+    }
     btn_shade(&mut c, 128, 45, false, true);
     btn_shade(&mut c, 150, 42, true, true);
 
@@ -268,9 +291,9 @@ pub fn gen_bmp() -> Canvas {
     for (base, chars) in rows {
         for (y, active) in [(base, true), (base + 8, false)] {
             let cell_bg = if active {
-                pal::TITLE_B
+                pal::TITLE_BG
             } else {
-                pal::TITLE_IN_B
+                pal::TITLE_BG_IN
             };
             let ink = if active {
                 pal::TITLE_TEXT
@@ -298,9 +321,30 @@ pub fn genex() -> Canvas {
     c.button(0, 15, 47, 15, true);
     // Colours at y 0, x 48 + 2i.
     let colors = [
-        0x0A0D10, 0x3CF06E, 0x2C3039, 0xE6ECF5, 0xE6ECF5, 0x5D6578, 0x1E4E80, 0x3A3F4B, 0xE6ECF5,
-        0x5D6578, 0x3A3F4B, 0x191B21, 0x2C3039, 0x5D6578, 0x191B21, 0x8E949E, 0x3A3F4B, 0x2C3039,
-        0xFFFFFF, 0x4AA8FF, 0xE6ECF5, 0x2A4A6A, 0x101418, 0x3CF06E,
+        pal::LCD_BG,
+        pal::PL_TEXT,
+        pal::FACE_DARK,
+        pal::TITLE_TEXT,
+        pal::TITLE_TEXT,
+        pal::HILITE,
+        pal::ACCENT_DARK,
+        pal::FACE,
+        pal::TITLE_TEXT,
+        pal::HILITE,
+        pal::FACE,
+        pal::SHADOW,
+        pal::FACE_DARK,
+        pal::HILITE,
+        pal::SHADOW,
+        pal::TITLE_TEXT_IN,
+        pal::FACE,
+        pal::FACE_DARK,
+        pal::PL_CURRENT,
+        0x2E6B3A,
+        pal::TITLE_TEXT,
+        0x26352B,
+        0x0E1014,
+        pal::PL_TEXT,
     ];
     for (i, col) in colors.iter().enumerate() {
         c.rect(48 + 2 * i as i32, 0, 2, 1, *col);
@@ -316,13 +360,13 @@ pub fn genex() -> Canvas {
     for (x, pressed) in [(56, false), (70, true)] {
         c.button(x, 31, 14, 28, pressed);
         for gy in [42, 44, 46] {
-            c.hline(x + 4, gy, 6, pal::LABEL);
+            c.hline(x + 4, gy, 6, pal::BTN_SH);
         }
     }
     for (y, pressed) in [(31, false), (45, true)] {
         c.button(84, y, 28, 14, pressed);
         for gx in [95, 97, 99] {
-            c.vline(gx, y + 4, 6, pal::LABEL);
+            c.vline(gx, y + 4, 6, pal::BTN_SH);
         }
     }
     // Pixel (111,0) marks "not set": a colour none of the entries use.
@@ -345,11 +389,6 @@ fn arrow(c: &mut Canvas, x: i32, y: i32, dir: char) {
 pub fn video_like(label: &str) -> Canvas {
     let mut c = Canvas::new(234, 119, pal::FACE_DARK);
     for (y, active) in [(0, true), (21, false)] {
-        let ink = if active {
-            pal::TITLE_TEXT
-        } else {
-            pal::TITLE_TEXT_IN
-        };
         title_piece(&mut c, 0, y, 25, active);
         title_piece(&mut c, 26, y, 100, active);
         title_piece(&mut c, 127, y, 25, active);
@@ -357,7 +396,7 @@ pub fn video_like(label: &str) -> Canvas {
         grip(&mut c, 4, y, 21, active);
         grip(&mut c, 127, y, 25, active);
         grip(&mut c, 153, y, 10, active);
-        c.text_centered(26, y + 2, 100, 12, label, ink);
+        title_label(&mut c, 26, y, 100, label, active);
         btn_x(&mut c, 167, y + 3, false);
     }
     side(&mut c, 127, 42, 11, 29, true);

@@ -3,29 +3,41 @@
 use crate::font;
 use nulamp_skin::Bitmap;
 
-/// Colour palette of the built-in skin.
+/// Colour palette of the built-in skin ("Graphite"). The display colours are shared with the
+/// app icon: display black, its dot grid, the green of the analyzer bars and the grey of their
+/// peak caps.
 pub mod pal {
-    pub const FACE: u32 = 0x3A3F4B;
-    pub const FACE_DARK: u32 = 0x2C3039;
-    pub const HILITE: u32 = 0x5D6578;
-    pub const SHADOW: u32 = 0x191B21;
+    pub const FACE: u32 = 0x2B2F37;
+    pub const FACE_DARK: u32 = 0x23262D;
+    pub const HILITE: u32 = 0x3B414D;
+    pub const SHADOW: u32 = 0x101216;
     pub const BLACK: u32 = 0x000000;
+    pub const BTN: u32 = 0x363B45;
+    pub const BTN_HI: u32 = 0x4B515E;
+    pub const BTN_SH: u32 = 0x14161B;
     pub const LCD_BG: u32 = 0x0A0D10;
-    pub const LCD_DIM: u32 = 0x173A22;
-    pub const LCD_FG: u32 = 0x3CF06E;
-    pub const LABEL: u32 = 0xA8B4C8;
-    pub const LABEL_DIM: u32 = 0x6C7488;
-    pub const ACCENT: u32 = 0x4AA8FF;
-    pub const ACCENT_DARK: u32 = 0x1E4E80;
-    pub const TITLE_A: u32 = 0x2F4C7A;
-    pub const TITLE_B: u32 = 0x1B2C49;
-    pub const TITLE_IN_A: u32 = 0x3C4048;
-    pub const TITLE_IN_B: u32 = 0x2A2D33;
-    pub const TITLE_TEXT: u32 = 0xE6ECF5;
-    pub const TITLE_TEXT_IN: u32 = 0x8E949E;
-    pub const LED_ON: u32 = 0x3CF06E;
-    pub const LED_OFF: u32 = 0x1E3A27;
+    pub const LCD_DOT: u32 = 0x171C24;
+    pub const LCD_DIM: u32 = 0x1E3A26;
+    pub const LCD_FG: u32 = 0x4BE35D;
+    pub const LCD_LINE: u32 = 0x252A33;
+    pub const CAP: u32 = 0x6C7487;
+    pub const LABEL: u32 = 0x8B919D;
+    pub const LABEL_DIM: u32 = 0x5A606C;
+    pub const ACCENT: u32 = 0x4BE35D;
+    pub const ACCENT_DARK: u32 = 0x1E3A26;
+    pub const TITLE_BG: u32 = 0x1D2027;
+    pub const TITLE_BG_IN: u32 = 0x24272E;
+    pub const TITLE_LINE: u32 = 0x0A0B0E;
+    pub const GROOVE_HI: u32 = 0x353A44;
+    pub const GROOVE_HI_IN: u32 = 0x2E323A;
+    pub const GROOVE_LO: u32 = 0x0E1014;
+    pub const TITLE_TEXT: u32 = 0xD9DDE5;
+    pub const TITLE_TEXT_IN: u32 = 0x7A808C;
+    pub const LED_ON: u32 = 0x4BE35D;
+    pub const LED_OFF: u32 = 0x3F4550;
     pub const RED: u32 = 0xE8463C;
+    pub const PL_TEXT: u32 = 0xA9AFBA;
+    pub const PL_CURRENT: u32 = 0xFFFFFF;
 }
 
 pub fn lerp(a: u32, b: u32, t: f32) -> u32 {
@@ -60,18 +72,6 @@ impl Canvas {
         self.rect(x, y, 1, h, c);
     }
 
-    /// Vertical gradient fill.
-    pub fn vgrad(&mut self, x: i32, y: i32, w: i32, h: i32, top: u32, bottom: u32) {
-        for i in 0..h {
-            let t = if h > 1 {
-                i as f32 / (h - 1) as f32
-            } else {
-                0.0
-            };
-            self.hline(x, y + i, w, lerp(top, bottom, t));
-        }
-    }
-
     /// One-pixel bevel: light top/left, dark bottom/right (inverted when `sunken`).
     pub fn bevel(&mut self, x: i32, y: i32, w: i32, h: i32, sunken: bool) {
         let (a, b) = if sunken {
@@ -79,26 +79,111 @@ impl Canvas {
         } else {
             (pal::HILITE, pal::SHADOW)
         };
+        self.edges(x, y, w, h, a, b);
+    }
+
+    /// One-pixel frame: `a` on the top and left edges, `b` on the bottom and right.
+    pub fn edges(&mut self, x: i32, y: i32, w: i32, h: i32, a: u32, b: u32) {
         self.hline(x, y, w, a);
         self.vline(x, y, h, a);
         self.hline(x, y + h - 1, w, b);
         self.vline(x + w - 1, y, h, b);
     }
 
-    /// A raised (or pressed) button face with bevel.
+    /// A raised (or pressed) flat button with a one-pixel bevel.
     pub fn button(&mut self, x: i32, y: i32, w: i32, h: i32, pressed: bool) {
         if pressed {
-            self.vgrad(x, y, w, h, pal::FACE_DARK, pal::FACE);
+            self.rect(x, y, w, h, pal::FACE_DARK);
+            self.edges(x, y, w, h, pal::BTN_SH, pal::BTN_HI);
         } else {
-            self.vgrad(x, y, w, h, pal::HILITE, pal::FACE_DARK);
+            self.rect(x, y, w, h, pal::BTN);
+            self.edges(x, y, w, h, pal::BTN_HI, pal::BTN_SH);
         }
-        self.bevel(x, y, w, h, pressed);
     }
 
     /// A sunken well (LCD-like).
     pub fn well(&mut self, x: i32, y: i32, w: i32, h: i32, fill: u32) {
         self.rect(x, y, w, h, fill);
         self.bevel(x - 1, y - 1, w + 2, h + 2, true);
+    }
+
+    /// Display black with the icon's dot grid: a dot wherever both `x - ox` and `y - oy` are
+    /// even. Pass the origin that lands on an even screen pixel, so every piece of the left
+    /// display lines up with the others and with the visualizer's grid.
+    pub fn lcd_dots(&mut self, x: i32, y: i32, w: i32, h: i32, ox: i32, oy: i32) {
+        self.rect(x, y, w, h, pal::LCD_BG);
+        for py in y..y + h {
+            for px in x..x + w {
+                if (px - ox) % 2 == 0 && (py - oy) % 2 == 0 {
+                    self.px(px, py, pal::LCD_DOT);
+                }
+            }
+        }
+    }
+
+    /// A 14-row title bar: flat fill, a dark bottom edge, and two grooves either side of
+    /// a centred label (`x0..x1` is the span the grooves may use).
+    #[allow(clippy::too_many_arguments)]
+    pub fn title_bar(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: i32,
+        active: bool,
+        label: &str,
+        x0: i32,
+        x1: i32,
+    ) {
+        let (bg, hi, ink) = if active {
+            (pal::TITLE_BG, pal::GROOVE_HI, pal::TITLE_TEXT)
+        } else {
+            (pal::TITLE_BG_IN, pal::GROOVE_HI_IN, pal::TITLE_TEXT_IN)
+        };
+        self.rect(x, y, w, 14, bg);
+        self.hline(x, y + 13, w, pal::TITLE_LINE);
+        let tw = font::text_width(label);
+        let tx = x + (w - tw) / 2;
+        let spans = if label.is_empty() {
+            vec![(x0, x1)]
+        } else {
+            vec![(x0, tx - 5), (tx + tw + 5, x1)]
+        };
+        for (a, b) in spans {
+            self.grooves(a, y, b - a, hi);
+        }
+        self.text(tx, y + 4, label, ink);
+    }
+
+    /// The title bar's grip: two ridges (light row over dark row) at rows 4–5 and 7–8.
+    pub fn grooves(&mut self, x: i32, y: i32, w: i32, hi: u32) {
+        if w <= 0 {
+            return;
+        }
+        for gy in [y + 4, y + 7] {
+            self.hline(x, gy, w, hi);
+            self.hline(x, gy + 1, w, pal::GROOVE_LO);
+        }
+    }
+
+    /// The app icon (an "N" of analyzer bars with peak caps on a dotted display tile),
+    /// drawn for 13×13 px.
+    pub fn app_icon_13(&mut self, x: i32, y: i32) {
+        self.rect(x + 1, y + 2, 11, 9, pal::LCD_BG);
+        self.rect(x + 2, y + 1, 9, 11, pal::LCD_BG);
+        self.hline(x + 2, y, 9, pal::HILITE);
+        self.hline(x + 2, y + 12, 9, pal::HILITE);
+        self.vline(x, y + 2, 9, pal::HILITE);
+        self.vline(x + 12, y + 2, 9, pal::HILITE);
+        for (dx, dy) in [(1, 1), (11, 1), (1, 11), (11, 11)] {
+            self.px(x + dx, y + dy, pal::HILITE);
+        }
+        self.vline(x + 11, y + 2, 9, pal::LCD_LINE);
+        self.hline(x + 2, y + 11, 9, pal::LCD_LINE);
+        self.vline(x + 2, y + 2, 9, pal::LCD_FG);
+        self.vline(x + 10, y + 2, 9, pal::LCD_FG);
+        for (dx, dy) in [(4, 3), (6, 5), (8, 7)] {
+            self.vline(x + dx, y + dy, 3, pal::LCD_FG);
+        }
     }
 
     /// Draws a glyph of the pixel font at (x, y) with the given ink.
@@ -128,31 +213,6 @@ impl Canvas {
     pub fn text_centered(&mut self, x: i32, y: i32, w: i32, h: i32, s: &str, ink: u32) {
         let tw = font::text_width(s);
         self.text(x + (w - tw) / 2, y + (h - 5) / 2, s, ink);
-    }
-
-    /// Fills a polygon given as integer points (even-odd rule, pixel centres).
-    pub fn polygon(&mut self, pts: &[(f32, f32)], c: u32) {
-        let (min_y, max_y) = pts
-            .iter()
-            .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
-        for y in min_y.floor() as i32..=max_y.ceil() as i32 {
-            let fy = y as f32 + 0.5;
-            let mut xs = Vec::new();
-            for i in 0..pts.len() {
-                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
-                if (a.1 <= fy && b.1 > fy) || (b.1 <= fy && a.1 > fy) {
-                    xs.push(a.0 + (fy - a.1) / (b.1 - a.1) * (b.0 - a.0));
-                }
-            }
-            xs.sort_by(f32::total_cmp);
-            for pair in xs.chunks(2) {
-                if let [x0, x1] = pair {
-                    for x in (x0 - 0.5).ceil() as i32..=(x1 - 0.5).floor() as i32 {
-                        self.px(x, y, c);
-                    }
-                }
-            }
-        }
     }
 
     /// Copies a rectangle from another canvas.

@@ -8,9 +8,9 @@ rust-version.workspace = true
 
 [dependencies]
 notify = "8.2.0"
-nulamp-core = { version = "0.2.0", path = "../nulamp-core" }
-nulamp-meta = { version = "0.2.0", path = "../nulamp-meta" }
-nulamp-tf = { version = "0.2.0", path = "../nulamp-tf" }
+nulamp-core = { version = "0.3.0", path = "../nulamp-core" }
+nulamp-meta = { version = "0.3.0", path = "../nulamp-meta" }
+nulamp-tf = { version = "0.3.0", path = "../nulamp-tf" }
 rusqlite = { version = "0.40.2", features = ["bundled", "functions", "collation"] }
 thiserror = "2.0.21"
 

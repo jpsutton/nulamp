@@ -21,7 +21,16 @@ recommends = "fonts-dejavu-core"
 assets = [
     ["target/release/nulamp", "usr/bin/", "755"],
     ["../../assets/linux/nulamp.desktop", "usr/share/applications/", "644"],
-    ["../../assets/linux/nulamp.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["../../assets/linux/icons/nulamp-16.png", "usr/share/icons/hicolor/16x16/apps/nulamp.png", "644"],
+    ["../../assets/linux/icons/nulamp-22.png", "usr/share/icons/hicolor/22x22/apps/nulamp.png", "644"],
+    ["../../assets/linux/icons/nulamp-24.png", "usr/share/icons/hicolor/24x24/apps/nulamp.png", "644"],
+    ["../../assets/linux/icons/nulamp-32.png", "usr/share/icons/hicolor/32x32/apps/nulamp.png", "644"],
+    ["../../assets/linux/icons/nulamp-48.png", "usr/share/icons/hicolor/48x48/apps/nulamp.png", "644"],
+    ["../../assets/linux/icons/nulamp-64.png", "usr/share/icons/hicolor/64x64/apps/nulamp.png", "644"],
+    ["../../assets/linux/icons/nulamp-128.png", "usr/share/icons/hicolor/128x128/apps/nulamp.png", "644"],
+    ["../../assets/linux/icons/nulamp-256.png", "usr/share/icons/hicolor/256x256/apps/nulamp.png", "644"],
+    ["../../assets/linux/icons/nulamp-512.png", "usr/share/icons/hicolor/512x512/apps/nulamp.png", "644"],
+    ["../../assets/linux/icons/nulamp.svg", "usr/share/icons/hicolor/scalable/apps/nulamp.svg", "644"],
     ["../../README.md", "usr/share/doc/nulamp/", "644"],
     ["../../LICENSE-APACHE", "usr/share/doc/nulamp/", "644"],
     ["../../include/nulamp_plugin.h", "usr/include/", "644"],
@@ -32,20 +41,20 @@ assets = [
 encoding_rs = "0.8"
 env_logger = "0.11.11"
 log = "0.4.34"
-nulamp-audio = { version = "0.2.0", path = "../../crates/nulamp-audio" }
-nulamp-core = { version = "0.2.0", path = "../../crates/nulamp-core" }
-nulamp-decoders = { version = "0.2.0", path = "../../crates/nulamp-decoders" }
-nulamp-eq = { version = "0.2.0", path = "../../crates/nulamp-eq" }
-nulamp-library = { version = "0.2.0", path = "../../crates/nulamp-library" }
-nulamp-meta = { version = "0.2.0", path = "../../crates/nulamp-meta" }
-nulamp-playlist = { version = "0.2.0", path = "../../crates/nulamp-playlist" }
-nulamp-plugin-api = { version = "0.2.0", path = "../../crates/nulamp-plugin-api" }
-nulamp-remote = { version = "0.2.0", path = "../../crates/nulamp-remote" }
-nulamp-script = { version = "0.2.0", path = "../../crates/nulamp-script" }
-nulamp-skin = { version = "0.2.0", path = "../../crates/nulamp-skin" }
-nulamp-tf = { version = "0.2.0", path = "../../crates/nulamp-tf" }
-nulamp-ui = { version = "0.2.0", path = "../../crates/nulamp-ui" }
-nulamp-vis = { version = "0.2.0", path = "../../crates/nulamp-vis" }
+nulamp-audio = { version = "0.3.0", path = "../../crates/nulamp-audio" }
+nulamp-core = { version = "0.3.0", path = "../../crates/nulamp-core" }
+nulamp-decoders = { version = "0.3.0", path = "../../crates/nulamp-decoders" }
+nulamp-eq = { version = "0.3.0", path = "../../crates/nulamp-eq" }
+nulamp-library = { version = "0.3.0", path = "../../crates/nulamp-library" }
+nulamp-meta = { version = "0.3.0", path = "../../crates/nulamp-meta" }
+nulamp-playlist = { version = "0.3.0", path = "../../crates/nulamp-playlist" }
+nulamp-plugin-api = { version = "0.3.0", path = "../../crates/nulamp-plugin-api" }
+nulamp-remote = { version = "0.3.0", path = "../../crates/nulamp-remote" }
+nulamp-script = { version = "0.3.0", path = "../../crates/nulamp-script" }
+nulamp-skin = { version = "0.3.0", path = "../../crates/nulamp-skin" }
+nulamp-tf = { version = "0.3.0", path = "../../crates/nulamp-tf" }
+nulamp-ui = { version = "0.3.0", path = "../../crates/nulamp-ui" }
+nulamp-vis = { version = "0.3.0", path = "../../crates/nulamp-vis" }
 
 [features]
 # Audio CD playback through libcdio. Off by default: libcdio is GPL-3.0-or-later, so a binary

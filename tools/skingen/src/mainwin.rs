@@ -1,7 +1,6 @@
 //! Main-window bitmaps of the built-in skin (layouts from spec 02).
 
-use crate::canvas::{Canvas, lerp, pal};
-use crate::font;
+use crate::canvas::{Canvas, pal};
 
 /// Transport icon kinds, shared with the playlist and shade-mode mini transports.
 #[derive(Clone, Copy)]
@@ -14,83 +13,85 @@ pub enum Icon {
     Eject,
 }
 
-/// Draws a transport icon centred in a box, scaled to `size` pixels tall (odd sizes look best).
+/// Transport icons as hand-placed pixels, one set per size: vector shapes rasterised at 5–9 px
+/// come out lopsided. `#` is ink.
+fn glyph(kind: Icon, size: i32) -> &'static [&'static str] {
+    use Icon::*;
+    match (size, kind) {
+        // Main window buttons (9 px).
+        (9, Prev) => &[
+            "##....#....#",
+            "##...##...##",
+            "##..###..###",
+            "##.####.####",
+            "############",
+            "##.####.####",
+            "##..###..###",
+            "##...##...##",
+            "##....#....#",
+        ],
+        (9, Next) => &[
+            "#....#....##",
+            "##...##...##",
+            "###..###..##",
+            "####.####.##",
+            "############",
+            "####.####.##",
+            "###..###..##",
+            "##...##...##",
+            "#....#....##",
+        ],
+        (9, Play) => &[
+            "#.......", "###.....", "#####...", "#######.", "########", "#######.", "#####...",
+            "###.....", "#.......",
+        ],
+        (9, Pause) => &[
+            "###..###", "###..###", "###..###", "###..###", "###..###", "###..###", "###..###",
+            "###..###", "###..###",
+        ],
+        (9, Stop) => &[
+            "........", ".#######", ".#######", ".#######", ".#######", ".#######", ".#######",
+            ".#######", "........",
+        ],
+        (9, Eject) => &[
+            "....#....",
+            "...###...",
+            "..#####..",
+            ".#######.",
+            "#########",
+            ".........",
+            "#########",
+            "#########",
+        ],
+        // Status display (7 px).
+        (7, Play) => &["#...", "##..", "###.", "####", "###.", "##..", "#..."],
+        (7, Pause) => &[
+            "##.##", "##.##", "##.##", "##.##", "##.##", "##.##", "##.##",
+        ],
+        (7, Stop) => &[
+            ".....", "#####", "#####", "#####", "#####", "#####", ".....",
+        ],
+        // Playlist mini transport and windowshade bar (5 px).
+        (_, Prev) => &["#..#..#", "#.##.##", "#######", "#.##.##", "#..#..#"],
+        (_, Next) => &["#..#..#", "##.##.#", "#######", "##.##.#", "#..#..#"],
+        (_, Play) => &["#..", "##.", "###", "##.", "#.."],
+        (_, Pause) => &["##.##", "##.##", "##.##", "##.##", "##.##"],
+        (_, Stop) => &["####", "####", "####", "####"],
+        (_, Eject) => &["..#..", ".###.", "#####", ".....", "#####"],
+    }
+}
+
+/// Draws a transport icon of `size` (9, 7 or 5) centred in the box `(x, y) w×h`.
 pub fn icon(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, kind: Icon, size: i32, ink: u32) {
-    let s = size as f32;
-    let cx = x as f32 + w as f32 / 2.0;
-    let cy = y as f32 + h as f32 / 2.0;
-    let top = cy - s / 2.0;
-    let bottom = cy + s / 2.0;
-    let tri = |c: &mut Canvas, x0: f32, right: bool, width: f32| {
-        if right {
-            c.polygon(&[(x0, top), (x0 + width, cy), (x0, bottom)], ink);
-        } else {
-            c.polygon(&[(x0 + width, top), (x0, cy), (x0 + width, bottom)], ink);
-        }
-    };
-    let bar_w = (s / 4.0).max(1.0).round();
-    match kind {
-        Icon::Play => tri(c, cx - s * 0.4, true, s * 0.8),
-        Icon::Pause => {
-            let bw = bar_w as i32 + 1;
-            c.rect((cx - s * 0.4) as i32, top.round() as i32, bw, size, ink);
-            c.rect(
-                (cx + s * 0.4).round() as i32 - bw,
-                top.round() as i32,
-                bw,
-                size,
-                ink,
-            );
-        }
-        Icon::Stop => {
-            let side = size - 1;
-            c.rect(
-                (cx - side as f32 / 2.0).round() as i32,
-                top.round() as i32,
-                side,
-                side,
-                ink,
-            );
-        }
-        Icon::Prev => {
-            c.rect(
-                (cx - s * 0.6).round() as i32,
-                top.round() as i32,
-                bar_w as i32,
-                size,
-                ink,
-            );
-            tri(c, cx - s * 0.6 + bar_w, false, s * 0.6);
-            tri(c, cx, false, s * 0.6);
-        }
-        Icon::Next => {
-            tri(c, cx - s * 0.6, true, s * 0.6);
-            tri(c, cx, true, s * 0.6);
-            c.rect(
-                (cx + s * 0.6).round() as i32 - bar_w as i32,
-                top.round() as i32,
-                bar_w as i32,
-                size,
-                ink,
-            );
-        }
-        Icon::Eject => {
-            let tri_h = s * 0.55;
-            c.polygon(
-                &[
-                    (cx - s * 0.55, top + tri_h),
-                    (cx, top),
-                    (cx + s * 0.55, top + tri_h),
-                ],
-                ink,
-            );
-            c.rect(
-                (cx - s * 0.55).round() as i32,
-                (bottom - 2.0).round() as i32,
-                (s * 1.1).round() as i32,
-                2,
-                ink,
-            );
+    let rows = glyph(kind, size);
+    let gw = rows.iter().map(|r| r.len()).max().unwrap_or(0) as i32;
+    let gh = rows.len() as i32;
+    let (ox, oy) = (x + (w - gw) / 2, y + (h - gh) / 2);
+    for (dy, row) in rows.iter().enumerate() {
+        for (dx, b) in row.bytes().enumerate() {
+            if b == b'#' {
+                c.px(ox + dx as i32, oy + dy as i32, ink);
+            }
         }
     }
 }
@@ -98,10 +99,12 @@ pub fn icon(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, kind: Icon, size: i3
 /// `main.bmp` 275×116.
 pub fn main_bmp() -> Canvas {
     let mut c = Canvas::new(275, 116, pal::FACE);
-    c.vgrad(0, 0, 275, 116, pal::FACE, pal::FACE_DARK);
     c.bevel(0, 0, 275, 116, false);
-    // Left display: status, time, visualizer.
-    c.well(22, 23, 82, 39, pal::LCD_BG);
+    // Left display: status, time, visualizer, on dotted display black. The dots sit on even
+    // screen pixels, like the visualizer's grid and the dotted cells of numbers.bmp and
+    // playpaus.bmp, so the pieces join without seams.
+    c.lcd_dots(22, 23, 82, 39, 0, 0);
+    c.bevel(21, 22, 84, 41, true);
     // Time colon (between minutes ones at x 60..68 and seconds tens at 78).
     for y in [30, 35] {
         c.rect(71, y, 2, 2, pal::LCD_FG);
@@ -109,9 +112,9 @@ pub fn main_bmp() -> Canvas {
     // Song title box and info row.
     c.well(110, 24, 156, 12, pal::LCD_BG);
     c.well(110, 42, 17, 8, pal::LCD_BG);
-    c.text(130, 43, "KBPS", pal::LABEL_DIM);
+    c.text(130, 43, "KBPS", pal::LABEL);
     c.well(155, 42, 13, 8, pal::LCD_BG);
-    c.text(170, 43, "KHZ", pal::LABEL_DIM);
+    c.text(170, 43, "KHZ", pal::LABEL);
     // Mono/stereo and slider recesses.
     c.bevel(211, 40, 59, 14, true);
     c.bevel(106, 56, 70, 15, true);
@@ -121,37 +124,25 @@ pub fn main_bmp() -> Canvas {
     c.bevel(15, 71, 250, 12, true);
     // Transport recess.
     c.bevel(15, 87, 116, 20, true);
-    // About badge.
-    c.button(253, 91, 13, 15, false);
-    c.text(256, 96, "N", pal::ACCENT);
+    c.rect(16, 88, 114, 18, pal::LCD_BG);
+    // About badge: the app icon.
+    c.app_icon_13(253, 92);
     c
 }
 
 /// Draws one title strip (275×14) into the titlebar canvas.
 fn title_strip(c: &mut Canvas, y: i32, active: bool, label: &str, shade: bool) {
     let x0 = 27;
-    let (a, b, ink) = if active {
-        (pal::TITLE_A, pal::TITLE_B, pal::TITLE_TEXT)
+    if shade {
+        let bg = if active {
+            pal::TITLE_BG
+        } else {
+            pal::TITLE_BG_IN
+        };
+        c.rect(x0, y, 275, 14, bg);
+        c.hline(x0, y + 13, 275, pal::TITLE_LINE);
     } else {
-        (pal::TITLE_IN_A, pal::TITLE_IN_B, pal::TITLE_TEXT_IN)
-    };
-    c.vgrad(x0, y, 275, 14, a, b);
-    c.hline(x0, y, 275, lerp(a, 0xFFFFFF, 0.25));
-    c.hline(x0, y + 13, 275, pal::SHADOW);
-    if !shade {
-        let tw = font::text_width(label);
-        let tx = x0 + (275 - tw) / 2;
-        // Grip lines on both sides of the label.
-        for gy in [y + 5, y + 8] {
-            c.hline(x0 + 22, gy, tx - x0 - 28, lerp(a, 0xFFFFFF, 0.2));
-            c.hline(
-                tx + tw + 6,
-                gy,
-                x0 + 238 - (tx + tw + 6),
-                lerp(a, 0xFFFFFF, 0.2),
-            );
-        }
-        c.text(tx, y + 5, label, ink);
+        c.title_bar(x0, y, 275, active, label, x0 + 20, x0 + 240);
     }
 }
 
@@ -186,7 +177,7 @@ fn small_button(c: &mut Canvas, x: i32, y: i32, pressed: bool, kind: char) {
                 y + 4,
                 3,
                 2,
-                if pressed { pal::FACE } else { pal::FACE_DARK },
+                if pressed { pal::FACE_DARK } else { pal::BTN },
             );
         }
         _ => {}
@@ -254,7 +245,7 @@ pub fn titlebar() -> Canvas {
     // Shade-mode position bar: groove (0,36) 17×7 and three thumbs 3×7.
     c.rect(0, 36, 17, 7, pal::SHADOW);
     c.hline(1, 39, 15, pal::FACE);
-    for (i, col) in [pal::ACCENT_DARK, pal::ACCENT, 0xBFE0FF].iter().enumerate() {
+    for (i, col) in [pal::ACCENT_DARK, pal::ACCENT, 0xA6F5B0].iter().enumerate() {
         c.rect(17 + 3 * i as i32, 36, 3, 7, *col);
     }
     // Copy the groove into both shade strips.
@@ -272,7 +263,7 @@ pub fn titlebar() -> Canvas {
 }
 
 fn clutterbar(c: &mut Canvas, x: i32, y: i32, pressed: Option<usize>) {
-    c.rect(x, y, 8, 43, pal::FACE_DARK);
+    c.rect(x, y, 8, 43, pal::LCD_BG);
     c.vline(x, y, 43, pal::SHADOW);
     for (i, letter) in ['O', 'A', 'I', 'D', 'V'].into_iter().enumerate() {
         let ly = y + 3 + i as i32 * 8;
@@ -282,22 +273,9 @@ fn clutterbar(c: &mut Canvas, x: i32, y: i32, pressed: Option<usize>) {
             ly - 1,
             7,
             8,
-            if down {
-                pal::ACCENT_DARK
-            } else {
-                pal::FACE_DARK
-            },
+            if down { pal::ACCENT_DARK } else { pal::LCD_BG },
         );
-        c.glyph(
-            x + 2,
-            ly,
-            letter,
-            if down {
-                pal::TITLE_TEXT
-            } else {
-                pal::LABEL_DIM
-            },
-        );
+        c.glyph(x + 2, ly, letter, if down { pal::LCD_FG } else { pal::CAP });
     }
 }
 
@@ -322,7 +300,7 @@ pub fn cbuttons() -> Canvas {
                 18,
                 kind,
                 9,
-                if pressed {
+                if pressed || matches!(kind, Icon::Play) {
                     pal::ACCENT
                 } else {
                     pal::TITLE_TEXT
@@ -353,6 +331,11 @@ pub fn cbuttons() -> Canvas {
 /// `playpaus.bmp` 42×9.
 pub fn playpaus() -> Canvas {
     let mut c = Canvas::new(42, 9, pal::LCD_BG);
+    // Every cell is drawn at an even screen x (26 for icons, 24 for the strips) and y 28, so
+    // dots on even cell-local pixels line up with the display behind them.
+    for (x, w) in [(0, 9), (9, 9), (18, 9), (27, 9), (36, 3), (39, 3)] {
+        c.lcd_dots(x, 0, w, 9, x, 0);
+    }
     icon(&mut c, 0, 0, 9, 9, Icon::Play, 7, pal::LCD_FG);
     icon(&mut c, 9, 0, 9, 9, Icon::Pause, 7, pal::LCD_FG);
     icon(&mut c, 18, 0, 9, 9, Icon::Stop, 7, pal::LCD_FG);
@@ -449,43 +432,39 @@ fn seven_seg(c: &mut Canvas, x: i32, d: Option<u8>, ink: u32) {
 /// `numbers.bmp` 99×13. Cell 10 (x 90) is blank.
 pub fn numbers() -> Canvas {
     let mut c = Canvas::new(99, 13, pal::LCD_BG);
+    // Cells land at even screen x and y 26: dot the even cell-local pixels.
+    for cell in 0..11 {
+        c.lcd_dots(cell * 9, 0, 9, 13, cell * 9, 0);
+    }
     for d in 0..10u8 {
         seven_seg(&mut c, d as i32 * 9, Some(d), pal::LCD_FG);
     }
     c
 }
 
-/// Volume/balance style bitmap 68×433: 28 frames and two thumbs.
+/// Volume/balance style bitmap 68×433: 28 frames and two thumbs. Each frame is a sunken
+/// track; volume fills it with green up to the level, balance marks the centre.
 fn slider_frames(balance: bool) -> Canvas {
-    let mut c = Canvas::new(68, 433, pal::FACE_DARK);
+    let mut c = Canvas::new(68, 433, pal::FACE);
     for n in 0..28 {
         let y = n * 15;
-        let t = n as f32 / 27.0;
-        let fill = if balance {
-            lerp(0x2E7D4F, 0xD8A030, t)
-        } else {
-            lerp(0x1E5E3A, 0x3CF06E, t)
-        };
-        c.rect(0, y, 68, 13, pal::SHADOW);
+        c.rect(0, y, 68, 13, pal::FACE);
+        c.rect(0, y + 3, 68, 6, pal::LCD_BG);
+        c.edges(0, y + 3, 68, 6, pal::SHADOW, pal::HILITE);
         if balance {
-            // Bar centred in x 9..46, wider with |balance|.
-            let half = 1 + (n * 17) / 27;
-            c.rect(9 + 19 - half, y + 5, half * 2, 3, fill);
+            c.vline(34, y + 2, 9, pal::LABEL_DIM);
         } else {
-            let len = 2 + (n * 64) / 27;
-            c.rect(2, y + 5, len, 3, fill);
+            // Up to the thumb's centre: the thumb travels 0..54, so its centre is 7..61.
+            let len = 7 + (n * 54) / 27 - 1;
+            c.rect(1, y + 4, len, 4, pal::ACCENT);
         }
-        c.hline(0, y + 13, 68, pal::FACE_DARK);
-        c.hline(0, y + 14, 68, pal::FACE_DARK);
     }
     for (x, pressed) in [(15, false), (0, true)] {
         c.button(x, 422, 14, 11, pressed);
-        c.vline(
-            x + 7,
-            424,
-            7,
-            if pressed { pal::ACCENT } else { pal::LABEL },
-        );
+        let ink = if pressed { pal::ACCENT } else { pal::BTN_SH };
+        for gx in [x + 5, x + 7, x + 9] {
+            c.vline(gx, 425, 5, ink);
+        }
     }
     c
 }
@@ -500,14 +479,13 @@ pub fn balance() -> Canvas {
 
 /// `posbar.bmp` 307×10.
 pub fn posbar() -> Canvas {
-    let mut c = Canvas::new(307, 10, pal::FACE_DARK);
-    c.rect(0, 0, 248, 10, pal::SHADOW);
-    c.hline(0, 4, 248, pal::FACE);
-    c.hline(0, 5, 248, pal::FACE_DARK);
+    let mut c = Canvas::new(307, 10, pal::FACE);
+    c.rect(0, 2, 248, 6, pal::LCD_BG);
+    c.edges(0, 2, 248, 6, pal::SHADOW, pal::HILITE);
     for (x, pressed) in [(248, false), (278, true)] {
         c.button(x, 0, 29, 10, pressed);
         for gx in [x + 12, x + 14, x + 16] {
-            c.vline(gx, 3, 4, if pressed { pal::ACCENT } else { pal::LABEL });
+            c.vline(gx, 3, 4, if pressed { pal::ACCENT } else { pal::BTN_SH });
         }
     }
     c

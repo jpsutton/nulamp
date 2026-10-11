@@ -82,10 +82,22 @@ jobs:
           else
             tar czf "$name.tar.gz" "$name"
           fi
+      - name: Installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $nsis = "${env:ProgramFiles(x86)}\NSIS"
+          if (-not (Test-Path "$nsis\makensis.exe")) { choco install nsis -y --no-progress }
+          $v = "${{ needs.version.outputs.version }}"
+          $src = "$PWD\dist\nulamp-$v-${{ matrix.target }}"
+          & "$nsis\makensis.exe" -V2 "-DVERSION=$v" "-DSRCDIR=$src" "-DOUTFILE=$PWD\dist\nulamp-$v-windows-x86_64-setup.exe" packaging\windows\nulamp.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: nulamp-${{ matrix.target }}
-          path: dist/*.${{ matrix.archive }}
+          path: |
+            dist/*.${{ matrix.archive }}
+            dist/*-setup.exe
 
   appimage:
     name: Build (Linux AppImage)
