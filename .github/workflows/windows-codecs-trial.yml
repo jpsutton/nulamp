@@ -34,7 +34,7 @@ jobs:
         run: cargo build --release --locked -p nulamp
       - name: Decoder tests
         run: cargo test --release -p nulamp-decoders -- --nocapture
-      - name: Package and installer
+      - name: Package
         shell: bash
         run: |
           name=nulamp-trial-x86_64-pc-windows-msvc
@@ -43,8 +43,24 @@ jobs:
           cp include/nulamp_plugin.h docs/plugins.md "dist/$name/plugin-sdk/"
           ./scripts/windows-codecs.sh codecs "dist/$name"
           ls -la "dist/$name" "dist/$name/third-party" dist
-          "/c/Program Files (x86)/NSIS/makensis.exe" -V2 -DVERSION=0.0.0 "-DSRCDIR=$(cygpath -w "$PWD/dist/$name")" "-DOUTFILE=$(cygpath -w "$PWD/dist/setup.exe")" packaging/windows/nulamp.nsi
-          ls -la dist
+          tar -tzvf dist/*-lgpl-sources.tar.gz
+      - name: Installer
+        shell: pwsh
+        run: |
+          $nsis = "${env:ProgramFiles(x86)}\NSIS"
+          if (-not (Test-Path "$nsis\makensis.exe")) { choco install nsis -y --no-progress }
+          $src = "$PWD\dist\nulamp-trial-x86_64-pc-windows-msvc"
+          & "$nsis\makensis.exe" -V2 "-DVERSION=0.0.0" "-DSRCDIR=$src" "-DOUTFILE=$PWD\dist\setup.exe" packaging\windows\nulamp.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Silent install, start check, uninstall.
+          & "$PWD\dist\setup.exe" /S /D="$env:RUNNER_TEMP\nulamp-inst" | Out-Null
+          Get-ChildItem "$env:RUNNER_TEMP\nulamp-inst" -Recurse | Select-Object FullName
+          $p = Start-Process "$env:RUNNER_TEMP\nulamp-inst\nulamp.exe" -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { Write-Error "nulamp exited with $($p.ExitCode)"; exit 1 }
+          Stop-Process -Id $p.Id
+          & "$env:RUNNER_TEMP\nulamp-inst\uninstall.exe" /S _?="$env:RUNNER_TEMP\nulamp-inst" | Out-Null
+          Get-ChildItem "$env:RUNNER_TEMP\nulamp-inst" -Recurse | Select-Object FullName
       - name: Linked DLLs
         shell: pwsh
         run: |
@@ -56,4 +72,5 @@ jobs:
           name: trial
           path: |
             dist/setup.exe
+            dist/nulamp-trial-x86_64-pc-windows-msvc
             dist/*-lgpl-sources.tar.gz

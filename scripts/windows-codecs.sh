@@ -11,7 +11,7 @@
 #   Builds into <work dir> (vcpkg checkout, binary cache in <work dir>/cache) and prints the
 #   FFMPEG_DIR and OPENMPT_LIB_DIR to build nulamp with, and the DLL folder to add to PATH. In
 #   GitHub Actions it sets them for the following steps.
-#   With <dist folder>, copies the DLLs and their licences there and writes the sources of the
+#   With <dist folder> (holding nulamp.exe), copies the DLLs it needs and their licences there and writes the sources of the
 #   LGPL libraries to <dist folder>/../<name>-lgpl-sources.tar.gz.
 # Run from Git Bash on Windows.
 set -euo pipefail
@@ -51,7 +51,25 @@ fi
 
 [ $# -ge 2 ] || exit 0
 dist="$(mkdir -p "$2" && cd "$2" && pwd)"
-cp "$inst"/bin/*.dll "$dist/"
+# Only the DLLs nulamp.exe loads, directly or through another of them: the names in each
+# binary's import table that are files in vcpkg's bin folder (which also holds vcpkg's build
+# tools).
+imports() { grep -aoiE '[a-z0-9_+.-]+\.dll' "$1" | tr 'A-Z' 'a-z' | sort -u; }
+todo=("$dist/nulamp.exe")
+while [ ${#todo[@]} -gt 0 ]; do
+  file="${todo[0]}"
+  todo=("${todo[@]:1}")
+  for dll in $(imports "$file"); do
+    lib=$(find "$inst/bin" -maxdepth 1 -type f -iname "$dll" | head -1)
+    if [ -n "$lib" ] && [ ! -e "$dist/$(basename "$lib")" ]; then
+      cp "$lib" "$dist/"
+      todo+=("$dist/$(basename "$lib")")
+    fi
+  done
+done
+for lib in avcodec avformat avutil swresample swscale openmpt; do
+  ls "$dist"/$lib*.dll > /dev/null 2>&1 || { echo "nulamp.exe does not load $lib" >&2; exit 1; }
+done
 third="$dist/third-party"
 mkdir -p "$third"
 for port in ffmpeg libopenmpt mpg123 libogg libvorbis zlib; do
