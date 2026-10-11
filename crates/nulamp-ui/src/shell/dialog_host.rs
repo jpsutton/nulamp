@@ -66,12 +66,14 @@ impl<P: PlayerHandle> Shell<P> {
             .map(|m| (m.rect.x + (m.rect.w - w) / 2, m.rect.y + m.rect.h))
             .unwrap_or((100, 100));
         #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(unused_mut))]
-        let mut attrs = Window::default_attributes()
-            .with_title(format!("{} - {}", dialog.title(), super::APP_NAME))
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_inner_size(PhysicalSize::new(w as u32, h as u32))
-            .with_position(PhysicalPosition::new(mx.max(0), my.max(0)));
+        let mut attrs = super::with_app_icon(
+            Window::default_attributes()
+                .with_title(format!("{} - {}", dialog.title(), super::APP_NAME))
+                .with_decorations(false)
+                .with_resizable(false)
+                .with_inner_size(PhysicalSize::new(w as u32, h as u32))
+                .with_position(PhysicalPosition::new(mx.max(0), my.max(0))),
+        );
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             use winit::platform::x11::{WindowAttributesExtX11, WindowType};
