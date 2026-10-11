@@ -127,7 +127,16 @@ impl Visualizer {
     }
 
     pub fn set_settings(&mut self, settings: VisSettings) {
+        let restyle = settings.style != self.settings.style;
         self.settings = settings;
+        // The shown colour bases belong to the old style; drawing a Line base (17 − v) with
+        // the Normal or Fire gradient would run below colour 0 before the next tick.
+        if restyle {
+            for i in 0..BARS {
+                self.shown.colour[i] =
+                    colour_base(settings.style, self.shown.level[i] as i32) as u8;
+            }
+        }
     }
 
     pub fn size(&self) -> VisSize {
@@ -216,11 +225,7 @@ impl Visualizer {
             self.bh[i] = v * 16;
         }
         let v = v.max(0);
-        let c = match self.settings.style {
-            AnalyzerStyle::Normal => 17,
-            AnalyzerStyle::Fire => v + 2,
-            AnalyzerStyle::Line => 17 - v,
-        };
+        let c = colour_base(self.settings.style, v);
         if self.ph[i] <= v * 256 {
             self.ph[i] = v * 256;
             self.pv[i] = 3.0;
@@ -230,6 +235,15 @@ impl Visualizer {
         self.shown.peak[i] = (self.ph[i] / 256) as u8;
         self.ph[i] = (self.ph[i] - self.pv[i] as i32).max(0);
         self.pv[i] = (self.pv[i] * self.settings.peak_falloff.peak_factor()).min(4096.0);
+    }
+}
+
+/// 06 §4.3 step 3: the colour base of a bar of level `v`.
+fn colour_base(style: AnalyzerStyle, v: i32) -> i32 {
+    match style {
+        AnalyzerStyle::Normal => 17,
+        AnalyzerStyle::Fire => v + 2,
+        AnalyzerStyle::Line => 17 - v,
     }
 }
 
@@ -332,6 +346,26 @@ mod tests {
         v.tick(Some(&data(bars)));
         assert_eq!(&v.shown.level[0..4], &[10, 10, 10, 10]);
         assert_eq!(&v.shown.level[72..75], &[9, 9, 9]);
+    }
+
+    #[test]
+    fn changing_style_restyles_shown_bars() {
+        let mut v = Visualizer::new(VisSettings {
+            style: AnalyzerStyle::Line,
+            ..Default::default()
+        });
+        v.tick(Some(&data([255; BARS])));
+        assert_eq!(v.shown.colour[0], 2);
+        for (style, c) in [(AnalyzerStyle::Normal, 17), (AnalyzerStyle::Fire, 17)] {
+            v.set_settings(VisSettings {
+                style,
+                ..Default::default()
+            });
+            assert_eq!(v.shown.colour[0], c, "{style:?}");
+            // Drawing before the next tick stays inside the 24 colours.
+            let mut b = nulamp_skin::Bitmap::new(76, 16, 0);
+            v.draw(&[0; 24], &mut b, 0, 0);
+        }
     }
 
     #[test]
