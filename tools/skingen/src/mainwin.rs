@@ -14,83 +14,85 @@ pub enum Icon {
     Eject,
 }
 
-/// Draws a transport icon centred in a box, scaled to `size` pixels tall (odd sizes look best).
+/// Transport icons as hand-placed pixels, one set per size: vector shapes rasterised at 5–9 px
+/// come out lopsided. `#` is ink.
+fn glyph(kind: Icon, size: i32) -> &'static [&'static str] {
+    use Icon::*;
+    match (size, kind) {
+        // Main window buttons (9 px).
+        (9, Prev) => &[
+            "##....#....#",
+            "##...##...##",
+            "##..###..###",
+            "##.####.####",
+            "############",
+            "##.####.####",
+            "##..###..###",
+            "##...##...##",
+            "##....#....#",
+        ],
+        (9, Next) => &[
+            "#....#....##",
+            "##...##...##",
+            "###..###..##",
+            "####.####.##",
+            "############",
+            "####.####.##",
+            "###..###..##",
+            "##...##...##",
+            "#....#....##",
+        ],
+        (9, Play) => &[
+            "#.......", "###.....", "#####...", "#######.", "########", "#######.", "#####...",
+            "###.....", "#.......",
+        ],
+        (9, Pause) => &[
+            "###..###", "###..###", "###..###", "###..###", "###..###", "###..###", "###..###",
+            "###..###", "###..###",
+        ],
+        (9, Stop) => &[
+            "........", ".#######", ".#######", ".#######", ".#######", ".#######", ".#######",
+            ".#######", "........",
+        ],
+        (9, Eject) => &[
+            "....#....",
+            "...###...",
+            "..#####..",
+            ".#######.",
+            "#########",
+            ".........",
+            "#########",
+            "#########",
+        ],
+        // Status display (7 px).
+        (7, Play) => &["#...", "##..", "###.", "####", "###.", "##..", "#..."],
+        (7, Pause) => &[
+            "##.##", "##.##", "##.##", "##.##", "##.##", "##.##", "##.##",
+        ],
+        (7, Stop) => &[
+            ".....", "#####", "#####", "#####", "#####", "#####", ".....",
+        ],
+        // Playlist mini transport and windowshade bar (5 px).
+        (_, Prev) => &["#..#..#", "#.##.##", "#######", "#.##.##", "#..#..#"],
+        (_, Next) => &["#..#..#", "##.##.#", "#######", "##.##.#", "#..#..#"],
+        (_, Play) => &["#..", "##.", "###", "##.", "#.."],
+        (_, Pause) => &["##.##", "##.##", "##.##", "##.##", "##.##"],
+        (_, Stop) => &["####", "####", "####", "####"],
+        (_, Eject) => &["..#..", ".###.", "#####", ".....", "#####"],
+    }
+}
+
+/// Draws a transport icon of `size` (9, 7 or 5) centred in the box `(x, y) w×h`.
 pub fn icon(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, kind: Icon, size: i32, ink: u32) {
-    let s = size as f32;
-    let cx = x as f32 + w as f32 / 2.0;
-    let cy = y as f32 + h as f32 / 2.0;
-    let top = cy - s / 2.0;
-    let bottom = cy + s / 2.0;
-    let tri = |c: &mut Canvas, x0: f32, right: bool, width: f32| {
-        if right {
-            c.polygon(&[(x0, top), (x0 + width, cy), (x0, bottom)], ink);
-        } else {
-            c.polygon(&[(x0 + width, top), (x0, cy), (x0 + width, bottom)], ink);
-        }
-    };
-    let bar_w = (s / 4.0).max(1.0).round();
-    match kind {
-        Icon::Play => tri(c, cx - s * 0.4, true, s * 0.8),
-        Icon::Pause => {
-            let bw = bar_w as i32 + 1;
-            c.rect((cx - s * 0.4) as i32, top.round() as i32, bw, size, ink);
-            c.rect(
-                (cx + s * 0.4).round() as i32 - bw,
-                top.round() as i32,
-                bw,
-                size,
-                ink,
-            );
-        }
-        Icon::Stop => {
-            let side = size - 1;
-            c.rect(
-                (cx - side as f32 / 2.0).round() as i32,
-                top.round() as i32,
-                side,
-                side,
-                ink,
-            );
-        }
-        Icon::Prev => {
-            c.rect(
-                (cx - s * 0.6).round() as i32,
-                top.round() as i32,
-                bar_w as i32,
-                size,
-                ink,
-            );
-            tri(c, cx - s * 0.6 + bar_w, false, s * 0.6);
-            tri(c, cx, false, s * 0.6);
-        }
-        Icon::Next => {
-            tri(c, cx - s * 0.6, true, s * 0.6);
-            tri(c, cx, true, s * 0.6);
-            c.rect(
-                (cx + s * 0.6).round() as i32 - bar_w as i32,
-                top.round() as i32,
-                bar_w as i32,
-                size,
-                ink,
-            );
-        }
-        Icon::Eject => {
-            let tri_h = s * 0.55;
-            c.polygon(
-                &[
-                    (cx - s * 0.55, top + tri_h),
-                    (cx, top),
-                    (cx + s * 0.55, top + tri_h),
-                ],
-                ink,
-            );
-            c.rect(
-                (cx - s * 0.55).round() as i32,
-                (bottom - 2.0).round() as i32,
-                (s * 1.1).round() as i32,
-                2,
-                ink,
-            );
+    let rows = glyph(kind, size);
+    let gw = rows.iter().map(|r| r.len()).max().unwrap_or(0) as i32;
+    let gh = rows.len() as i32;
+    let (ox, oy) = (x + (w - gw) / 2, y + (h - gh) / 2);
+    for (dy, row) in rows.iter().enumerate() {
+        for (dx, b) in row.bytes().enumerate() {
+            if b == b'#' {
+                c.px(ox + dx as i32, oy + dy as i32, ink);
+            }
         }
     }
 }
