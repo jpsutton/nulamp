@@ -130,31 +130,6 @@ impl Canvas {
         self.text(x + (w - tw) / 2, y + (h - 5) / 2, s, ink);
     }
 
-    /// Fills a polygon given as integer points (even-odd rule, pixel centres).
-    pub fn polygon(&mut self, pts: &[(f32, f32)], c: u32) {
-        let (min_y, max_y) = pts
-            .iter()
-            .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
-        for y in min_y.floor() as i32..=max_y.ceil() as i32 {
-            let fy = y as f32 + 0.5;
-            let mut xs = Vec::new();
-            for i in 0..pts.len() {
-                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
-                if (a.1 <= fy && b.1 > fy) || (b.1 <= fy && a.1 > fy) {
-                    xs.push(a.0 + (fy - a.1) / (b.1 - a.1) * (b.0 - a.0));
-                }
-            }
-            xs.sort_by(f32::total_cmp);
-            for pair in xs.chunks(2) {
-                if let [x0, x1] = pair {
-                    for x in (x0 - 0.5).ceil() as i32..=(x1 - 0.5).floor() as i32 {
-                        self.px(x, y, c);
-                    }
-                }
-            }
-        }
-    }
-
     /// Copies a rectangle from another canvas.
     pub fn blit(&mut self, src: &Canvas, sx: i32, sy: i32, w: i32, h: i32, dx: i32, dy: i32) {
         for y in 0..h {
