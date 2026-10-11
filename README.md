@@ -51,7 +51,7 @@ sha256sum --check --ignore-missing SHA256SUMS
 **Ubuntu 24.04 or 26.04:** download the `.deb` for your release, then
 
 ```bash
-sudo apt install ./nulamp_*~ubuntu$(. /etc/os-release; echo $VERSION_ID)_amd64.deb
+sudo apt install ./nulamp_*ubuntu$(. /etc/os-release; echo $VERSION_ID)_amd64.deb
 ```
 
 **Arch Linux:** add the nulamp repository (it always serves the latest release) and trust its key:

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use nulamp_eq::{EqSettings, Equalizer};
 
-use crate::chain::Stage;
+use crate::chain::{Stage, StageState};
 
 /// Settings shared between the user interface and the audio thread.
 #[derive(Debug, Default)]
@@ -22,10 +22,22 @@ impl SharedEq {
         })
     }
 
-    pub fn set(&self, s: &EqSettings) {
-        *self.settings.lock().expect("eq lock") = *s;
+    /// Returns false when the settings were already `s`.
+    pub fn set(&self, s: &EqSettings) -> bool {
+        let mut cur = self.settings.lock().expect("eq lock");
+        if *cur == *s {
+            return false;
+        }
+        *cur = *s;
         self.version.fetch_add(1, Ordering::Release);
+        true
     }
+}
+
+/// What [`EqStage`] saves: the whole processor (no heap data) and the settings it has seen.
+struct Saved {
+    eq: Equalizer,
+    seen: u64,
 }
 
 pub struct EqStage {
@@ -70,5 +82,21 @@ impl Stage for EqStage {
 
     fn reset(&mut self) {
         self.eq.reset();
+    }
+
+    fn save(&self) -> Option<StageState> {
+        Some(Box::new(Saved {
+            eq: self.eq.clone(),
+            seen: self.seen,
+        }))
+    }
+
+    /// Back to a saved state; settings changed since then glide in on the next block (EQ2).
+    fn restore(&mut self, state: StageState) {
+        if let Ok(s) = state.downcast::<Saved>() {
+            let Saved { eq, seen } = *s;
+            self.eq = eq;
+            self.seen = seen;
+        }
     }
 }

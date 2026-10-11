@@ -9,6 +9,11 @@
 //! back (the "hold"): when the decoder ends, the hold is exactly the end still to be heard, and
 //! it fades out under the first F of the next track. The processing stages (EQ, DSP), the
 //! visualization tap and the output follow, on the mixed audio.
+//!
+//! The mixed audio going into the stages is kept until it is heard, with the stages' state
+//! every [`SAVE_FRAMES`]. When the stage settings change (the EQ), the buffered output is cut
+//! shortly after the heard position and processed again from there, so the change is heard
+//! within about 50 ms instead of after the whole buffer (03 §1.3, decision EQ12).
 
 use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
@@ -20,16 +25,27 @@ use std::time::{Duration, Instant};
 use nulamp_decoders::{Decoder, ReadStatus, Registry, StreamInfo};
 use nulamp_eq::Limiter;
 
-use crate::chain::{Stage, VIS_BLOCK, VisBlock, VisTap, map_channels, run_stages};
+use crate::chain::{Stage, StageState, VIS_BLOCK, VisBlock, VisTap, map_channels, run_stages};
 use crate::mixer::{MixCmd, Shared};
 use crate::output::{DeviceSide, Output};
 use crate::resample::Resampler;
+use crate::retained::{Retained, SAVE_FRAMES};
 
 /// Identifies a track instance (the playlist entry id from the core).
 pub type Token = u64;
 
 /// Longest crossfade, in milliseconds.
 pub const MAX_CROSSFADE_MS: u32 = 20_000;
+
+/// Distance from the heard position at which buffered audio is first processed again after a
+/// settings change, in milliseconds: room for the device callback to take the cut.
+const SPLICE_MARGIN_MS: u32 = 40;
+
+/// The margin grows up to this when the callback was too slow to take a cut.
+const MAX_SPLICE_MARGIN_MS: u32 = 200;
+
+/// Shortest time between two passes over the buffered audio while settings keep changing.
+const REPROCESS_INTERVAL: Duration = Duration::from_millis(40);
 
 /// Gain curve of a crossfade (07 §6.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -136,6 +152,8 @@ pub enum Control {
     Volume(u8),
     Balance(i8),
     SetStages(Vec<Box<dyn Stage>>),
+    /// The stage settings changed (the EQ): process the buffered audio again.
+    Reprocess,
     SetPrefs(OutputPrefs),
     Shutdown,
 }
@@ -347,9 +365,17 @@ impl AudioEngine {
             hold_target: 0,
             fade: None,
             block: Vec::new(),
+            part: Vec::new(),
             pending: Vec::new(),
             vis_acc: Vec::new(),
             vis_frame: 0,
+            retained: Retained::default(),
+            reprocess: false,
+            last_reprocess: None,
+            splice: None,
+            splice_gen: 0,
+            splice_margin_ms: SPLICE_MARGIN_MS,
+            next_stages: None,
         };
         let thread = std::thread::Builder::new()
             .name("nulamp-audio".into())
@@ -423,16 +449,31 @@ struct Worker {
     fade: Option<Crossfade>,
     /// Scratch block between the hold and the stages.
     block: Vec<f32>,
+    /// Scratch part of a block going through the stages.
+    part: Vec<f32>,
     /// Processed output samples not yet accepted by the ring.
     pending: Vec<f32>,
     vis_acc: Vec<f32>,
     vis_frame: u64,
+    /// The audio that went into the stages, until it is heard (decision EQ12).
+    retained: Retained,
+    /// The stage settings changed since the buffered audio was processed.
+    reprocess: bool,
+    last_reprocess: Option<Instant>,
+    /// A cut of the output buffer the callback has not answered yet: (generation, frame).
+    /// Nothing is written to the buffer meanwhile.
+    splice: Option<(u64, u64)>,
+    splice_gen: u64,
+    splice_margin_ms: u32,
+    /// Stages to install once the pending cut is answered.
+    next_stages: Option<Vec<Box<dyn Stage>>>,
 }
 
 impl Worker {
     fn run(mut self) {
         loop {
-            let busy = self.current.is_some() && !self.paused;
+            let busy =
+                (self.current.is_some() && !self.paused) || self.reprocess || self.splice.is_some();
             let timeout = if busy {
                 Duration::from_millis(2)
             } else {
@@ -451,6 +492,7 @@ impl Worker {
                 }
                 Err(RecvTimeoutError::Timeout) => {}
             }
+            self.maybe_reprocess();
             self.pump();
             self.track_heard();
             self.publish();
@@ -523,6 +565,7 @@ impl Worker {
             }
             Control::Stop => {
                 if self.prefs.fade_pause_stop && !self.paused {
+                    self.finish_splice();
                     let ms = self.prefs.fade_ms;
                     if let Some(o) = &mut self.out {
                         o.fade_and_wait(0.0, ms);
@@ -552,9 +595,14 @@ impl Worker {
             Control::Volume(v) => self.shared.volume.store(v as u32, Ordering::Relaxed),
             Control::Balance(b) => self.shared.balance.store(b as i32, Ordering::Relaxed),
             Control::SetStages(s) => {
-                self.stages = s;
-                self.stage_format = (0, 0);
+                if self.splice.is_some() {
+                    // The cut audio is processed again with the stages that processed it.
+                    self.next_stages = Some(s);
+                } else {
+                    self.set_stages(s);
+                }
             }
+            Control::Reprocess => self.reprocess = true,
             Control::SetPrefs(p) => {
                 self.prefs = p;
                 self.update_hold_cap(false);
@@ -563,7 +611,24 @@ impl Worker {
         }
     }
 
+    fn set_stages(&mut self, s: Vec<Box<dyn Stage>>) {
+        self.stages = s;
+        self.stage_format = (0, 0);
+        self.retained.clear();
+    }
+
+    /// Forgets a cut the callback has not answered: the flush or new output that follows
+    /// discards it anyway.
+    fn drop_splice(&mut self) {
+        self.splice = None;
+        if let Some(s) = self.next_stages.take() {
+            self.set_stages(s);
+        }
+    }
+
     fn flush_output(&mut self) {
+        self.drop_splice();
+        self.retained.clear();
         self.flush_gen += 1;
         let g = self.flush_gen;
         if let Some(o) = &mut self.out {
@@ -622,6 +687,9 @@ impl Worker {
         };
         match opened {
             Ok(o) => {
+                self.drop_splice();
+                self.retained.clear();
+                self.splice_margin_ms = SPLICE_MARGIN_MS;
                 self.written = self.played();
                 self.out = Some(o);
                 true
@@ -819,6 +887,8 @@ impl Worker {
     }
 
     /// Runs output-format audio through the stages and the visualization tap into `pending`.
+    /// When every stage can save its state, the audio is kept for processing again (EQ12), in
+    /// parts of at most [`SAVE_FRAMES`].
     fn finish_block(&mut self, block: &mut Vec<f32>) {
         let (rate, ch) = match &self.out {
             Some(o) => (o.rate, o.channels),
@@ -829,10 +899,161 @@ impl Worker {
                 s.configure(rate, ch);
             }
             self.stage_format = (rate, ch);
+            self.retained.clear();
         }
-        run_stages(&mut self.stages, block);
-        self.tap(block, rate, ch);
-        self.pending.extend_from_slice(block);
+        let Some(first) = self.save_stages() else {
+            self.retained.clear();
+            run_stages(&mut self.stages, block);
+            self.tap(block, rate, ch);
+            self.pending.extend_from_slice(block);
+            return;
+        };
+        self.retained.trim(self.played(), ch);
+        let mut part = std::mem::take(&mut self.part);
+        let mut states = Some(first);
+        for chunk in block.chunks(SAVE_FRAMES * ch) {
+            let states = match states.take() {
+                Some(s) => s,
+                None => self.save_stages().expect("stages save"),
+            };
+            self.retained.push(self.out_pos(), states, chunk, ch);
+            part.clear();
+            part.extend_from_slice(chunk);
+            run_stages(&mut self.stages, &mut part);
+            self.tap(&part, rate, ch);
+            self.pending.extend_from_slice(&part);
+        }
+        self.part = part;
+    }
+
+    /// Every stage's state, or `None` when some stage cannot save it (or there are none).
+    fn save_stages(&self) -> Option<Vec<StageState>> {
+        if self.stages.is_empty() {
+            return None;
+        }
+        self.stages.iter().map(|s| s.save()).collect()
+    }
+
+    /// Starts processing the buffered audio again after a settings change, at most every
+    /// [`REPROCESS_INTERVAL`] so that dragging a slider does not redo it on every move.
+    fn maybe_reprocess(&mut self) {
+        let due = self
+            .last_reprocess
+            .is_none_or(|t| t.elapsed() >= REPROCESS_INTERVAL);
+        if !self.reprocess || self.splice.is_some() || !due {
+            return;
+        }
+        self.reprocess = false;
+        self.last_reprocess = Some(Instant::now());
+        let Some(out) = &mut self.out else { return };
+        let ch = out.channels;
+        let played = self.shared.frames_played.load(Ordering::Relaxed);
+        let margin = out.rate as u64 * self.splice_margin_ms as u64 / 1000;
+        // Audio processed less than the margin ahead plays as it is.
+        let Some(at) = self.retained.block_from(played + margin) else {
+            return;
+        };
+        if at >= self.written {
+            // Not yet in the output buffer.
+            self.pending.truncate((at - self.written) as usize * ch);
+            self.redo_from(at);
+        } else if at - played <= out.keep_frames as u64 {
+            self.splice_gen += 1;
+            out.truncate(at, self.splice_gen);
+            self.splice = Some((self.splice_gen, at));
+        }
+    }
+
+    /// Completes a cut of the output buffer once the callback answered it.
+    fn poll_splice(&mut self) {
+        let Some((generation, at)) = self.splice else {
+            return;
+        };
+        let Some(answer) = self.out.as_ref().and_then(|o| o.truncated(generation)) else {
+            return;
+        };
+        self.splice = None;
+        if answer {
+            self.pending.clear();
+            self.written = at;
+            self.redo_from(at);
+            self.splice_margin_ms = self
+                .splice_margin_ms
+                .saturating_sub(10)
+                .max(SPLICE_MARGIN_MS);
+        } else {
+            // The heard position passed the cut first: try again further ahead.
+            self.splice_margin_ms = (self.splice_margin_ms * 2).min(MAX_SPLICE_MARGIN_MS);
+            self.reprocess = true;
+        }
+        if let Some(s) = self.next_stages.take() {
+            self.set_stages(s);
+        }
+    }
+
+    /// Waits (bounded) for the answer to a pending cut, before a fade that needs the buffer.
+    fn finish_splice(&mut self) {
+        let t = Instant::now();
+        while self.splice.is_some() && t.elapsed() < Duration::from_millis(300) {
+            std::thread::sleep(Duration::from_millis(2));
+            self.poll_splice();
+        }
+    }
+
+    /// Processes the kept audio from output frame `at` (a saved block start, where the output
+    /// now ends) again with the current settings. The stages go back to their state at `at`,
+    /// so the new output joins the old without a click.
+    fn redo_from(&mut self, at: u64) {
+        let ch = self.out_channels();
+        let mut samples = std::mem::take(&mut self.block);
+        samples.clear();
+        let Some(redo) = self.retained.take_from(at, ch, &mut samples) else {
+            self.block = samples;
+            return;
+        };
+        for (s, state) in self.stages.iter_mut().zip(redo.states) {
+            s.restore(state);
+        }
+        self.rewind_vis(at, ch);
+        let mut block = Vec::new();
+        let mut pos = 0;
+        for frames in redo.blocks {
+            block.clear();
+            block.extend_from_slice(&samples[pos..pos + frames * ch]);
+            pos += frames * ch;
+            self.finish_block(&mut block);
+            self.write_pending();
+        }
+        self.block = samples;
+    }
+
+    /// Drops the visualization audio from output frame `at` on, which is processed again.
+    fn rewind_vis(&mut self, at: u64, ch: usize) {
+        if !self.vis_acc.is_empty() && at >= self.vis_frame {
+            self.vis_acc.truncate((at - self.vis_frame) as usize * ch);
+            return;
+        }
+        self.vis_acc.clear();
+        if let Some(b) = self.vis.rewind(at) {
+            self.vis_frame = b.frame;
+            self.vis_acc
+                .extend_from_slice(&b.samples[..(at - b.frame) as usize * ch]);
+        }
+    }
+
+    /// Moves processed audio into the output buffer while it has room. Returns true when
+    /// nothing is left over.
+    fn write_pending(&mut self) -> bool {
+        if self.splice.is_some() {
+            return self.pending.is_empty();
+        }
+        let Some(out) = self.out.as_mut() else {
+            return false;
+        };
+        let n = out.write(&self.pending);
+        self.written += (n / out.channels) as u64;
+        self.pending.drain(..n);
+        self.pending.is_empty()
     }
 
     fn prebuffer_frames(&self) -> u32 {
@@ -856,6 +1077,9 @@ impl Worker {
         }
         let fade = self.prefs.fade_seek && !self.paused;
         let fade_ms = self.prefs.fade_ms;
+        if fade {
+            self.finish_splice();
+        }
         if fade && let Some(o) = &mut self.out {
             o.fade_and_wait(0.0, fade_ms);
         }
@@ -904,6 +1128,7 @@ impl Worker {
 
     /// Decodes and writes while there is room in the output buffer.
     fn pump(&mut self) {
+        self.poll_splice();
         if self.paused || self.out.is_none() {
             return;
         }
@@ -919,15 +1144,12 @@ impl Worker {
             }
             return;
         }
+        if self.splice.is_some() {
+            return;
+        }
         for _ in 0..16 {
-            if !self.pending.is_empty() {
-                let out = self.out.as_mut().expect("output");
-                let n = out.write(&self.pending);
-                self.written += (n / out.channels) as u64;
-                self.pending.drain(..n);
-                if !self.pending.is_empty() {
-                    return;
-                }
+            if !self.write_pending() {
+                return;
             }
             let Some(cur) = &mut self.current else { return };
             if cur.eos {

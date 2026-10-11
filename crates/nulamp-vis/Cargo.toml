@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-nulamp-skin = { version = "0.1.0", path = "../nulamp-skin" }
+nulamp-skin = { version = "0.2.0", path = "../nulamp-skin" }
 realfft = "3.5.0"
 
 [lints]

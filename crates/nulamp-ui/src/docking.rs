@@ -73,10 +73,10 @@ pub fn snap(s: Rect, others: &[Rect], work: Option<Rect>, dist: i32) -> Rect {
 }
 
 /// Two windows are attached when an edge of one equals the opposite edge of the other and they
-/// overlap along it (05 §6.2).
+/// overlap along it (05 §6.2). Windows that meet only at a corner are not attached.
 pub fn attached(a: &Rect, b: &Rect) -> bool {
-    ((a.bottom() == b.y || b.bottom() == a.y) && a.overlaps_x(b))
-        || ((a.right() == b.x || b.right() == a.x) && a.overlaps_y(b))
+    ((a.bottom() == b.y || b.bottom() == a.y) && a.shares_x(b))
+        || ((a.right() == b.x || b.right() == a.x) && a.shares_y(b))
 }
 
 /// Indices of all windows transitively attached to `root` (not including `root`).
@@ -170,7 +170,7 @@ fn shift_below(rects: &mut [Rect], idx: usize, old: Rect, dy: i32) {
     let movers: Vec<(usize, Rect)> = rects
         .iter()
         .enumerate()
-        .filter(|(i, r)| *i != idx && r.y == old.bottom() && r.overlaps_x(&old))
+        .filter(|(i, r)| *i != idx && r.y == old.bottom() && r.shares_x(&old))
         .map(|(i, r)| (i, *r))
         .collect();
     for (i, r) in movers {
@@ -185,7 +185,7 @@ fn shift_right(rects: &mut [Rect], idx: usize, old: Rect, dx: i32) {
     let movers: Vec<(usize, Rect)> = rects
         .iter()
         .enumerate()
-        .filter(|(i, r)| *i != idx && r.x == old.right() && r.overlaps_y(&old))
+        .filter(|(i, r)| *i != idx && r.x == old.right() && r.shares_y(&old))
         .map(|(i, r)| (i, *r))
         .collect();
     for (i, r) in movers {
@@ -263,6 +263,17 @@ mod tests {
         resize_propagate(&mut rects, 0, MAIN, Rect::new(26, 29, 550, 232), None);
         assert_eq!(rects[1].y, 145 + 116);
         assert_eq!(rects[2].y, 261 + 116);
+    }
+
+    #[test]
+    fn corner_contact_is_not_docking() {
+        // Playlist right of main, equalizer below main: they meet at one corner only.
+        let pl = Rect::new(301, 29, 275, 116);
+        let mut rects = [MAIN, EQ, pl];
+        assert!(!attached(&EQ, &pl));
+        resize_propagate(&mut rects, 2, pl, Rect::new(301, 29, 275, 232), None);
+        assert_eq!(rects[1], EQ);
+        assert_eq!(attached_group(&rects, 0), vec![1, 2]);
     }
 
     #[test]

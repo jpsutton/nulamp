@@ -19,7 +19,10 @@ pub(super) struct DialogWin {
     pub surface: softbuffer::Surface<OwnedDisplayHandle, Rc<Window>>,
     pub dialog: Box<dyn Dialog>,
     pub close_pressed: bool,
+    /// Pointer position in unscaled dialog pixels.
     pub cursor: (i32, i32),
+    /// Pixel scale (2 with double size).
+    pub scale: i32,
 }
 
 fn map_key(code: KeyCode, shift: bool) -> Option<Key> {
@@ -53,7 +56,9 @@ impl<P: PlayerHandle> Shell<P> {
             d.window.focus_window();
             return;
         }
+        let s = if self.prefs.double_size { 2 } else { 1 };
         let (w, h) = dialog.size();
+        let (w, h) = (w * s, h * s);
         let (mx, my) = self
             .ids
             .get(&Kind::Main)
@@ -78,9 +83,7 @@ impl<P: PlayerHandle> Shell<P> {
             return;
         };
         let window = Rc::new(window);
-        let Some(context) = self.context.as_ref() else {
-            return;
-        };
+        let context = self.softbuffer(el);
         let Ok(surface) = softbuffer::Surface::new(context, window.clone()) else {
             return;
         };
@@ -94,6 +97,7 @@ impl<P: PlayerHandle> Shell<P> {
                 dialog,
                 close_pressed: false,
                 cursor: (0, 0),
+                scale: s,
             },
         );
         self.draw_dialog(id);
@@ -122,6 +126,7 @@ impl<P: PlayerHandle> Shell<P> {
         d.dialog
             .form()
             .draw(&mut frame, cx, cy, &self.skin, &mut text);
+        let frame = nulamp_render::scale(&frame, d.scale as u32);
         present_raw(&d.window, &mut d.surface, &frame);
     }
 
@@ -236,10 +241,16 @@ impl<P: PlayerHandle> Shell<P> {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let d = self.dialogs.get_mut(&id).expect("dialog");
-                d.cursor = (position.x as i32, position.y as i32);
+                d.cursor = (position.x as i32 / d.scale, position.y as i32 / d.scale);
                 let (cx, cy, _, _) = gen_window::client_rect(d.dialog.size().0, d.dialog.size().1);
                 d.dialog.form().mouse_move(d.cursor.0 - cx, d.cursor.1 - cy);
                 self.draw_dialog(id);
+            }
+            WindowEvent::CursorLeft { .. } => {
+                let d = self.dialogs.get_mut(&id).expect("dialog");
+                if d.dialog.form().mouse_leave() {
+                    self.draw_dialog(id);
+                }
             }
             WindowEvent::MouseInput {
                 state,

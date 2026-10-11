@@ -34,6 +34,7 @@ use crate::keys::{self, Focus, KeyAction};
 use crate::main_input::{self, MainContext, MainInput};
 use crate::marquee::{self, Marquee};
 use crate::platform::shape;
+use crate::platform::wayland::{self, Compound};
 use crate::playlist::{self as pl, PlAction, PlMenuChoice, PlaylistUi};
 use crate::title;
 use nulamp_render::playlist_window::{self as pw, MiniTime, PlFrameView};
@@ -57,6 +58,10 @@ pub trait PlayerHandle {
     }
     /// Output frames heard so far (the visualizer clock).
     fn heard_frame(&self) -> u64 {
+        0
+    }
+    /// Changes when visualizer blocks already handed out were replaced (an EQ change, a seek).
+    fn vis_revision(&self) -> u64 {
         0
     }
     /// Whether some decoder handles a file extension.
@@ -278,8 +283,14 @@ pub enum Kind {
 
 struct Win {
     kind: Kind,
-    window: Rc<Window>,
-    surface: softbuffer::Surface<OwnedDisplayHandle, Rc<Window>>,
+    /// The OS window; `None` for a part of the native Wayland compound window.
+    window: Option<Rc<Window>>,
+    /// Software presenter; `None` when the compound window presents this window.
+    surface: Option<softbuffer::Surface<OwnedDisplayHandle, Rc<Window>>>,
+    /// Index in the native Wayland compound window (`wayland::MAIN` for the main window).
+    part: Option<usize>,
+    /// A redraw is pending for a compound part (parts have no `RedrawRequested` events).
+    dirty: std::cell::Cell<bool>,
     /// Requested screen rectangle in physical pixels.
     rect: Rect,
     /// Last position reported by the window system.
@@ -301,6 +312,18 @@ pub struct Shell<P: PlayerHandle> {
     skin: Skin,
     fonts: FontSystem,
     context: Option<softbuffer::Context<OwnedDisplayHandle>>,
+    /// Native Wayland: the main window with the equalizer and playlist as its parts (D5).
+    compound: Option<Compound>,
+    /// Running as a native Wayland client (not through XWayland).
+    wayland: bool,
+    /// Compound window: the window that gets key presses (the last one clicked).
+    key_target: Option<WindowId>,
+    /// Closed Wayland top-level windows to open again (in `about_to_wait`).
+    reopen: Vec<Kind>,
+    /// Compound part pressed with the mouse. Until the release, pointer events the compositor
+    /// sends to the main surface belong to it (KWin moves the pointer focus to the top-level
+    /// surface during a press).
+    capture: Option<WindowId>,
     windows: HashMap<WindowId, Win>,
     ids: HashMap<Kind, WindowId>,
     focused: Option<WindowId>,
@@ -343,6 +366,7 @@ pub struct Shell<P: PlayerHandle> {
     analyzer: nulamp_vis::Analyzer,
     visualizer: nulamp_vis::Visualizer,
     vis_frame: u64,
+    vis_revision: u64,
     vis_was_running: bool,
     egg_typed: String,
     easter_egg: bool,
@@ -355,6 +379,16 @@ pub struct Shell<P: PlayerHandle> {
     exit: bool,
     /// The media library, when the application provides one.
     library: Option<library_host::LibraryHost>,
+}
+
+impl Win {
+    fn request_redraw(&self) {
+        match &self.window {
+            // The main window of a compound window too: winit knows when it is configured.
+            Some(w) => w.request_redraw(),
+            None => self.dirty.set(true),
+        }
+    }
 }
 
 impl<P: PlayerHandle> Shell<P> {
@@ -383,6 +417,11 @@ impl<P: PlayerHandle> Shell<P> {
             skin,
             fonts: FontSystem::new(),
             context: None,
+            compound: None,
+            wayland: false,
+            key_target: None,
+            reopen: Vec::new(),
+            capture: None,
             windows: HashMap::new(),
             ids: HashMap::new(),
             focused: None,
@@ -418,6 +457,7 @@ impl<P: PlayerHandle> Shell<P> {
             analyzer: nulamp_vis::Analyzer::new(),
             visualizer,
             vis_frame: 0,
+            vis_revision: 0,
             vis_was_running: false,
             egg_typed: String::new(),
             easter_egg: false,
@@ -491,13 +531,12 @@ impl<P: PlayerHandle> Shell<P> {
         self.windows.get(&id).map(|w| w.kind)
     }
 
-    /// Pixel scale of a window (double size applies to the main window and optionally the EQ).
+    /// Pixel scale of a window. Double size applies to every player window, the equalizer
+    /// only when "double size applies to the equalizer" is on (docs/decisions.md D23).
     fn scale_of(&self, kind: Kind) -> i32 {
         let doubled = match kind {
-            Kind::Main => self.prefs.double_size,
+            Kind::Main | Kind::Playlist | Kind::Library => self.prefs.double_size,
             Kind::Equalizer => self.prefs.double_size && self.prefs.eq_double,
-            // Generic windows are never doubled (05 §1.4).
-            Kind::Playlist | Kind::Library => false,
         };
         if doubled { 2 } else { 1 }
     }
@@ -524,6 +563,12 @@ impl<P: PlayerHandle> Shell<P> {
     fn create_window(&mut self, el: &ActiveEventLoop, kind: Kind, pos: (i32, i32), visible: bool) {
         let (w, h) = self.size_of(kind);
         let rect = Rect::new(pos.0, pos.1, w, h);
+        if self.wayland && !visible && kind != Kind::Main {
+            // winit cannot hide Wayland top-level windows: open it when it is first shown.
+            let id = WindowId::from(u64::MAX - 100 - kind as u64);
+            self.insert_win(id, kind, None, None, None, rect, false);
+            return;
+        }
         let title = match kind {
             Kind::Main => APP_NAME.to_string(),
             Kind::Equalizer => format!("{APP_NAME} Equalizer"),
@@ -546,7 +591,11 @@ impl<P: PlayerHandle> Shell<P> {
                 attrs = attrs.with_x11_window_type(vec![WindowType::Utility]);
             }
         }
-        if self.prefs.always_on_top {
+        let compound_main = kind == Kind::Main && self.wayland;
+        if compound_main {
+            // Transparent so pixels outside the skin's shape show what is behind.
+            attrs = attrs.with_transparent(true);
+        } else if self.prefs.always_on_top {
             attrs = attrs.with_window_level(WindowLevel::AlwaysOnTop);
         }
         let Ok(window) = el.create_window(attrs) else {
@@ -554,19 +603,62 @@ impl<P: PlayerHandle> Shell<P> {
             return;
         };
         let window = Rc::new(window);
-        let context = self.context.get_or_insert_with(|| {
-            softbuffer::Context::new(el.owned_display_handle()).expect("softbuffer context")
-        });
-        let Ok(surface) = softbuffer::Surface::new(context, window.clone()) else {
-            return;
+        if compound_main {
+            self.compound = Compound::new(el, &*window);
+            match &mut self.compound {
+                Some(c) => c.set_scale(window.scale_factor()),
+                None => log::warn!("no Wayland subsurfaces; windows will not dock"),
+            }
+        }
+        let (surface, part) = if self.compound.is_some() && kind == Kind::Main {
+            (None, Some(wayland::MAIN))
+        } else {
+            let context = self.softbuffer(el);
+            let Ok(surface) = softbuffer::Surface::new(context, window.clone()) else {
+                return;
+            };
+            (Some(surface), None)
         };
         let id = window.id();
+        self.insert_win(id, kind, Some(window), surface, part, rect, visible);
+    }
+
+    /// The software presenter's connection, created on first use.
+    fn softbuffer(&mut self, el: &ActiveEventLoop) -> &softbuffer::Context<OwnedDisplayHandle> {
+        self.context.get_or_insert_with(|| {
+            softbuffer::Context::new(el.owned_display_handle()).expect("softbuffer context")
+        })
+    }
+
+    /// Adds the equalizer or playlist as a part of the native Wayland compound window.
+    fn create_part(&mut self, kind: Kind, pos: (i32, i32), visible: bool) {
+        let Some(c) = &mut self.compound else { return };
+        let part = c.add_part();
+        let (w, h) = self.size_of(kind);
+        let rect = Rect::new(pos.0, pos.1, w, h);
+        let id = part_window_id(part);
+        self.insert_win(id, kind, None, None, Some(part), rect, visible);
+        self.place_part(id);
+    }
+
+    fn insert_win(
+        &mut self,
+        id: WindowId,
+        kind: Kind,
+        window: Option<Rc<Window>>,
+        surface: Option<softbuffer::Surface<OwnedDisplayHandle, Rc<Window>>>,
+        part: Option<usize>,
+        rect: Rect,
+        visible: bool,
+    ) {
         self.windows.insert(
             id,
             Win {
                 kind,
                 window,
                 surface,
+                part,
+                dirty: std::cell::Cell::new(visible),
                 rect,
                 actual: (rect.x, rect.y),
                 cursor: (0, 0),
@@ -575,6 +667,18 @@ impl<P: PlayerHandle> Shell<P> {
             },
         );
         self.ids.insert(kind, id);
+    }
+
+    /// Moves a compound part to its rectangle, relative to the main window.
+    fn place_part(&mut self, id: WindowId) {
+        let main = self.ids.get(&Kind::Main).map(|m| self.windows[m].rect);
+        let (Some(c), Some(main), Some(w)) = (&mut self.compound, main, self.windows.get(&id))
+        else {
+            return;
+        };
+        if let Some(part) = w.part.filter(|p| *p != wayland::MAIN) {
+            c.set_position(part, w.rect.x - main.x, w.rect.y - main.y);
+        }
     }
 
     fn main_context(&self) -> MainContext {
@@ -660,7 +764,9 @@ impl<P: PlayerHandle> Shell<P> {
             .and_then(|id| self.windows.get(id))
         {
             let caption = self.window_caption();
-            w.window.set_title(&caption);
+            if let Some(win) = &w.window {
+                win.set_title(&caption);
+            }
             if let Some(t) = &self.tray {
                 t.set_tooltip(&caption);
             }
@@ -776,15 +882,27 @@ impl<P: PlayerHandle> Shell<P> {
                 f
             }
             Kind::Equalizer => scale(&ew::draw_eq(&self.skin, &self.eq_view()), s),
-            Kind::Playlist => self.draw_playlist(),
-            Kind::Library => self.draw_library(),
+            Kind::Playlist => scale(&self.draw_playlist(), s),
+            Kind::Library => scale(&self.draw_library(), s),
         };
         let mask = self.shape_for(kind, &frame);
         let Some(w) = self.windows.get_mut(&id) else {
             return;
         };
-        if w.shape_dirty {
-            shape::apply(&*w.window, mask.as_ref());
+        if let (Some(part), Some(c)) = (w.part, &mut self.compound) {
+            if w.shape_dirty {
+                c.set_shape(part, mask);
+                w.shape_dirty = false;
+            }
+            if !c.present(part, &frame) {
+                w.dirty.set(true);
+            }
+            return;
+        }
+        if w.shape_dirty
+            && let Some(window) = &w.window
+        {
+            shape::apply(&**window, mask.as_ref());
             w.shape_dirty = false;
         }
         present(w, &frame);
@@ -812,35 +930,59 @@ impl<P: PlayerHandle> Shell<P> {
 
     fn request_redraw_all(&self) {
         for w in self.windows.values().filter(|w| w.visible) {
-            w.window.request_redraw();
+            w.request_redraw();
         }
     }
 
     fn request_redraw(&self, kind: Kind) {
         if let Some(w) = self.ids.get(&kind).and_then(|id| self.windows.get(id)) {
-            w.window.request_redraw();
+            w.request_redraw();
         }
     }
 
+    /// The screen area for keeping a window on screen; `None` for compound parts, whose
+    /// screen position is unknown.
     fn work_area(&self, id: WindowId) -> Option<Rect> {
         let w = self.windows.get(&id)?;
-        let m = w.window.current_monitor()?;
+        if w.part.is_some() {
+            return None;
+        }
+        let m = w.window.as_ref()?.current_monitor()?;
         let (p, s) = (m.position(), m.size());
         Some(Rect::new(p.x, p.y, s.width as i32, s.height as i32))
     }
 
     fn set_rect(&mut self, id: WindowId, r: Rect) {
-        if let Some(w) = self.windows.get_mut(&id) {
-            if (w.rect.x, w.rect.y) != (r.x, r.y) {
-                w.window.set_outer_position(PhysicalPosition::new(r.x, r.y));
+        let Some(w) = self.windows.get_mut(&id) else {
+            return;
+        };
+        let moved = (w.rect.x, w.rect.y) != (r.x, r.y);
+        if (w.rect.w, w.rect.h) != (r.w, r.h) {
+            if let Some(window) = &w.window {
+                let _ = window.request_inner_size(PhysicalSize::new(r.w as u32, r.h as u32));
             }
-            if (w.rect.w, w.rect.h) != (r.w, r.h) {
-                let _ = w
-                    .window
-                    .request_inner_size(PhysicalSize::new(r.w as u32, r.h as u32));
-                w.shape_dirty = true;
+            w.shape_dirty = true;
+        }
+        w.rect = r;
+        match (w.part, &w.window) {
+            // The compositor places the main window: keep the parts where they are
+            // relative to it.
+            (Some(wayland::MAIN), _) if moved => {
+                let parts: Vec<WindowId> = self
+                    .windows
+                    .iter()
+                    .filter(|(_, w)| w.part.is_some_and(|p| p != wayland::MAIN))
+                    .map(|(id, _)| *id)
+                    .collect();
+                for p in parts {
+                    self.place_part(p);
+                }
             }
-            w.rect = r;
+            (Some(_), _) if moved => self.place_part(id),
+            (None, Some(window)) if moved => {
+                window.set_outer_position(PhysicalPosition::new(r.x, r.y));
+            }
+            _ => {}
         }
     }
 
@@ -849,7 +991,8 @@ impl<P: PlayerHandle> Shell<P> {
         let mut ids: Vec<WindowId> = self
             .windows
             .iter()
-            .filter(|(_, w)| w.visible)
+            // Compound parts dock only with each other: other windows' positions are unknown.
+            .filter(|(_, w)| w.visible && (self.compound.is_none() || w.part.is_some()))
             .map(|(id, _)| *id)
             .collect();
         ids.sort_by_key(|id| self.windows[id].kind as u8);
@@ -886,10 +1029,21 @@ impl<P: PlayerHandle> Shell<P> {
     fn set_visible(&mut self, kind: Kind, visible: bool) {
         if let Some(w) = self.ids.get(&kind).and_then(|id| self.windows.get_mut(id)) {
             w.visible = visible;
-            w.window.set_visible(visible);
+            match (w.part, &w.window, &mut self.compound) {
+                (Some(part), None, Some(c)) if !visible => c.hide(part),
+                // winit cannot hide Wayland top-level windows: close the window, and open it
+                // again when it is shown.
+                (None, Some(_), _) if self.wayland && !visible => {
+                    w.surface = None;
+                    w.window = None;
+                }
+                (None, None, _) if self.wayland && visible => self.reopen.push(kind),
+                (_, Some(window), _) => window.set_visible(visible),
+                _ => {}
+            }
             if visible {
                 w.shape_dirty = true;
-                w.window.request_redraw();
+                w.request_redraw();
             }
         }
         match kind {
@@ -903,6 +1057,15 @@ impl<P: PlayerHandle> Shell<P> {
 
     fn begin_drag(&mut self, id: WindowId, x: i32, y: i32) {
         let Some(kind) = self.kind_of(id) else { return };
+        if self.wayland
+            && let Some(w) = self.windows.get(&id)
+            && let Some(win) = &w.window
+            && w.part.is_none_or(|p| p == wayland::MAIN)
+        {
+            // Only the compositor can move a top-level window; parts follow the main window.
+            let _ = win.drag_window();
+            return;
+        }
         let s = self.scale_of(kind);
         let (ids, rects) = self.visible_rects();
         let snapping = self.prefs.snap != self.mods.shift;
@@ -958,6 +1121,179 @@ impl<P: PlayerHandle> Shell<P> {
         let out = docking::move_group(&rects, leader, &group, target, work, dist);
         for (i, r) in ids.into_iter().zip(out) {
             self.set_rect(i, r);
+        }
+    }
+
+    /// Window ids of the compound window's parts (not the main window).
+    fn part_ids(&self) -> Vec<WindowId> {
+        self.windows
+            .iter()
+            .filter(|(_, w)| w.part.is_some_and(|p| p != wayland::MAIN))
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// The window that handles keys and focus for OS window `id`: in a compound window, the
+    /// last-clicked part.
+    fn key_window(&self, id: WindowId) -> WindowId {
+        match self.key_target {
+            Some(t) if self.compound.is_some() && self.kind_of(id) == Some(Kind::Main) => t,
+            _ => id,
+        }
+    }
+
+    fn set_key_target(&mut self, id: WindowId) {
+        self.key_target = Some(id);
+        let compound_focused = self
+            .focused
+            .and_then(|f| self.windows.get(&f))
+            .is_some_and(|w| w.part.is_some());
+        if compound_focused && self.focused != Some(id) {
+            self.focused = Some(id);
+            self.request_redraw_all();
+        }
+    }
+
+    /// Handles input on the compound window's parts.
+    fn compound_events(&mut self, el: &ActiveEventLoop) {
+        let Some(c) = &mut self.compound else { return };
+        for event in c.dispatch() {
+            let part = match event {
+                wayland::Event::Motion { part, .. }
+                | wayland::Event::Leave { part }
+                | wayland::Event::Button { part, .. }
+                | wayland::Event::Wheel { part, .. } => Some(part),
+                wayland::Event::Moved { .. } => None,
+            };
+            if let Some(level) = part.and_then(|p| self.menu_of_part(p)) {
+                self.menu_part_event(el, level, event);
+                continue;
+            }
+            match event {
+                wayland::Event::Motion { part, x, y } => {
+                    let id = part_window_id(part);
+                    if let Some(w) = self.windows.get_mut(&id) {
+                        w.cursor = (x, y);
+                    }
+                    self.cursor_moved(id, el);
+                }
+                wayland::Event::Leave { part } => {
+                    self.current_cursor.remove(&part_window_id(part));
+                }
+                wayland::Event::Button {
+                    part,
+                    button,
+                    pressed,
+                } => {
+                    let id = part_window_id(part);
+                    if pressed {
+                        self.close_menus();
+                        self.set_key_target(id);
+                    }
+                    self.capture = pressed.then_some(id);
+                    let state = if pressed {
+                        ElementState::Pressed
+                    } else {
+                        ElementState::Released
+                    };
+                    self.mouse_input(id, state, button, el);
+                }
+                wayland::Event::Wheel { part, lines } => {
+                    let delta = MouseScrollDelta::LineDelta(0.0, lines);
+                    self.wheel(part_window_id(part), delta, el);
+                }
+                wayland::Event::Moved { part, x, y } => {
+                    let main = self.ids.get(&Kind::Main).map(|m| self.windows[m].rect);
+                    if let (Some(main), Some(w)) =
+                        (main, self.windows.get_mut(&part_window_id(part)))
+                    {
+                        w.actual = (main.x + x, main.y + y);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Pointer input on a menu drawn as a compound part.
+    fn menu_part_event(&mut self, el: &ActiveEventLoop, level: usize, event: wayland::Event) {
+        match event {
+            wayland::Event::Motion { x, y, .. } => self.menu_motion(el, level, x, y),
+            wayland::Event::Leave { .. } => self.menu_leave(level),
+            wayland::Event::Button {
+                part,
+                button,
+                pressed,
+            } => {
+                self.capture = pressed.then_some(part_window_id(part));
+                if !pressed && button == MouseButton::Left {
+                    self.menu_release(el, level);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Sends main-surface pointer events to the compound part being pressed. Returns true when
+    /// the event was used.
+    fn captured_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: &WindowEvent) -> bool {
+        let Some(part) = self.capture else {
+            return false;
+        };
+        let main = match self.windows.get(&id) {
+            Some(w) if w.part == Some(wayland::MAIN) => w.rect,
+            _ => return false,
+        };
+        if let Some(level) = self.menu_level(part) {
+            let pos = self.menus[level].pos;
+            match *event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    let (x, y) = (main.x + position.x as i32, main.y + position.y as i32);
+                    self.menu_motion(el, level, x - pos.0, y - pos.1);
+                }
+                WindowEvent::MouseInput { state, button, .. } => {
+                    if state == ElementState::Released {
+                        self.capture = None;
+                        if button == MouseButton::Left {
+                            self.menu_release(el, level);
+                        }
+                    }
+                }
+                _ => return false,
+            }
+            return true;
+        }
+        match *event {
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(w) = self.windows.get_mut(&part) {
+                    // Main-surface coordinates do not depend on where the part is now, so a
+                    // part being dragged cannot feed back into its own motion.
+                    let (px, py) = (position.x.floor() as i32, position.y.floor() as i32);
+                    w.cursor = (main.x + px - w.actual.0, main.y + py - w.actual.1);
+                }
+                self.cursor_moved(part, el);
+                true
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if state == ElementState::Released {
+                    self.capture = None;
+                }
+                self.mouse_input(part, state, button, el);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Draws compound parts that asked for a redraw.
+    fn redraw_parts(&mut self) {
+        let ids: Vec<WindowId> = self
+            .windows
+            .iter()
+            .filter(|(_, w)| w.visible && w.dirty.replace(false))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            self.redraw(id);
         }
     }
 
@@ -1110,8 +1446,10 @@ impl<P: PlayerHandle> Shell<P> {
             Action::ToggleLibraryWindow if self.library.is_some() => {
                 let v = !self.is_visible(Kind::Library);
                 self.set_visible(Kind::Library, v);
-                if v && let Some(&lid) = self.ids.get(&Kind::Library) {
-                    self.windows[&lid].window.focus_window();
+                if v && let Some(&lid) = self.ids.get(&Kind::Library)
+                    && let Some(win) = &self.windows[&lid].window
+                {
+                    win.focus_window();
                 }
             }
             Action::Menu { kind, x, y } => {
@@ -1158,6 +1496,8 @@ impl<P: PlayerHandle> Shell<P> {
                 };
                 self.set_vis_mode(m);
             }
+            // Wayland has no way to keep a window above others (wayland_limits).
+            Action::ToggleAlwaysOnTop if self.wayland => {}
             Action::ToggleAlwaysOnTop => {
                 self.prefs.always_on_top = !self.prefs.always_on_top;
                 let level = if self.prefs.always_on_top {
@@ -1166,13 +1506,16 @@ impl<P: PlayerHandle> Shell<P> {
                     WindowLevel::Normal
                 };
                 for w in self.windows.values() {
-                    w.window.set_window_level(level);
+                    if let Some(win) = &w.window {
+                        win.set_window_level(level);
+                    }
                 }
             }
             Action::ToggleDoubleSize => {
                 self.prefs.double_size = !self.prefs.double_size;
-                self.resize_window(Kind::Main);
-                self.resize_window(Kind::Equalizer);
+                for kind in [Kind::Main, Kind::Equalizer, Kind::Playlist, Kind::Library] {
+                    self.resize_window(kind);
+                }
             }
             Action::ToggleShade => match self.kind_of(id) {
                 Some(Kind::Playlist) => self.toggle_pl_shade(),
@@ -1190,7 +1533,9 @@ impl<P: PlayerHandle> Shell<P> {
             Action::Minimize { to_tray: true } => self.minimize_to_tray(),
             Action::Minimize { .. } => {
                 for w in self.windows.values() {
-                    w.window.set_minimized(true);
+                    if let Some(win) = &w.window {
+                        win.set_minimized(true);
+                    }
                 }
             }
             Action::Exit => {
@@ -1281,6 +1626,16 @@ impl<P: PlayerHandle> Shell<P> {
             return changed;
         }
         self.vis_was_running = true;
+        let revision = self.player.vis_revision();
+        if revision != self.vis_revision {
+            // Blocks already read were replaced: read again from the one being heard.
+            self.vis_revision = revision;
+            let from = self
+                .player
+                .heard_frame()
+                .saturating_sub(nulamp_vis::BLOCK_FRAMES as u64 + 1);
+            self.vis_frame = self.vis_frame.min(from);
+        }
         for (frame, rate, ch, samples) in self.player.vis_blocks_since(self.vis_frame) {
             self.analyzer.push(frame, rate, ch, &samples);
             self.vis_frame = self.vis_frame.max(frame);
@@ -1309,12 +1664,11 @@ impl<P: PlayerHandle> Shell<P> {
         match kind {
             Kind::Playlist => {
                 let entries = self.expand(&items);
-                let (_, y) = self
+                let y = self
                     .ids
                     .get(&Kind::Playlist)
-                    .and_then(|id| self.windows.get(id))
-                    .map(|w| w.cursor)
-                    .unwrap_or((0, 0));
+                    .and_then(|id| self.local_pos(*id))
+                    .map_or(0, |(_, _, y)| y);
                 let row = self.pl_drop_row(y);
                 self.player.engine_mut().insert(row, entries);
                 let n = self.player.engine().playlist.len();
@@ -1518,7 +1872,9 @@ impl<P: PlayerHandle> Shell<P> {
                 WindowLevel::Normal
             };
             for w in self.windows.values() {
-                w.window.set_window_level(level);
+                if let Some(win) = &w.window {
+                    win.set_window_level(level);
+                }
             }
         }
         if self.prefs.show_tray {
@@ -1536,6 +1892,10 @@ impl<P: PlayerHandle> Shell<P> {
 
     /// Registers the enabled global hotkeys with the OS, or releases them.
     fn apply_hotkeys(&mut self) {
+        if self.wayland {
+            // No global key grabs on Wayland (wayland_limits).
+            return;
+        }
         if self.global_hotkeys.is_none() && self.prefs.hotkeys.enabled {
             self.global_hotkeys = crate::hotkeys::GlobalHotkeys::new();
         }
@@ -1556,7 +1916,9 @@ impl<P: PlayerHandle> Shell<P> {
         self.ensure_tray();
         if self.tray.is_none() {
             for w in self.windows.values() {
-                w.window.set_minimized(true);
+                if let Some(win) = &w.window {
+                    win.set_minimized(true);
+                }
             }
             return;
         }
@@ -1564,32 +1926,93 @@ impl<P: PlayerHandle> Shell<P> {
             .into_iter()
             .filter(|k| self.is_visible(*k))
             .collect();
+        if self.wayland {
+            self.close_windows();
+            return;
+        }
         for k in self.hidden_to_tray.clone() {
-            if let Some(w) = self.ids.get(&k).and_then(|id| self.windows.get(id)) {
-                w.window.set_visible(false);
+            self.show_os_window(k, false);
+        }
+    }
+
+    /// Wayland: closes every player window, leaving only the tray icon. winit cannot hide
+    /// Wayland top-level windows; [`Shell::raise`] opens them again.
+    fn close_windows(&mut self) {
+        self.close_menus();
+        // The parts go first: they are subsurfaces of the main window.
+        self.compound = None;
+        self.capture = None;
+        self.drag = None;
+        self.current_cursor.clear();
+        for w in self.windows.values_mut() {
+            w.surface = None;
+            w.window = None;
+        }
+    }
+
+    /// Wayland: opens the main window again with its parts at their old places.
+    fn reopen_main(&mut self, el: &ActiveEventLoop) {
+        let Some(main) = self
+            .ids
+            .get(&Kind::Main)
+            .and_then(|id| self.windows.remove(id))
+        else {
+            return;
+        };
+        self.create_window(el, Kind::Main, (main.rect.x, main.rect.y), true);
+        // Same order as at start-up, so the parts get the same indices and window ids.
+        for kind in [Kind::Playlist, Kind::Equalizer] {
+            let Some(old) = self.ids.get(&kind).and_then(|id| self.windows.remove(id)) else {
+                continue;
+            };
+            let pos = (old.rect.x, old.rect.y);
+            if self.compound.is_some() {
+                self.create_part(kind, pos, old.visible);
+            } else {
+                self.create_window(el, kind, pos, old.visible);
             }
+        }
+    }
+
+    /// Shows or hides a window without changing its saved visibility.
+    fn show_os_window(&mut self, kind: Kind, visible: bool) {
+        let Some(w) = self.ids.get(&kind).and_then(|id| self.windows.get(id)) else {
+            return;
+        };
+        match (w.part, &w.window, &mut self.compound) {
+            (Some(part), None, Some(c)) if !visible => c.hide(part),
+            (Some(_), None, _) => w.dirty.set(true),
+            (_, Some(win), _) => win.set_visible(visible),
+            _ => {}
         }
     }
 
     /// Shows windows hidden to the tray and brings the player to the front.
     pub(super) fn raise(&mut self) {
         for k in std::mem::take(&mut self.hidden_to_tray) {
-            if let Some(w) = self.ids.get(&k).and_then(|id| self.windows.get(id)) {
-                w.window.set_visible(true);
+            if self.wayland {
+                // Closed by `close_windows`; the main window brings its parts back.
+                if matches!(k, Kind::Main | Kind::Library) {
+                    self.reopen.push(k);
+                }
+            } else {
+                self.show_os_window(k, true);
             }
         }
         if !self.prefs.show_tray {
             self.tray = None;
         }
         for w in self.windows.values().filter(|w| w.visible) {
-            w.window.set_minimized(false);
+            if let Some(win) = &w.window {
+                win.set_minimized(false);
+            }
         }
-        if let Some(w) = self
+        if let Some(win) = self
             .ids
             .get(&Kind::Main)
-            .and_then(|id| self.windows.get(id))
+            .and_then(|id| self.windows.get(id)?.window.as_ref())
         {
-            w.window.focus_window();
+            win.focus_window();
         }
         self.request_redraw_all();
     }
@@ -1931,6 +2354,15 @@ impl<P: PlayerHandle> Shell<P> {
             return;
         }
         self.current_cursor.insert(id, role);
+        if let (Some(part), Some(c)) = (
+            self.windows.get(&id).and_then(|w| w.part),
+            &mut self.compound,
+        ) && part != wayland::MAIN
+        {
+            // Parts use the compositor's cursor set; skin cursors need a cursor surface.
+            c.set_cursor(part, role.shape());
+            return;
+        }
         let cursor: Cursor = match self.skin.cursors.get(&role) {
             Some(img) => {
                 let custom = self.cursors.entry(role).or_insert_with(|| {
@@ -1953,8 +2385,8 @@ impl<P: PlayerHandle> Shell<P> {
             }
             None => builtin_cursor(role.shape()).into(),
         };
-        if let Some(w) = self.windows.get(&id) {
-            w.window.set_cursor(cursor);
+        if let Some(win) = self.windows.get(&id).and_then(|w| w.window.as_ref()) {
+            win.set_cursor(cursor);
         }
     }
 
@@ -2222,7 +2654,8 @@ impl<P: PlayerHandle> Shell<P> {
                 let d = crate::prefs_dialog::PrefsDialog::new(
                     self.prefs.clone(),
                     self.playlist_options(),
-                );
+                )
+                .wayland_native(self.wayland);
                 self.open_dialog(el, Box::new(d));
             }
             KeyAction::BookmarkCurrent => {
@@ -2493,7 +2926,9 @@ fn builtin_cursor(shape: CursorShape) -> CursorIcon {
 }
 
 fn present(w: &mut Win, frame: &Frame) {
-    present_raw(&w.window, &mut w.surface, frame);
+    if let (Some(window), Some(surface)) = (&w.window, &mut w.surface) {
+        present_raw(window, surface, frame);
+    }
 }
 
 /// Copies a frame into a window surface.
@@ -2522,6 +2957,19 @@ fn present_raw(
     let _ = buf.present();
 }
 
+/// Whether the event loop talks to a Wayland compositor directly (not through XWayland).
+fn is_wayland(el: &ActiveEventLoop) -> bool {
+    use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    el.display_handle()
+        .is_ok_and(|d| matches!(d.as_raw(), RawDisplayHandle::Wayland(_)))
+}
+
+/// Window ids for compound parts; winit's Wayland ids are surface addresses, so these
+/// values near `u64::MAX` cannot collide with them.
+fn part_window_id(part: usize) -> WindowId {
+    WindowId::from(u64::MAX - part as u64)
+}
+
 fn build_event_loop() -> Result<EventLoop<()>, winit::error::EventLoopError> {
     let mut builder = EventLoop::builder();
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -2542,6 +2990,7 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
             return;
         }
         let p = self.prefs.clone();
+        self.wayland = is_wayland(el);
         if p.show_tray {
             self.ensure_tray();
         }
@@ -2550,9 +2999,23 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         if self.library.is_some() {
             self.create_window(el, Kind::Library, p.lib_pos, p.lib_visible);
         }
-        self.create_window(el, Kind::Playlist, p.pl_pos, p.pl_visible);
-        self.create_window(el, Kind::Equalizer, p.eq_pos, p.eq_visible);
-        self.create_window(el, Kind::Main, p.main_pos, true);
+        if self.wayland {
+            // The main window comes first: the equalizer and playlist are its parts.
+            self.create_window(el, Kind::Main, p.main_pos, true);
+        }
+        for (kind, pos, visible) in [
+            (Kind::Playlist, p.pl_pos, p.pl_visible),
+            (Kind::Equalizer, p.eq_pos, p.eq_visible),
+        ] {
+            if self.compound.is_some() {
+                self.create_part(kind, pos, visible);
+            } else {
+                self.create_window(el, kind, pos, visible);
+            }
+        }
+        if !self.ids.contains_key(&Kind::Main) {
+            self.create_window(el, Kind::Main, p.main_pos, true);
+        }
         self.poll_player();
         self.refresh_title();
         // Development aid: open a dialog at start-up (NULAMP_OPEN_DIALOG=about|url|jumpfile|skins).
@@ -2578,7 +3041,8 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
                         self.prefs.clone(),
                         self.playlist_options(),
                     )
-                    .with_page("Media Library");
+                    .with_page("Media Library")
+                    .wayland_native(self.wayland);
                     self.open_dialog(el, Box::new(d));
                 }
                 _ => {}
@@ -2589,6 +3053,9 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.menu_event(el, id, &event) || self.dialog_event(el, id, &event) {
+            return;
+        }
+        if self.captured_event(el, id, &event) {
             return;
         }
         if let WindowEvent::MouseInput {
@@ -2617,10 +3084,28 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
             WindowEvent::Resized(_) => {
                 if let Some(w) = self.windows.get_mut(&id) {
                     w.shape_dirty = true;
-                    w.window.request_redraw();
+                    w.request_redraw();
                 }
             }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. }
+                if self.compound.is_some() && self.kind_of(id) == Some(Kind::Main) =>
+            {
+                if let Some(c) = &mut self.compound {
+                    c.set_scale(scale_factor);
+                }
+                let parts: Vec<WindowId> = self.part_ids();
+                for p in parts {
+                    self.place_part(p);
+                }
+                self.request_redraw_all();
+            }
             WindowEvent::Focused(f) => {
+                if !f && self.compound.is_some() && self.kind_of(id) == Some(Kind::Main) {
+                    // Menus drawn as parts cannot notice clicks in other applications.
+                    self.close_menus();
+                }
+                // A compound window has one keyboard focus: give it to the last-clicked part.
+                let id = self.key_window(id);
                 if f {
                     self.focused = Some(id);
                 } else if self.focused == Some(id) {
@@ -2643,6 +3128,9 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
                 self.cursor_moved(id, el);
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                if self.compound.is_some() && self.kind_of(id) == Some(Kind::Main) {
+                    self.set_key_target(id);
+                }
                 self.mouse_input(id, state, button, el)
             }
             WindowEvent::MouseWheel { delta, .. } => self.wheel(id, delta, el),
@@ -2656,7 +3144,21 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
                 event,
                 is_synthetic: false,
                 ..
-            } => self.key_input(id, event, el),
+            } => {
+                // Keys for menus drawn as compound parts arrive at the main window.
+                if let Some(level) = self.menus.len().checked_sub(1)
+                    && self.menus[level].part.is_some()
+                {
+                    if event.state == ElementState::Pressed
+                        && let PhysicalKey::Code(code) = event.physical_key
+                    {
+                        self.menu_key(el, level, code);
+                    }
+                    return;
+                }
+                let id = self.key_window(id);
+                self.key_input(id, event, el)
+            }
             _ => {}
         }
     }
@@ -2665,9 +3167,17 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         if self.exit {
             return;
         }
+        self.compound_events(el);
         self.check_menu_focus();
         self.poll_remote(el);
         self.poll_url_expansions();
+        for kind in std::mem::take(&mut self.reopen) {
+            if kind == Kind::Main {
+                self.reopen_main(el);
+            } else if let Some(old) = self.ids.get(&kind).and_then(|id| self.windows.remove(id)) {
+                self.create_window(el, kind, (old.rect.x, old.rect.y), true);
+            }
+        }
         for request in self.player.credential_requests() {
             self.open_dialog(el, Box::new(crate::dialogs::LoginDialog::new(request)));
         }
@@ -2718,6 +3228,7 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
                 self.request_redraw(Kind::Equalizer);
             }
         }
+        self.redraw_parts();
         el.set_control_flow(ControlFlow::WaitUntil(Instant::now() + TICK));
     }
 }

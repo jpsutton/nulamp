@@ -5,6 +5,7 @@ use crate::keys::KeyAction;
 use crate::library::LibCmd;
 use crate::menu::{Item, MenuCmd};
 use crate::playlist::PlMenuChoice;
+use crate::wayland_limits;
 use nulamp_core::Command;
 use nulamp_library::Capabilities;
 use nulamp_render::playlist_window::PopupMenu;
@@ -51,6 +52,8 @@ pub struct MenuState {
     pub eq_auto: bool,
     pub eq_presets: Vec<String>,
     pub app_name: String,
+    /// Running as a native Wayland window: items Wayland cannot support are greyed out.
+    pub wayland_native: bool,
 }
 
 fn act(a: Action) -> MenuCmd {
@@ -113,7 +116,8 @@ pub fn options_menu(s: &MenuState) -> Vec<Item> {
             "Ctrl+A",
             s.always_on_top,
             act(Action::ToggleAlwaysOnTop),
-        ),
+        )
+        .disabled_if(s.wayland_native, wayland_limits::ALWAYS_ON_TOP),
         Item::check(
             "Double Size",
             "Ctrl+D",
@@ -814,6 +818,41 @@ mod tests {
             &items[5],
             Item::Cmd { cmd: MenuCmd::PlayCd(loc), .. } if loc == "cda://sr1"
         ));
+    }
+
+    #[test]
+    fn always_on_top_under_wayland() {
+        let on_top = |s: &MenuState| {
+            options_menu(s)
+                .into_iter()
+                .find(|i| matches!(i, Item::Cmd { label, .. } if label == "Always On Top"))
+                .unwrap()
+        };
+        let mut s = MenuState {
+            always_on_top: true,
+            ..MenuState::default()
+        };
+        assert_eq!(
+            on_top(&s),
+            Item::check(
+                "Always On Top",
+                "Ctrl+A",
+                true,
+                act(Action::ToggleAlwaysOnTop)
+            )
+        );
+        s.wayland_native = true;
+        assert_eq!(
+            on_top(&s),
+            Item::Cmd {
+                label: "Always On Top".into(),
+                shortcut: "Ctrl+A".into(),
+                cmd: act(Action::ToggleAlwaysOnTop),
+                check: Some(true),
+                enabled: false,
+                tip: Some(wayland_limits::ALWAYS_ON_TOP.into()),
+            }
+        );
     }
 
     #[test]

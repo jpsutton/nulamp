@@ -355,9 +355,12 @@ impl Player {
         self.prefs
     }
 
-    /// Updates the equalizer.
+    /// Updates the equalizer. The buffered audio is processed again, so the change is heard
+    /// at once (decision EQ12).
     pub fn set_eq(&mut self, s: &nulamp_eq::EqSettings) {
-        self.eq.set(s);
+        if self.eq.set(s) {
+            self.audio.send(Control::Reprocess);
+        }
     }
 
     /// Puts an effect after the equalizer (08 §5), or removes it.
