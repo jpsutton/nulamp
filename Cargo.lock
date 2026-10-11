@@ -1812,6 +1812,7 @@ dependencies = [
  "rustls",
  "rustysynth",
  "symphonia",
+ "tempfile",
  "thiserror 2.0.21",
  "webpki-roots",
 ]

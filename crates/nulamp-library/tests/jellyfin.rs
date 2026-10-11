@@ -584,6 +584,7 @@ fn playback_plays_and_artwork() {
     );
     assert!(!loc.location.contains("tok"), "no token in the URL");
     assert!(loc.location.contains("container=mp3,flac,ogg%7Cvorbis"));
+    assert!(loc.location.contains(",mka%7Cflac,"));
     assert_eq!(loc.headers.len(), 1);
     assert_eq!(loc.headers[0].0, "Authorization");
     assert!(loc.headers[0].1.contains("Token=\"tok\""));

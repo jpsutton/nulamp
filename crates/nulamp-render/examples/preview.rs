@@ -41,6 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         khz: Some(44),
         channels: Some(2),
         seek: Some(94),
+        seek_buffered: Some((0, 170)),
         shuffle: true,
         title: TitleArea::Bitmap {
             text: "3. NULAMP - TEST TRACK (3:45)".into(),

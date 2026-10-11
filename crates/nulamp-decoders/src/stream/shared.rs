@@ -1,11 +1,12 @@
 //! State shared by the network thread, the decoding thread and the decoder handle: the byte
-//! ring buffer with its buffering state (07 §8.6), the decoded audio queue and the stream
-//! description.
+//! ring buffer (or the spool of a finite stream) with its buffering state (07 §8.6), the
+//! decoded audio queue and the stream description.
 
 use std::collections::VecDeque;
 use std::net::{Shutdown, TcpStream};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
+use super::spool::Spool;
 use super::{StreamError, StreamFields, icy};
 use crate::{DecodeError, StreamInfo};
 
@@ -43,7 +44,14 @@ pub(crate) struct Block {
 pub(crate) struct State {
     pub ring: VecDeque<u8>,
     pub capacity: usize,
-    /// Absolute byte offset of the ring's first byte.
+    /// Every byte received, for a finite stream (NET13); the ring is then unused.
+    pub spool: Option<Spool>,
+    /// The location is a file, not a live stream, even without a `Content-Length`.
+    pub finite: bool,
+    /// Spool finite streams ([`super::StreamConfig::spool`]).
+    pub spool_enabled: bool,
+    /// Absolute byte offset of the decoder's next byte: the ring's first byte, or the read
+    /// position in the spool.
     pub pos: u64,
     pub phase: Phase,
     pub rebuffer_percent: u32,
@@ -88,6 +96,9 @@ impl State {
         Self {
             ring: VecDeque::with_capacity(capacity),
             capacity,
+            spool: None,
+            finite: false,
+            spool_enabled: true,
             pos: 0,
             phase: Phase::Connecting,
             rebuffer_percent,
@@ -126,8 +137,51 @@ impl State {
         }
     }
 
-    /// Moves up to `buf.len()` bytes out of the ring and applies the metadata they reach.
+    /// Bytes received so far (from the start, or from the last Range offset).
+    pub fn received(&self) -> u64 {
+        match &self.spool {
+            Some(s) => s.len(),
+            None => self.pos + self.ring.len() as u64,
+        }
+    }
+
+    /// Bytes received ahead of the decoder.
+    pub fn ahead(&self) -> u64 {
+        self.received().saturating_sub(self.pos)
+    }
+
+    /// The whole stream is in the spool.
+    pub fn complete(&self) -> bool {
+        self.spool.is_some() && self.net_done && !matches!(self.phase, Phase::Failed(_))
+    }
+
+    /// The bytes the decoder can reach without a new request, as `start..end` offsets: the
+    /// spool from its start, or the ring of a Range-seekable file. `None` for live streams.
+    pub fn local_bytes(&self) -> Option<(u64, u64)> {
+        if self.spool.is_some() {
+            Some((0, self.received()))
+        } else if self.seekable {
+            Some((self.pos, self.received()))
+        } else {
+            None
+        }
+    }
+
+    /// Moves up to `buf.len()` bytes out of the ring (or reads them from the spool) and
+    /// applies the metadata they reach.
     pub fn take(&mut self, buf: &mut [u8]) -> usize {
+        if let Some(spool) = &mut self.spool {
+            let n = match spool.read_at(self.pos, buf) {
+                Ok(n) => n,
+                Err(e) => {
+                    // Ends the stream: the decoder sees no more bytes.
+                    log::warn!("stream spool: {e}");
+                    0
+                }
+            };
+            self.pos += n as u64;
+            return n;
+        }
         let n = buf.len().min(self.ring.len());
         for (d, s) in buf.iter_mut().zip(self.ring.drain(..n)) {
             *d = s;
@@ -172,7 +226,7 @@ impl State {
 
     pub fn check_buffered(&mut self) {
         if let Phase::Buffering { target } = self.phase
-            && (self.ring.len() >= target || self.net_done)
+            && (self.ahead() >= target as u64 || self.net_done)
         {
             self.phase = Phase::Playing;
         }
@@ -182,7 +236,7 @@ impl State {
     pub fn buffer_percent(&self) -> Option<u32> {
         match self.phase {
             Phase::Buffering { target } => {
-                Some((self.ring.len() as u64 * 100 / target.max(1) as u64).min(100) as u32)
+                Some((self.ahead() * 100 / target.max(1) as u64).min(100) as u32)
             }
             _ => None,
         }
@@ -270,8 +324,8 @@ impl Shared {
             .0
     }
 
-    /// Appends network bytes, waiting for room. False when the connection should stop (abort,
-    /// or a seek started a new epoch).
+    /// Appends network bytes, waiting for room in the ring. False when the connection should
+    /// stop (abort, a seek started a new epoch, or the spool cannot be written).
     pub fn push(&self, mut bytes: &[u8], epoch: u64) -> bool {
         let mut st = self.lock();
         loop {
@@ -279,6 +333,20 @@ impl Shared {
                 return false;
             }
             if bytes.is_empty() {
+                return true;
+            }
+            if let Some(spool) = &mut st.spool {
+                // A spool takes everything at once: finite streams download as fast as they can.
+                let res = spool.append(bytes);
+                if let Err(e) = res {
+                    log::warn!("stream spool: {e}");
+                    st.phase = Phase::Failed(StreamError::Io(e.to_string()));
+                    st.net_done = true;
+                    self.cv.notify_all();
+                    return false;
+                }
+                st.check_buffered();
+                self.cv.notify_all();
                 return true;
             }
             let room = st.capacity - st.ring.len();

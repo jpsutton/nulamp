@@ -9,18 +9,18 @@ use symphonia::core::formats::probe::Hint;
 use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 
-use super::shared::{Block, MAX_QUEUED_FRAMES, Phase, Shared};
+use super::shared::{Block, MAX_QUEUED_FRAMES, Phase, Shared, State};
 use crate::symphonia_decoder::SymphoniaDecoder;
 use crate::{DecodeError, Decoder, ReadStatus, StreamInfo};
 
 /// Most bytes handed to Symphonia per read, so the ring keeps the backlog.
 const MAX_READ: usize = 4096;
 
-/// The ring buffer as a byte source. Reads wait while the stream connects or buffers.
+/// The ring buffer (or the spool) as a byte source. Reads wait while the stream connects or
+/// buffers.
 struct RingSource {
     shared: Arc<Shared>,
     seekable: bool,
-    len: Option<u64>,
 }
 
 fn interrupted() -> io::Error {
@@ -34,16 +34,17 @@ impl Read for RingSource {
             if st.abort {
                 return Ok(0);
             }
-            if st.seek_req.is_some() {
+            // A seek asked for before decoding started waits for the probe to finish.
+            if st.seek_req.is_some() && st.decoding {
                 return Err(interrupted());
             }
-            if !st.ring.is_empty() && st.gate_open() {
+            if st.ahead() > 0 && st.gate_open() {
                 let n = buf.len().min(MAX_READ);
                 let n = st.take(&mut buf[..n]);
                 self.shared.cv.notify_all();
                 return Ok(n);
             }
-            if st.ring.is_empty() && st.net_done {
+            if st.ahead() == 0 && st.net_done {
                 st.apply_meta(true);
                 return Ok(0);
             }
@@ -60,10 +61,16 @@ impl Seek for RingSource {
         let target = match to {
             SeekFrom::Start(p) => Some(p),
             SeekFrom::Current(d) => st.pos.checked_add_signed(d),
-            SeekFrom::End(d) => self.len.and_then(|l| l.checked_add_signed(d)),
+            SeekFrom::End(d) => byte_len(&st).and_then(|l| l.checked_add_signed(d)),
         }
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "bad seek"))?;
         if target == st.pos {
+            return Ok(target);
+        }
+        if st.spool.is_some() {
+            // Reads past the received bytes wait for them.
+            st.pos = target;
+            self.shared.cv.notify_all();
             return Ok(target);
         }
         if target > st.pos && target - st.pos <= st.ring.len() as u64 {
@@ -100,9 +107,21 @@ impl MediaSource for RingSource {
         self.seekable
     }
 
+    /// Hidden from the probe while a spool fills: Symphonia then reads no trailing tags,
+    /// which would wait for the whole download before playback starts.
     fn byte_len(&self) -> Option<u64> {
-        self.len
+        let st = self.shared.lock();
+        if st.spool.is_some() && !st.decoding && !st.complete() {
+            return None;
+        }
+        byte_len(&st)
     }
+}
+
+/// The stream's length: from the headers, or a complete spool's size.
+fn byte_len(st: &State) -> Option<u64> {
+    st.total_len
+        .or_else(|| st.complete().then(|| st.received()))
 }
 
 /// Marks decoding as finished, with an error when the stream failed or `error` is given.
@@ -117,7 +136,7 @@ fn done(shared: &Shared, error: Option<DecodeError>) {
 }
 
 pub(crate) fn run(shared: Arc<Shared>) {
-    let (hint, seekable, len) = {
+    let (hint, seekable, len, spooled) = {
         let mut st = shared.lock();
         while !st.headers_ready && !st.net_done && !st.abort {
             st = shared.wait(st);
@@ -129,12 +148,11 @@ pub(crate) fn run(shared: Arc<Shared>) {
             drop(st);
             return done(&shared, None);
         }
-        (st.hint, st.seekable, st.total_len)
+        (st.hint, st.seekable, st.total_len, st.spool.is_some())
     };
     let source = RingSource {
         shared: shared.clone(),
         seekable,
-        len,
     };
     let mss = MediaSourceStream::new(Box::new(source), Default::default());
     let mut h = Hint::new();
@@ -158,7 +176,10 @@ pub(crate) fn run(shared: Arc<Shared>) {
             );
         }
     };
+    // A spool reads like a local file: seeks are exact. Range seeks guess the byte offset
+    // instead of reading from the start.
     let mut dec = match SymphoniaDecoder::new(format) {
+        Ok(d) if spooled => d,
         Ok(d) => d.with_coarse_seek(),
         Err(e) => return done(&shared, Some(e)),
     };

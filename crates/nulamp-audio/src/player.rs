@@ -409,6 +409,12 @@ impl Player {
         let position = heard_index.unwrap_or_else(|| e.playlist.current_index());
         let entry = e.playlist.get(position);
         let info = self.heard.as_ref().map(|(_, i)| i);
+        // The engine's view of the heard track is newer than its info at the start (a network
+        // stream learns its length and seekability once it connects).
+        let live = self
+            .heard
+            .as_ref()
+            .is_some_and(|(id, _)| a.token == Some(token(*id)));
         let state = if a.paused && e.state != PlayState::Stopped {
             PlayState::Paused
         } else {
@@ -421,10 +427,15 @@ impl Player {
             } else {
                 a.position_ms
             },
-            length_ms: info
-                .and_then(|i| i.length_ms)
+            length_ms: (if live { a.length_ms } else { None })
+                .or_else(|| info.and_then(|i| i.length_ms))
                 .or_else(|| entry.and_then(|x| x.length_ms)),
-            seekable: info.is_some_and(|i| i.seekable),
+            seekable: if live {
+                a.seekable
+            } else {
+                info.is_some_and(|i| i.seekable)
+            },
+            buffered_ms: if live { a.buffered_ms } else { None },
             kbps: a.kbps,
             sample_rate: info.map(|i| i.sample_rate),
             channels: info.map(|i| i.channels as u32),
