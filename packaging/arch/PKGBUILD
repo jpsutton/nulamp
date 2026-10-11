@@ -29,7 +29,11 @@ package() {
   cd "${_root}"
   install -Dm755 "${srcdir}/target/release/nulamp" "${pkgdir}/usr/bin/nulamp"
   install -Dm644 assets/linux/nulamp.desktop "${pkgdir}/usr/share/applications/nulamp.desktop"
-  install -Dm644 assets/linux/nulamp.png "${pkgdir}/usr/share/icons/hicolor/256x256/apps/nulamp.png"
+  for size in 16 22 24 32 48 64 128 256 512; do
+    install -Dm644 "assets/linux/icons/nulamp-${size}.png" \
+      "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/nulamp.png"
+  done
+  install -Dm644 assets/linux/icons/nulamp.svg "${pkgdir}/usr/share/icons/hicolor/scalable/apps/nulamp.svg"
   install -Dm644 include/nulamp_plugin.h "${pkgdir}/usr/include/nulamp_plugin.h"
   install -Dm644 README.md docs/plugins.md -t "${pkgdir}/usr/share/doc/nulamp/"
   install -Dm644 LICENSE-MIT LICENSE-APACHE -t "${pkgdir}/usr/share/licenses/nulamp/"

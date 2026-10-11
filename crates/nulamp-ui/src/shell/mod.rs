@@ -18,7 +18,9 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHandle};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
-use winit::window::{Cursor, CursorIcon, CustomCursor, Window, WindowId, WindowLevel};
+use winit::window::{
+    Cursor, CursorIcon, CustomCursor, Window, WindowAttributes, WindowId, WindowLevel,
+};
 
 mod dialog_host;
 mod dialogs;
@@ -582,6 +584,7 @@ impl<P: PlayerHandle> Shell<P> {
             .with_visible(visible)
             .with_inner_size(PhysicalSize::new(rect.w as u32, rect.h as u32))
             .with_position(PhysicalPosition::new(rect.x, rect.y));
+        attrs = with_app_icon(attrs);
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             use winit::platform::x11::{WindowAttributesExtX11, WindowType};
@@ -2955,6 +2958,23 @@ fn present_raw(
         }
     }
     let _ = buf.present();
+}
+
+/// Adds the application icon. X11 window managers and Windows show it; Wayland compositors
+/// take the icon named in the desktop file instead, and macOS ignores it.
+fn with_app_icon(attrs: WindowAttributes) -> WindowAttributes {
+    let icon = |size| {
+        let img = nulamp_icon::icon(size);
+        winit::window::Icon::from_rgba(img.rgba, img.width, img.height).ok()
+    };
+    #[cfg(windows)]
+    {
+        use winit::platform::windows::WindowAttributesExtWindows;
+        // The small icon for the window itself, the large one for the task bar and Alt+Tab.
+        attrs.with_window_icon(icon(16)).with_taskbar_icon(icon(32))
+    }
+    #[cfg(not(windows))]
+    attrs.with_window_icon(icon(48))
 }
 
 /// Whether the event loop talks to a Wayland compositor directly (not through XWayland).
