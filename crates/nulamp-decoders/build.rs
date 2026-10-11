@@ -1,8 +1,9 @@
 //! Links the optional native libraries:
 //!
 //! - libopenmpt for the `openmpt` feature (tracker modules);
-//! - FFmpeg (libavformat, libavcodec, libavutil, libswresample) for the `ffmpeg` feature, through
-//!   a small C shim (`ffmpeg/shim.c`) compiled against the installed headers;
+//! - FFmpeg (libavformat, libavcodec, libavutil, libswresample, libswscale) for the `ffmpeg`
+//!   feature, through a small C shim (`ffmpeg/shim.c` for audio, `ffmpeg/video.c` for video)
+//!   compiled against the installed headers;
 //! - libcdio for the opt-in `cdio` feature (audio CD).
 //!
 //! When a library cannot be found, its decoder is left out (with a build warning) instead of
@@ -74,11 +75,13 @@ const FFMPEG_LIBS: &[(&str, &str, &str)] = &[
     ("libavcodec", "avcodec", "59.37"),
     ("libavutil", "avutil", "57.28"),
     ("libswresample", "swresample", "4.7"),
+    ("libswscale", "swscale", "6.7"),
 ];
 
 fn ffmpeg() {
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
     println!("cargo:rerun-if-changed=ffmpeg/shim.c");
+    println!("cargo:rerun-if-changed=ffmpeg/video.c");
     if std::env::var_os("CARGO_FEATURE_FFMPEG").is_none() {
         return;
     }
@@ -104,8 +107,9 @@ fn ffmpeg() {
                 Err(e) => {
                     println!(
                         "cargo:warning={name} >= {version} not found ({e}); the FFmpeg decoder \
-                         (WMA, WavPack, Monkey's Audio, Musepack, TTA) is disabled. Install \
-                         the FFmpeg development libraries or set FFMPEG_DIR to enable it."
+                         (WMA, WavPack, Monkey's Audio, Musepack, TTA) and video are disabled. \
+                         Install the FFmpeg development libraries or set FFMPEG_DIR to enable \
+                         them."
                     );
                     return;
                 }
@@ -114,7 +118,10 @@ fn ffmpeg() {
         (includes, link_dirs, libs)
     };
     let mut build = cc::Build::new();
-    build.file("ffmpeg/shim.c").warnings(true);
+    build
+        .file("ffmpeg/shim.c")
+        .file("ffmpeg/video.c")
+        .warnings(true);
     for dir in &includes {
         build.include(dir);
     }

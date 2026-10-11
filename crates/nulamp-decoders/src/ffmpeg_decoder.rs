@@ -1,5 +1,6 @@
 //! Decoder for formats the built-in decoders lack (09 §1): Windows Media Audio, WavPack,
-//! Monkey's Audio, Musepack and TTA, through the system FFmpeg libraries. It is also the
+//! Monkey's Audio, Musepack and TTA, and the sound of video files (silence for a video without
+//! audio), through the system FFmpeg libraries. It is also the
 //! fallback for local files another decoder fails to open (for example MP4 files Symphonia
 //! cannot read), see [`crate::Registry::open`].
 //!
@@ -7,9 +8,10 @@
 //! headers, so this side only sees opaque handles and plain structs. Output keeps the source
 //! sample rate and channel count; the engine resamples.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{CStr, CString, c_char, c_int};
 use std::ptr::NonNull;
+use std::sync::Mutex;
 
 use crate::symphonia_decoder::local_path;
 use crate::{DecodeError, Decoder, DecoderFactory, FileTags, ReadStatus, StreamInfo};
@@ -39,6 +41,7 @@ mod ffi {
         pub fn nlff_open(
             path: *const c_char,
             decode: c_int,
+            audio: c_int,
             info: *mut NlffInfo,
             err: *mut c_char,
             err_len: c_int,
@@ -68,7 +71,34 @@ const EXTENSIONS: &[(&str, &str)] = &[
     ("ape", "Monkey's Audio Files"),
     ("mpc;mp+;mpp", "Musepack Files"),
     ("tta", "TTA Files"),
+    // Video files the built-in decoders do not claim (09 §1); their picture is shown by
+    // `crate::video`.
+    (
+        "avi;mkv;m4v;mov;flv;nsv;wmv;mpg;mpeg;m2v;ogv",
+        "Video Files",
+    ),
 ];
+
+/// Audio streams chosen for files (location → 0-based index among the file's audio streams).
+static AUDIO_TRACKS: Mutex<Option<HashMap<String, usize>>> = Mutex::new(None);
+
+/// Chooses the audio stream of a file with several (the video window's audio track menu,
+/// 05 §2). The FFmpeg decoder then opens the file, whatever its extension, the next time it is
+/// played. `None` returns to the default stream.
+pub fn set_audio_track(location: &str, index: Option<usize>) {
+    let mut map = AUDIO_TRACKS.lock().unwrap_or_else(|e| e.into_inner());
+    let map = map.get_or_insert_with(HashMap::new);
+    match index {
+        Some(i) => map.insert(location.to_string(), i),
+        None => map.remove(location),
+    };
+}
+
+/// The audio stream chosen for a file with [`set_audio_track`].
+pub fn audio_track(location: &str) -> Option<usize> {
+    let map = AUDIO_TRACKS.lock().unwrap_or_else(|e| e.into_inner());
+    map.as_ref()?.get(location).copied()
+}
 
 /// The licence of the libavcodec in use, for example "LGPL version 2.1 or later".
 pub fn license() -> String {
@@ -94,6 +124,7 @@ impl Drop for Handle {
 
 impl Handle {
     fn open(location: &str, decode: bool) -> Result<(Self, StreamInfo, Option<u32>), DecodeError> {
+        let audio = audio_track(location).map_or(-1, |i| i as c_int);
         let path = local_path(location).ok_or_else(|| DecodeError::Unsupported(location.into()))?;
         if !std::path::Path::new(&path).is_file() {
             return Err(DecodeError::NotFound(location.into()));
@@ -107,6 +138,7 @@ impl Handle {
             ffi::nlff_open(
                 c_path.as_ptr(),
                 decode as c_int,
+                audio,
                 &mut info,
                 err.as_mut_ptr(),
                 err.len() as c_int,
@@ -180,6 +212,11 @@ impl DecoderFactory for FfmpegFactory {
 
     fn fallback(&self) -> bool {
         true
+    }
+
+    /// Files with a chosen audio stream ([`set_audio_track`]) open here.
+    fn claims(&self, location: &str) -> bool {
+        audio_track(location).is_some()
     }
 
     fn open(&self, location: &str) -> Result<Box<dyn Decoder>, DecodeError> {

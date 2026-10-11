@@ -46,6 +46,7 @@ impl<P: PlayerHandle> Shell<P> {
             pl_visible: self.is_visible(Kind::Playlist),
             has_library: self.library.is_some(),
             lib_visible: self.is_visible(Kind::Library),
+            video_visible: self.is_visible(Kind::Video),
             always_on_top: self.prefs.always_on_top,
             double_size: self.prefs.double_size,
             easymove: self.prefs.easymove,
@@ -398,6 +399,7 @@ impl<P: PlayerHandle> Shell<P> {
         match cmd {
             MenuCmd::Act(a) => self.handle_action(id, a, el),
             MenuCmd::Key(k) => self.key_action(id, k, el),
+            MenuCmd::Video(c) => self.video_cmd(el, c),
             MenuCmd::Pl(choice) => {
                 let pl_id = self.ids.get(&Kind::Playlist).copied().unwrap_or(id);
                 self.handle_pl_actions(pl_id, vec![PlAction::Menu(choice)], el);

@@ -1,6 +1,6 @@
 # nulamp
 
-A cross-platform audio player that plays classic Winamp 2.x skins (`.wsz`).
+A cross-platform audio and video player that plays classic Winamp 2.x skins (`.wsz`).
 
 nulamp is an independent, clean-room implementation written from the specification in
 [`spec/`](spec/README.md). It is not affiliated with, and does not contain code or artwork from,
@@ -23,6 +23,9 @@ icon by [`tools/icongen`](tools/icongen).
   modules (with libopenmpt), and HTTP/SHOUTcast/Icecast streams with in-band titles. Gapless
   playback, fades, ReplayGain, a 10-band equalizer and the classic spectrum analyzer and
   oscilloscope.
+- Video: AVI, Matroska/WebM, MP4/MOV, FLV, WMV, MPEG and more through FFmpeg, in the skinned
+  video window, kept on the audio clock, with zoom, full screen, aspect ratio and audio/video
+  track choice. Not in the Windows builds yet.
 - Playlists: M3U/M3U8, PLS, XSPF, B4S, ASX, WPL, ZPL; title formatting; tag reading and writing;
   bookmarks; jump to file; queue.
 - Media library: a local SQLite library with folder watching and search, plus the music
@@ -86,7 +89,8 @@ chmod +x nulamp-*-x86_64.AppImage
 
 Rust 1.88 or newer, and on Linux the development packages for FreeType, fontconfig, X11/xcb,
 xkbcommon, Wayland, ALSA and D-Bus. libopenmpt is optional: without it, tracker modules are
-disabled. [`scripts/ci-deps.sh`](scripts/ci-deps.sh) lists the exact packages for Debian/Ubuntu
+disabled. So are the FFmpeg libraries (libavformat, libavcodec, libavutil, libswresample and
+libswscale, 5.1 or newer): without them, video and the formats only FFmpeg reads are disabled. [`scripts/ci-deps.sh`](scripts/ci-deps.sh) lists the exact packages for Debian/Ubuntu
 and macOS.
 
 ```bash

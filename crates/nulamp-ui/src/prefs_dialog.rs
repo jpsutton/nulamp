@@ -18,7 +18,7 @@ pub struct PlaylistOptions {
     pub old_school_buttons: bool,
 }
 
-const PAGES: [&str; 9] = [
+const PAGES: [&str; 10] = [
     "Classic skins",
     "Playlist",
     "Playback",
@@ -28,9 +28,11 @@ const PAGES: [&str; 9] = [
     "Crossfade",
     "Media Library",
     "Jellyfin",
+    "Video",
 ];
 const LIBRARY_PAGE: usize = 7;
 const JELLYFIN_PAGE: usize = 8;
+const VIDEO_PAGE: usize = 9;
 const PAGE_LIST: u32 = 1;
 const OK: u32 = 2;
 const CANCEL: u32 = 3;
@@ -179,6 +181,30 @@ fn page_options(page: usize) -> Vec<CheckOpt> {
                 p.library.rescan_on_start
             ),
             opt!("Watch the folders for changes", p.library.watch),
+        ],
+        VIDEO_PAGE => vec![
+            opt!("Show the picture of video files", p.video.enabled),
+            opt!("Open the window when a video starts", p.video.open_on_start),
+            opt!("Close the window when the video ends", p.video.close_on_end),
+            opt!(
+                "Stop playback when the window is closed",
+                p.video.stop_on_close
+            ),
+            opt!("Resize the window to the video", p.video.resize_to_video),
+            opt!(
+                "Full screen when a video starts",
+                p.video.fullscreen_on_start
+            ),
+            opt!(
+                "Leave full screen when playback stops",
+                p.video.leave_fullscreen_on_stop
+            ),
+            opt!("Keep the aspect ratio", p.video.lock_aspect),
+            opt!("Show the logo when idle", p.video.logo_when_idle),
+            opt!(
+                "Keep the screen saver off while playing",
+                p.video.inhibit_screensaver
+            ),
         ],
         _ => vec![],
     }
@@ -436,6 +462,12 @@ impl PrefsDialog {
                 NUM,
                 &mut widgets,
             ),
+            VIDEO_PAGE => num(
+                "Screen aspect (empty: video's):",
+                crate::video::format_aspect(self.prefs.video.aspect),
+                NUM,
+                &mut widgets,
+            ),
             _ => {}
         }
         widgets.push(Widget::Button {
@@ -530,6 +562,11 @@ impl PrefsDialog {
             6 => {
                 if let Ok(v) = text.trim().parse::<u32>() {
                     self.prefs.crossfade_ms = v.min(20_000);
+                }
+            }
+            VIDEO_PAGE => {
+                if let Some(a) = crate::video::parse_aspect(&text) {
+                    self.prefs.video.aspect = a;
                 }
             }
             _ => {}
@@ -888,5 +925,26 @@ mod tests {
             },
             _ => panic!("expected OK result"),
         }
+    }
+
+    #[test]
+    fn video_page() {
+        let mut d = PrefsDialog::new(UiPrefs::default(), pl()).with_page("Video");
+        assert_eq!(d.page, VIDEO_PAGE);
+        // Fourth option: stop playback when the window is closed (default off) → on.
+        d.form.mouse_down(140, 6 + 3 * 20 + 4);
+        d.form.mouse_up(140, 6 + 3 * 20 + 4);
+        d.form.set_text(NUM, "16:9");
+        let p = result(d.handle(FormEvent::Clicked(APPLY)));
+        assert!(p.video.stop_on_close && p.video.enabled);
+        assert_eq!(p.video.aspect, Some(16.0 / 9.0));
+        // Text that is not a ratio keeps the value; empty text is the video's own ratio.
+        d.form.set_text(NUM, "wide");
+        assert_eq!(
+            result(d.handle(FormEvent::Clicked(APPLY))).video.aspect,
+            Some(16.0 / 9.0)
+        );
+        d.form.set_text(NUM, "");
+        assert_eq!(result(d.handle(FormEvent::Clicked(OK))).video.aspect, None);
     }
 }

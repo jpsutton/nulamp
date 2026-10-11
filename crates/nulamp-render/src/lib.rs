@@ -10,5 +10,6 @@ pub mod main_window;
 pub mod playlist_window;
 pub mod probe;
 pub mod region;
+pub mod video_window;
 
 pub use frame::{Frame, blit, scale};
