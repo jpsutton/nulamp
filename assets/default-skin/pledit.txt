@@ -1,7 +1,7 @@
 [Text]
-Normal=#3CF06E
+Normal=#A9AFBA
 Current=#FFFFFF
 NormalBG=#0A0D10
-SelectedBG=#1E4E80
-mbFG=#3CF06E
+SelectedBG=#1E3A26
+mbFG=#A9AFBA
 mbBG=#0A0D10

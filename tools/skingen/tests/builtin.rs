@@ -30,7 +30,7 @@ fn builtin_bitmaps_have_spec_sizes() {
 fn builtin_fonts_and_colours() {
     let skin = builtin::skin();
     assert_eq!(skin.title_colors.bg, 0x0A0D10);
-    assert_eq!(skin.title_colors.fg, 0x3CF06E);
+    assert_eq!(skin.title_colors.fg, 0x4BE35D);
     for (i, g) in skin.gen_font.letters.iter().enumerate() {
         let c = (b'A' + i as u8) as char;
         assert_eq!(g.width, nulamp_skingen::font::advance(c), "letter {c}");
@@ -39,5 +39,5 @@ fn builtin_fonts_and_colours() {
         assert!(g.width >= 3);
     }
     assert!(skin.pledit.use_gen_nums);
-    assert_eq!(skin.pledit.normal, 0x3CF06E);
+    assert_eq!(skin.pledit.normal, 0xA9AFBA);
 }
