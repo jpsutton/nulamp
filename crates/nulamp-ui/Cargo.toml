@@ -10,19 +10,19 @@ rust-version.workspace = true
 arboard = { version = "3.6", default-features = false }
 global-hotkey = "0.8"
 log = "0.4.34"
-nulamp-core = { version = "0.3.0", path = "../nulamp-core" }
-nulamp-eq = { version = "0.3.0", path = "../nulamp-eq" }
-nulamp-icon = { version = "0.3.0", path = "../nulamp-icon" }
-nulamp-library = { version = "0.3.0", path = "../nulamp-library" }
-nulamp-meta = { version = "0.3.0", path = "../nulamp-meta" }
-nulamp-pixelfont = { version = "0.3.0", path = "../nulamp-pixelfont" }
-nulamp-playlist = { version = "0.3.0", path = "../nulamp-playlist" }
-nulamp-remote = { version = "0.3.0", path = "../nulamp-remote" }
-nulamp-render = { version = "0.3.0", path = "../nulamp-render" }
-nulamp-skin = { version = "0.3.0", path = "../nulamp-skin" }
-nulamp-skinui = { version = "0.3.0", path = "../nulamp-skinui" }
-nulamp-text = { version = "0.3.0", path = "../nulamp-text" }
-nulamp-vis = { version = "0.3.0", path = "../nulamp-vis" }
+nulamp-core = { version = "0.4.0", path = "../nulamp-core" }
+nulamp-eq = { version = "0.4.0", path = "../nulamp-eq" }
+nulamp-icon = { version = "0.4.0", path = "../nulamp-icon" }
+nulamp-library = { version = "0.4.0", path = "../nulamp-library" }
+nulamp-meta = { version = "0.4.0", path = "../nulamp-meta" }
+nulamp-pixelfont = { version = "0.4.0", path = "../nulamp-pixelfont" }
+nulamp-playlist = { version = "0.4.0", path = "../nulamp-playlist" }
+nulamp-remote = { version = "0.4.0", path = "../nulamp-remote" }
+nulamp-render = { version = "0.4.0", path = "../nulamp-render" }
+nulamp-skin = { version = "0.4.0", path = "../nulamp-skin" }
+nulamp-skinui = { version = "0.4.0", path = "../nulamp-skinui" }
+nulamp-text = { version = "0.4.0", path = "../nulamp-text" }
+nulamp-vis = { version = "0.4.0", path = "../nulamp-vis" }
 rand = "0.9"
 raw-window-handle = "0.6"
 rfd = "0.17.2"
