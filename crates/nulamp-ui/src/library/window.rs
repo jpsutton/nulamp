@@ -604,6 +604,14 @@ impl LibraryWindow {
         )
     }
 
+    /// Pasted text for the search box.
+    pub fn paste(&mut self, text: &str, view: &mut LibraryView, now: Instant) {
+        self.form.focus_id(SEARCH);
+        if self.form.text_input(text) == Some(FormEvent::Changed(SEARCH)) {
+            view.set_search(&self.search_text(), now);
+        }
+    }
+
     /// A key press. `None` when the window does not use the key (the shell then applies
     /// global and main-window shortcuts).
     pub fn key(

@@ -17,9 +17,11 @@ pub mod platform;
 pub mod playlist;
 pub mod plugins_dialog;
 pub mod prefs_dialog;
+pub mod prefs_jellyfin;
 pub mod shell;
 pub mod title;
 pub mod tray;
+pub mod video;
 pub mod wayland_limits;
 
 pub use shell::{PlayerHandle, Shell, UiPrefs};

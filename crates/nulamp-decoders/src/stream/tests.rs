@@ -134,7 +134,7 @@ fn fetch_audio(location: &str, config: StreamConfig) -> (Vec<u8>, State) {
     let shared = Arc::new(Shared::new(State::new(location, 64 * 1024, 10, true)));
     let s = shared.clone();
     let loc = location.to_string();
-    let net = thread::spawn(move || net::run(s, config, Arc::default(), loc));
+    let net = thread::spawn(move || net::run(s, config, Arc::default(), loc, Vec::new()));
     let mut out = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut st = shared.lock();
@@ -914,6 +914,170 @@ fn proxies() {
     let run = drain(&mut open(&factory, &direct.url("/a.mp3")), |_, _| {});
     assert!(run.error.is_none(), "{:?}", run.error);
     assert_eq!(proxy.hits(), 1);
+}
+
+fn header_options(headers: &[(&str, &str)]) -> StreamOptions {
+    StreamOptions {
+        headers: headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        ..StreamOptions::default()
+    }
+}
+
+/// Values of every request header named `name`.
+fn header_values(req: &Req, name: &str) -> Vec<String> {
+    req.headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.clone())
+        .collect()
+}
+
+#[test]
+fn extra_headers_reach_the_origin() {
+    let server = file_server(10);
+    let factory = StreamFactory::new(config());
+    let options = header_options(&[
+        ("X-Emby-Token", "abc"),
+        ("Authorization", "MediaBrowser Token=\"abc\""),
+    ]);
+    // Credentials in the URL are not sent as well: the extra `Authorization` replaces them.
+    let url = server
+        .url("/a.mp3")
+        .replace("http://", "http://user:secret@");
+    let run = drain(
+        &mut factory.open_stream_with(&url, &options).unwrap(),
+        |_, _| {},
+    );
+    assert!(run.error.is_none(), "{:?}", run.error);
+    let log = server.log.lock().unwrap();
+    assert_eq!(log[0].header("X-Emby-Token"), Some("abc"));
+    assert_eq!(
+        header_values(&log[0], "Authorization"),
+        ["MediaBrowser Token=\"abc\""]
+    );
+    drop(log);
+
+    // A refused `Authorization` header fails at once instead of asking for Basic credentials.
+    let server = auth_server();
+    let prompt = Arc::new(CountingPrompt {
+        calls: AtomicUsize::new(0),
+        answer: ("user", "secret"),
+        realms: Mutex::new(Vec::new()),
+    });
+    factory.set_credential_prompt(prompt.clone());
+    let options = header_options(&[("Authorization", "Token wrong")]);
+    let run = drain(
+        &mut factory
+            .open_stream_with(&server.url("/a"), &options)
+            .unwrap(),
+        |_, _| {},
+    );
+    assert!(matches!(
+        run.error,
+        Some(DecodeError::Stream(StreamError::AuthRequired { .. }))
+    ));
+    assert_eq!(prompt.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(server.hits(), 1);
+}
+
+#[test]
+fn extra_headers_stay_on_their_origin() {
+    let other = file_server(10);
+    let target = other.url("/b.mp3");
+    // Redirects once on its own origin, then to another port.
+    let origin = serve(move |req, s, _| {
+        let loc = if req.path == "/start" {
+            "/next".to_string()
+        } else {
+            target.clone()
+        };
+        send(
+            s,
+            &format!("HTTP/1.1 302 Found\r\nLocation: {loc}\r\nContent-Length: 0\r\n"),
+            b"",
+        );
+    });
+    let factory = StreamFactory::new(config());
+    let options = header_options(&[("X-Emby-Token", "abc"), ("Authorization", "Token t")]);
+    let run = drain(
+        &mut factory
+            .open_stream_with(&origin.url("/start"), &options)
+            .unwrap(),
+        |_, _| {},
+    );
+    assert!(run.error.is_none(), "{:?}", run.error);
+    assert_eq!(run.frames, 10 * FRAME_SAMPLES);
+    // Range requests after the first connection follow the same redirects.
+    let log = origin.log.lock().unwrap();
+    assert!(log.len() >= 2);
+    assert!(log.iter().all(|r| r.header("X-Emby-Token") == Some("abc")));
+    let log = other.log.lock().unwrap();
+    assert!(!log.is_empty());
+    assert!(
+        log.iter()
+            .all(|r| r.header("X-Emby-Token").is_none() && r.header("Authorization").is_none())
+    );
+}
+
+#[test]
+fn header_injection_is_refused() {
+    let server = file_server(10);
+    let options = header_options(&[
+        ("X-Good", "1"),
+        ("X-Bad", "a\r\nX-Injected: yes"),
+        ("X-Lf", "a\nX-Injected: yes"),
+        ("X-Evil\r\nX-Injected", "v"),
+        ("Bad Name", "v"),
+        ("Host", "evil.example"),
+        ("Proxy-Authorization", "Basic x"),
+    ]);
+    let run = drain(
+        &mut StreamFactory::new(config())
+            .open_stream_with(&server.url("/a.mp3"), &options)
+            .unwrap(),
+        |_, _| {},
+    );
+    assert!(run.error.is_none(), "{:?}", run.error);
+    let log = server.log.lock().unwrap();
+    let req = &log[0];
+    assert_eq!(req.header("X-Good"), Some("1"));
+    for name in [
+        "X-Injected",
+        "X-Bad",
+        "X-Lf",
+        "X-Evil",
+        "Bad Name",
+        "Proxy-Authorization",
+    ] {
+        assert_eq!(req.header(name), None, "{name}");
+    }
+    assert_eq!(
+        header_values(req, "Host"),
+        [&server.base["http://".len()..]]
+    );
+}
+
+#[test]
+fn kept_titles_are_not_reported() {
+    let server = icy_server(8192, 60, b"StreamTitle='Song';");
+    let options = StreamOptions {
+        keep_title: true,
+        ..StreamOptions::default()
+    };
+    let mut d = StreamFactory::new(config())
+        .open_stream_with(&server.url("/live?api_key=secret"), &options)
+        .unwrap();
+    let run = drain(&mut d, |_, _| {});
+    assert!(run.error.is_none(), "{:?}", run.error);
+    assert!(run.frames > 0);
+    assert!(run.synced);
+    assert!(run.titles.is_empty(), "{:?}", run.titles);
+    assert_eq!(d.take_title(), None);
+    // The stream fields are still there.
+    assert_eq!(d.fields().streamtitle.as_deref(), Some("Song"));
 }
 
 /// Encodes 440 Hz with ffmpeg; `None` (test skipped) when ffmpeg or the encoder is missing.

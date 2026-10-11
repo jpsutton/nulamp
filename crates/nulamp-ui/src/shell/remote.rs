@@ -351,6 +351,7 @@ impl<P: PlayerHandle> Shell<P> {
             N::ReloadSkin => k(self, KeyAction::ReloadSkin),
             N::BookmarkCurrent => k(self, KeyAction::BookmarkCurrent),
             N::ManualAdvance => k(self, KeyAction::ToggleManualAdvance),
+            N::ToggleVideo => k(self, KeyAction::ToggleVideoWindow),
             other => log::info!("numbered command not implemented yet: {other:?}"),
         }
     }

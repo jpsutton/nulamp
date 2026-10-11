@@ -120,7 +120,7 @@ fn registry_routes_by_provider() {
     let fx = Fixture::new();
     let local = Arc::new(fx.scanned());
     let mock = Arc::new(MockProvider::sample());
-    let mut reg = Registry::new();
+    let reg = Registry::new();
     reg.register(local.clone());
     reg.register(mock.clone());
     reg.register(Arc::new(MockProvider::sample()));

@@ -19,6 +19,8 @@ use crate::library::{
 use crate::shell::LibraryPrefs;
 
 pub(super) struct LibraryHost {
+    /// The providers, for changing them while running.
+    pub media: MediaLibrary,
     pub service: LibraryService,
     pub view: LibraryView,
     pub win: LibraryWindow,
@@ -44,7 +46,7 @@ fn entry(t: &Track, loc: &PlaybackLocation) -> NewEntry {
 impl<P: PlayerHandle> Shell<P> {
     /// Adds the media library: its window, worker thread, watch folders and play counting.
     pub fn with_library(mut self, lib: MediaLibrary) -> Self {
-        let service = LibraryService::start(lib);
+        let service = LibraryService::start(lib.clone());
         let view = LibraryView::new(&service.providers);
         let win = LibraryWindow::new(
             self.prefs.lib_size,
@@ -62,6 +64,7 @@ impl<P: PlayerHandle> Shell<P> {
         }
         service.send(Request::Playlists);
         self.library = Some(LibraryHost {
+            media: lib,
             service,
             view,
             win,
@@ -78,7 +81,21 @@ impl<P: PlayerHandle> Shell<P> {
     }
 
     /// The preferences dialog changed the library options.
-    pub(super) fn library_prefs_changed(&self, old: &LibraryPrefs, new: &LibraryPrefs) {
+    pub(super) fn library_prefs_changed(&mut self, old: &LibraryPrefs, new: &LibraryPrefs) {
+        if old.jellyfin != new.jellyfin {
+            self.library_set_jellyfin(new.jellyfin.as_ref());
+        }
+        // Signing out (or in as someone else) ends the old session on the server.
+        if let Some(gone) = &old.jellyfin
+            && new.jellyfin.as_ref().is_none_or(|a| a.token != gone.token)
+        {
+            let gone = gone.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = nulamp_library::jellyfin::logout(&gone) {
+                    log::info!("Jellyfin sign-out: {e}");
+                }
+            });
+        }
         if old.folders != new.folders {
             self.library_send(Request::SyncFolders {
                 folders: new.folders.clone(),
@@ -88,6 +105,19 @@ impl<P: PlayerHandle> Shell<P> {
         if old.watch != new.watch {
             self.library_send(Request::SetWatching(new.watch));
         }
+    }
+
+    /// Replaces the Jellyfin provider, then restarts the worker and the view on the new set
+    /// of providers (the window keeps its layout).
+    fn library_set_jellyfin(&mut self, account: Option<&nulamp_library::jellyfin::Account>) {
+        let Some(lib) = self.library.as_mut() else {
+            return;
+        };
+        lib.media.set_jellyfin(account);
+        lib.service = LibraryService::start(lib.media.clone());
+        lib.view = LibraryView::new(&lib.service.providers);
+        lib.service.send(Request::Playlists);
+        self.request_redraw(Kind::Library);
     }
 
     /// Brings the widgets up to date and sends the queued requests to the worker.
@@ -208,6 +238,18 @@ impl<P: PlayerHandle> Shell<P> {
         el: &ActiveEventLoop,
     ) -> bool {
         let mods = self.mods;
+        let searching = self
+            .library
+            .as_ref()
+            .is_some_and(|l| l.win.focus == crate::library::window::Zone::Search);
+        if searching && crate::input::is_paste(code, mods) {
+            let pasted = self.clipboard_line();
+            if let (Some(t), Some(lib)) = (pasted, self.library.as_mut()) {
+                lib.win.paste(&t, &mut lib.view, Instant::now());
+                self.request_redraw(Kind::Library);
+            }
+            return true;
+        }
         let Some(lib) = self.library.as_mut() else {
             return false;
         };

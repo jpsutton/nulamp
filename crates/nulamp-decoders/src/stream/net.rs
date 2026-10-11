@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use nulamp_playlist::{Format, Resolver, is_hls};
 
-use super::http::{Client, Response, io_error};
+use super::http::{Client, OriginHeaders, Response, io_error};
 use super::icy::{IcyParser, parse_metadata};
 use super::shared::{Phase, Shared, State, prebuffer_percent};
 use super::url::{Url, is_stream_location};
@@ -289,7 +289,12 @@ pub(crate) fn run(
     config: StreamConfig,
     credentials: Arc<CredentialStore>,
     location: String,
+    headers: Vec<(String, String)>,
 ) {
+    // Bound to the location as given: playlist entries and redirects elsewhere do not get them.
+    let origin = Url::parse(&location)
+        .ok()
+        .and_then(|u| OriginHeaders::new(&u, &headers));
     let on_connect = |s: &TcpStream| {
         if let Ok(c) = s.try_clone() {
             let mut st = shared.lock();
@@ -303,6 +308,7 @@ pub(crate) fn run(
         config: &config,
         credentials: &credentials,
         on_connect: &on_connect,
+        headers: origin.as_ref(),
     };
     let (url, first) = match open_media(&client, &location) {
         Ok(r) => r,

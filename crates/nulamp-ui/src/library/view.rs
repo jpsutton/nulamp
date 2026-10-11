@@ -640,12 +640,13 @@ impl LibraryView {
             .or(self.total.map(|t| t as u64));
         let mut s = match (count, self.summary) {
             (None, _) => "Loading…".to_string(),
-            (Some(n), Some(sum)) => format!(
+            // Remote providers may count without knowing the total length.
+            (Some(n), Some(sum)) if sum.length_ms > 0 || n == 0 => format!(
                 "{n} {}, {}",
                 if n == 1 { "track" } else { "tracks" },
                 crate::playlist::format_total(sum.length_ms / 1000)
             ),
-            (Some(n), None) => format!("{n} {}", if n == 1 { "track" } else { "tracks" }),
+            (Some(n), _) => format!("{n} {}", if n == 1 { "track" } else { "tracks" }),
         };
         if let Some(m) = &self.message {
             s.push_str("  ·  ");
@@ -739,6 +740,14 @@ mod tests {
             },
         );
         assert_eq!(v.status_text(), "1000 tracks, 1:02:05");
+        v.on_summary(
+            1,
+            TrackSummary {
+                count: 1000,
+                length_ms: 0,
+            },
+        );
+        assert_eq!(v.status_text(), "1000 tracks", "no length known");
     }
 
     #[test]

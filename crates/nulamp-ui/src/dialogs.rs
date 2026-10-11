@@ -61,6 +61,11 @@ pub trait Dialog {
     fn handle(&mut self, ev: FormEvent) -> Outcome;
     /// Identifies single-instance dialogs (reopening brings the existing one to the front).
     fn kind(&self) -> &'static str;
+    /// Takes the results of background work (for example a server's answer); called on every
+    /// tick. Returns whether the dialog changed and needs drawing.
+    fn poll(&mut self) -> bool {
+        false
+    }
 }
 
 const OK: u32 = 1;
