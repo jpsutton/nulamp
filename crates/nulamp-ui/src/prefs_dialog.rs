@@ -3,7 +3,7 @@
 use nulamp_skinui::{Form, FormEvent, Rect, Widget};
 
 use crate::dialogs::{Dialog, DialogResult, Outcome};
-use crate::prefs_jellyfin::JellyfinPage;
+use crate::prefs_jellyfin::{Change, JellyfinPage};
 use crate::shell::UiPrefs;
 use crate::wayland_limits;
 
@@ -470,6 +470,19 @@ impl PrefsDialog {
         self.form.focus_id(PAGE_LIST);
     }
 
+    /// Rebuilds the form, keeping the focused control.
+    fn rebuild_keeping_focus(&mut self) {
+        let focus = self
+            .form
+            .focus
+            .and_then(|i| self.form.widgets.get(i))
+            .and_then(Widget::id);
+        self.build();
+        if let Some(id) = focus {
+            self.form.focus_id(id);
+        }
+    }
+
     /// Copies the visible page's controls back into the preferences.
     fn collect(&mut self) {
         if self.page == JELLYFIN_PAGE {
@@ -554,15 +567,7 @@ impl Dialog for PrefsDialog {
             return false;
         }
         if self.page == JELLYFIN_PAGE {
-            let focus = self
-                .form
-                .focus
-                .and_then(|i| self.form.widgets.get(i))
-                .and_then(Widget::id);
-            self.build();
-            if let Some(id) = focus {
-                self.form.focus_id(id);
-            }
+            self.rebuild_keeping_focus();
         }
         true
     }
@@ -585,17 +590,17 @@ impl Dialog for PrefsDialog {
         };
         if self.page == JELLYFIN_PAGE {
             self.collect();
-            if self.jellyfin.event(&ev, &mut self.prefs.library.jellyfin) {
-                let focus = self
-                    .form
-                    .focus
-                    .and_then(|i| self.form.widgets.get(i))
-                    .and_then(Widget::id);
-                self.build();
-                if let Some(id) = focus {
-                    self.form.focus_id(id);
+            match self.jellyfin.event(&ev, &mut self.prefs.library.jellyfin) {
+                Change::None => {}
+                Change::List => {
+                    self.jellyfin
+                        .update_list(&mut self.form, self.prefs.library.jellyfin.as_ref());
+                    return Outcome::Keep;
                 }
-                return Outcome::Keep;
+                Change::Page => {
+                    self.rebuild_keeping_focus();
+                    return Outcome::Keep;
+                }
             }
         }
         match ev {
@@ -808,6 +813,61 @@ mod tests {
             (a.server_url.as_str(), a.token.as_str()),
             ("http://jf.lan", "t")
         );
+    }
+
+    #[test]
+    fn jellyfin_libraries_toggle_with_the_mouse() {
+        use nulamp_library::jellyfin::{Account, Library};
+        let lib = |id: &str| Library {
+            id: id.into(),
+            name: id.into(),
+            collection_type: "music".into(),
+            enabled: true,
+        };
+        let mut prefs = UiPrefs::default();
+        prefs.library.jellyfin = Some(Account {
+            user_id: "u".into(),
+            token: "t".into(),
+            libraries: vec![lib("a"), lib("b")],
+            ..Account::default()
+        });
+        let mut d = PrefsDialog::new(prefs, pl());
+        d.jellyfin.libraries = |a| Ok(a.libraries.clone());
+        d.handle(FormEvent::Selected(PAGE_LIST, JELLYFIN_PAGE));
+        let Some(Widget::List { rect, .. }) = d.form.find(404).cloned() else {
+            panic!("no library list");
+        };
+        let (x, y) = (rect.x + 10, rect.y + 1 + 14 + 5);
+        let click = |d: &mut PrefsDialog| {
+            for ev in [d.form.mouse_down(x, y), d.form.mouse_up(x, y)]
+                .into_iter()
+                .flatten()
+            {
+                d.handle(ev);
+            }
+        };
+        // A double-click on the second row hides library `b`.
+        click(&mut d);
+        click(&mut d);
+        let shown =
+            |d: &PrefsDialog| d.prefs.library.jellyfin.as_ref().unwrap().libraries[1].enabled;
+        assert!(!shown(&d));
+        assert!(!d.form.checked(405));
+        // The check box shows it again.
+        let Some(Widget::Check { rect, .. }) = d.form.find(405).cloned() else {
+            panic!("no check box");
+        };
+        for ev in [
+            d.form.mouse_down(rect.x + 4, rect.y + 4),
+            d.form.mouse_up(rect.x + 4, rect.y + 4),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            d.handle(ev);
+        }
+        assert!(shown(&d));
+        assert!(d.form.checked(405));
     }
 
     #[test]

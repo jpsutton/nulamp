@@ -238,6 +238,18 @@ impl<P: PlayerHandle> Shell<P> {
         el: &ActiveEventLoop,
     ) -> bool {
         let mods = self.mods;
+        let searching = self
+            .library
+            .as_ref()
+            .is_some_and(|l| l.win.focus == crate::library::window::Zone::Search);
+        if searching && crate::input::is_paste(code, mods) {
+            let pasted = self.clipboard_line();
+            if let (Some(t), Some(lib)) = (pasted, self.library.as_mut()) {
+                lib.win.paste(&t, &mut lib.view, Instant::now());
+                self.request_redraw(Kind::Library);
+            }
+            return true;
+        }
         let Some(lib) = self.library.as_mut() else {
             return false;
         };

@@ -1834,6 +1834,29 @@ impl<P: PlayerHandle> Shell<P> {
         }
     }
 
+    /// The clipboard's text as one line for a text field: up to the first line break, without
+    /// control characters. `None` when the clipboard is empty or unavailable.
+    pub(super) fn clipboard_line(&mut self) -> Option<String> {
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new().ok();
+        }
+        let text = match self.clipboard.as_mut()?.get_text() {
+            Ok(t) => t,
+            Err(e) => {
+                log::info!("clipboard not available: {e}");
+                return None;
+            }
+        };
+        let line: String = text
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        (!line.is_empty()).then_some(line)
+    }
+
     /// Applies preferences from the preferences dialog.
     fn apply_prefs(&mut self, prefs: UiPrefs, pl: crate::prefs_dialog::PlaylistOptions) {
         let aot_changed = prefs.always_on_top != self.prefs.always_on_top;

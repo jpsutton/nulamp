@@ -318,9 +318,17 @@ impl<P: PlayerHandle> Shell<P> {
                 is_synthetic: false,
                 ..
             } if event.state == ElementState::Pressed => {
+                let paste = match event.physical_key {
+                    PhysicalKey::Code(code) if crate::input::is_paste(code, self.mods) => {
+                        self.clipboard_line()
+                    }
+                    _ => None,
+                };
                 let d = self.dialogs.get_mut(&id).expect("dialog");
                 let mut ev = None;
-                if let PhysicalKey::Code(code) = event.physical_key {
+                if let Some(t) = paste {
+                    ev = d.dialog.form().text_input(&t);
+                } else if let PhysicalKey::Code(code) = event.physical_key {
                     if let Some(k) = map_key(code, shift) {
                         ev = d.dialog.form().key(k);
                     } else if plain && let Some(t) = event.text.as_ref() {

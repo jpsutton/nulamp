@@ -15,6 +15,18 @@ const LIBRARIES: u32 = 404;
 const SHOW: u32 = 405;
 const REFRESH: u32 = 406;
 
+/// What a page event changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    /// Not a page event.
+    None,
+    /// Only the library list and its check box: update them in place, so the list keeps its
+    /// click state (double-clicks) and scroll position.
+    List,
+    /// Rebuild the page.
+    Page,
+}
+
 /// A server answer.
 enum Answer {
     Login(Result<Account, String>),
@@ -42,6 +54,21 @@ fn listed(account: &Account) -> Vec<usize> {
     (0..account.libraries.len())
         .filter(|&i| account.libraries[i].is_music())
         .collect()
+}
+
+/// The library list's rows.
+fn rows(account: Option<&Account>) -> Vec<String> {
+    account
+        .map(|a| {
+            listed(a)
+                .into_iter()
+                .map(|i| {
+                    let l = &a.libraries[i];
+                    format!("[{}] {}", if l.enabled { "x" } else { " " }, l.name)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn signed_in(a: &Account) -> String {
@@ -105,22 +132,10 @@ impl JellyfinPage {
             rect: Rect::new(x, y, w, 14),
             text: "Music libraries (double-click to show or hide):".into(),
         });
-        let rows: Vec<String> = account
-            .map(|a| {
-                listed(a)
-                    .into_iter()
-                    .map(|i| {
-                        let l = &a.libraries[i];
-                        format!("[{}] {}", if l.enabled { "x" } else { " " }, l.name)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let rows = rows(account);
         let list_h = (bottom - (y + 18) - 26).max(30);
         let selected = self.selected.filter(|&s| s < rows.len());
-        let shown = account
-            .zip(selected)
-            .is_some_and(|(a, s)| a.libraries[listed(a)[s]].enabled);
+        let shown = self.shown(account);
         out.push(Widget::List {
             rect: Rect::new(x, y + 18, w, list_h),
             id: LIBRARIES,
@@ -142,6 +157,27 @@ impl JellyfinPage {
             default: false,
         });
         out
+    }
+
+    /// Whether the selected library is shown.
+    fn shown(&self, account: Option<&Account>) -> bool {
+        account.is_some_and(|a| {
+            self.selected
+                .and_then(|s| listed(a).get(s).copied())
+                .is_some_and(|i| a.libraries[i].enabled)
+        })
+    }
+
+    /// Brings the library list and its check box up to date without rebuilding the form.
+    pub fn update_list(&self, form: &mut Form, account: Option<&Account>) {
+        if let Some(Widget::List { rows: r, .. }) = form.find_mut(LIBRARIES) {
+            *r = rows(account);
+        }
+        if let Some(Widget::Check { on, .. }) = form.find_mut(SHOW) {
+            *on = self.shown(account);
+        }
+        let selected = self.selected.is_some() && account.is_some_and(|a| !listed(a).is_empty());
+        form.set_enabled(SHOW, selected);
     }
 
     /// Greys out what cannot be used now, and starts the first library refresh.
@@ -189,7 +225,7 @@ impl JellyfinPage {
 
     /// Handles a page event; `false` for events of other controls. The caller collects the
     /// fields first and rebuilds the form afterwards.
-    pub fn event(&mut self, ev: &FormEvent, account: &mut Option<Account>) -> bool {
+    pub fn event(&mut self, ev: &FormEvent, account: &mut Option<Account>) -> Change {
         match ev {
             FormEvent::Clicked(CONNECT) if self.pending.is_none() => {
                 if account.take().is_some() {
@@ -218,15 +254,22 @@ impl JellyfinPage {
                     self.status = "Refreshing…".into();
                 }
             }
-            FormEvent::Selected(LIBRARIES, i) => self.selected = Some(*i),
+            FormEvent::Selected(LIBRARIES, i) => {
+                self.selected = Some(*i);
+                return Change::List;
+            }
             FormEvent::Activated(LIBRARIES, i) => {
                 self.selected = Some(*i);
                 self.toggle(account);
+                return Change::List;
             }
-            FormEvent::Clicked(SHOW) => self.toggle(account),
-            _ => return false,
+            FormEvent::Clicked(SHOW) => {
+                self.toggle(account);
+                return Change::List;
+            }
+            _ => return Change::None,
         }
-        true
+        Change::Page
     }
 
     /// Shows or hides the selected library (the check box mirrors its state).
@@ -348,7 +391,10 @@ mod tests {
         p.server = "jf:8096".into();
         p.user = "me".into();
         p.password = "bad".into();
-        assert!(p.event(&FormEvent::Clicked(CONNECT), &mut account));
+        assert_eq!(
+            p.event(&FormEvent::Clicked(CONNECT), &mut account),
+            Change::Page
+        );
         assert_eq!(p.status, "Signing in…");
         wait(&mut p, &mut account);
         assert!(account.is_none());
