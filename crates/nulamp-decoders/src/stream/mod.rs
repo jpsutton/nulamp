@@ -13,6 +13,7 @@ mod http;
 pub mod icy;
 mod net;
 mod shared;
+mod spool;
 pub mod url;
 
 #[cfg(test)]
@@ -138,6 +139,8 @@ pub struct StreamConfig {
     pub connect_timeout: Duration,
     /// A connection with no data for this long counts as dropped.
     pub read_timeout: Duration,
+    /// Keep finite streams in a temporary file so they seek without new requests (NET13).
+    pub spool: bool,
 }
 
 impl StreamConfig {
@@ -159,6 +162,7 @@ impl Default for StreamConfig {
             reconnect_delay: Duration::from_secs(1),
             connect_timeout: Duration::from_secs(15),
             read_timeout: Duration::from_secs(30),
+            spool: true,
         }
     }
 }
@@ -254,6 +258,9 @@ pub struct StreamOptions {
     /// `[Connecting]`, buffer or stream titles), so a URL (which may carry credentials) or a
     /// server file name never replaces it.
     pub keep_title: bool,
+    /// The location is a file, not a live stream, even when the server sends no
+    /// `Content-Length` (a media server's transcode): it is spooled and seekable (NET13).
+    pub finite: bool,
 }
 
 /// Station and song fields of a stream (07 §8.4, §8.5).
@@ -394,12 +401,14 @@ impl StreamFactory {
     ) -> Result<StreamDecoder, DecodeError> {
         let config = self.config();
         let capacity = config.buffer_bytes.max(StreamConfig::MIN_BUFFER);
-        let state = State::new(
+        let mut state = State::new(
             location,
             capacity,
             config.rebuffer_percent,
             config.show_station_name,
         );
+        state.finite = options.finite;
+        state.spool_enabled = config.spool;
         let shared = Arc::new(Shared::new(state));
         {
             let mut open = self.inner.open.lock().unwrap_or_else(|e| e.into_inner());
@@ -525,7 +534,7 @@ impl Decoder for StreamDecoder {
                 None => Ok(ReadStatus::End),
             };
         }
-        if st.phase == Phase::Playing && st.ring.is_empty() && !st.net_done {
+        if st.phase == Phase::Playing && st.ahead() == 0 && !st.net_done {
             let since = *self
                 .starved_since
                 .get_or_insert_with(std::time::Instant::now);
@@ -541,11 +550,13 @@ impl Decoder for StreamDecoder {
         Ok(ReadStatus::Pending)
     }
 
+    /// Before the stream is known to be seekable (still connecting), the seek waits and is
+    /// done once decoding starts.
     fn seek(&mut self, ms: u64) -> Result<u64, DecodeError> {
-        if !self.info.seekable {
+        let mut st = self.shared.lock();
+        if (st.decoding || st.decode_done) && !st.info.seekable {
             return Err(DecodeError::Seek("live stream".into()));
         }
-        let mut st = self.shared.lock();
         st.seek_req = Some(ms);
         st.generation += 1;
         st.pcm.clear();
@@ -559,6 +570,27 @@ impl Decoder for StreamDecoder {
     fn kbps(&self) -> Option<u32> {
         let st = self.shared.lock();
         st.decoded_kbps.or(st.fields.bitrate)
+    }
+
+    fn buffered_ms(&self) -> Option<(u64, u64)> {
+        let st = self.shared.lock();
+        let (start, end) = st.local_bytes()?;
+        if st.complete() {
+            return Some((0, u64::MAX));
+        }
+        // Bytes to time: in proportion to the length when both sizes are known, else by the
+        // bit rate (kbps = bits per ms).
+        let to_ms = |b: u64| match (st.total_len, st.info.length_ms) {
+            (Some(total), Some(len)) if total > 0 => {
+                Some((b as u128 * len as u128 / total as u128) as u64)
+            }
+            _ => st
+                .decoded_kbps
+                .or(st.fields.bitrate)
+                .filter(|&k| k > 0)
+                .map(|k| b * 8 / k as u64),
+        };
+        Some((to_ms(start)?, to_ms(end)?))
     }
 
     fn in_sync(&self) -> bool {

@@ -88,8 +88,11 @@ pub struct MainView {
     pub volume_pressed: bool,
     pub balance: i8,
     pub balance_pressed: bool,
-    /// Seek position 0..=256 while playing a seekable item; `None` hides the thumb.
+    /// Seek position 0..=256 while playing an item of known length; `None` hides the thumb.
     pub seek: Option<u32>,
+    /// The downloaded part of a network stream, as positions 0..=256 (`start`, `end`): drawn
+    /// as a translucent overlay on the seek bar.
+    pub seek_buffered: Option<(u32, u32)>,
     pub seek_pressed: bool,
     /// While dragging the seek bar: the thumb's pixel offset (0..=218), overriding `seek`.
     pub seek_drag: Option<i32>,
@@ -122,6 +125,7 @@ impl Default for MainView {
             balance: 0,
             balance_pressed: false,
             seek: None,
+            seek_buffered: None,
             seek_pressed: false,
             seek_drag: None,
             shuffle: false,
@@ -154,7 +158,7 @@ pub fn draw_main(skin: &Skin, v: &MainView) -> Frame {
     draw_balance(&mut f, skin, v.balance, v.balance_pressed);
     if let Some(pos) = v.seek {
         let x = v.seek_drag.unwrap_or_else(|| seek_thumb_x(pos));
-        draw_seek(&mut f, skin, x, v.seek_pressed);
+        draw_seek(&mut f, skin, x, v.seek_pressed, v.seek_buffered);
     }
     draw_buttons(&mut f, skin, v);
     draw_title_area(&mut f, skin, &v.title);
@@ -393,9 +397,18 @@ pub fn seek_thumb_x(pos: u32) -> i32 {
     (pos as i32 * 219 / 256).clamp(0, 219)
 }
 
-fn draw_seek(f: &mut Frame, skin: &Skin, thumb_x: i32, pressed: bool) {
+fn draw_seek(
+    f: &mut Frame,
+    skin: &Skin,
+    thumb_x: i32,
+    pressed: bool,
+    buffered: Option<(u32, u32)>,
+) {
     let p = skin.bitmap(B::Posbar);
     blit(f, p, 0, 0, 248, 10, 16, 72);
+    if let Some(span) = buffered {
+        tint_span(f, span, 16, 72, 248, 10);
+    }
     blit(
         f,
         p,
@@ -501,6 +514,42 @@ fn draw_title_area(f: &mut Frame, skin: &Skin, title: &TitleArea) {
     }
 }
 
+/// Opacity of the buffered overlay, out of 256.
+const BUFFERED_ALPHA: u32 = 80;
+
+/// Tints the part `span` (positions 0..=256) of a `w`×`h` bar at (x, y): lighter on a dark bar,
+/// darker on a light one, so any skin shows it.
+fn tint_span(f: &mut Frame, span: (u32, u32), x: i32, y: i32, w: i32, h: i32) {
+    let px = |pos: u32| x + (pos.min(256) as i32 * w / 256);
+    let (x0, x1) = (px(span.0), px(span.1));
+    if x1 <= x0 {
+        return;
+    }
+    let lum = |p: u32| ((p >> 16 & 255) * 299 + (p >> 8 & 255) * 587 + (p & 255) * 114) / 1000;
+    let (mut sum, mut n) = (0u32, 0u32);
+    for ty in y..y + h {
+        for tx in x..x + w {
+            sum += lum(f.pixel(tx, ty));
+            n += 1;
+        }
+    }
+    let to = if sum / n.max(1) < 128 { 255 } else { 0 };
+    let mix = |c: u32| (c * (256 - BUFFERED_ALPHA) + to * BUFFERED_ALPHA) / 256;
+    for ty in y..y + h {
+        for tx in x0..x1 {
+            if tx < 0 || ty < 0 || tx >= f.width() as i32 || ty >= f.height() as i32 {
+                continue;
+            }
+            let p = f.pixel(tx, ty);
+            f.set(
+                tx,
+                ty,
+                mix(p >> 16 & 255) << 16 | mix(p >> 8 & 255) << 8 | mix(p & 255),
+            );
+        }
+    }
+}
+
 // ----- Windowshade mode -----
 
 /// Shade-mode mini seek thumb (02 §2.4): x offset p (1..=13) and source x.
@@ -524,6 +573,9 @@ fn draw_shade(skin: &Skin, v: &MainView) -> Frame {
     draw_shade_time(&mut f, skin, v.time);
     if let Some(pos) = v.seek {
         blit(&mut f, t, 0, 36, 17, 7, 226, 4);
+        if let Some(span) = v.seek_buffered {
+            tint_span(&mut f, span, 226, 4, 17, 7);
+        }
         let (p, sx) = shade_seek_geometry(pos);
         blit(&mut f, t, sx, 36, 3, 7, 226 + p, 4);
     }
@@ -621,5 +673,23 @@ mod tests {
         assert_eq!(shade_seek_geometry(0), (1, 17));
         assert_eq!(shade_seek_geometry(256), (13, 23));
         assert_eq!(shade_seek_geometry(128), (7, 20));
+    }
+
+    #[test]
+    fn buffered_overlay() {
+        // A dark bar gets lighter over the span only.
+        let mut f = Frame::new(20, 2, 0x10_20_30);
+        tint_span(&mut f, (64, 128), 2, 0, 16, 2);
+        assert_eq!(f.pixel(5, 0), 0x10_20_30);
+        assert_eq!(f.pixel(6, 1), 0x5a_65_70);
+        assert_eq!(f.pixel(9, 0), 0x5a_65_70);
+        assert_eq!(f.pixel(10, 0), 0x10_20_30);
+        // A light bar gets darker.
+        let mut f = Frame::new(4, 1, 0xff_ff_ff);
+        tint_span(&mut f, (0, 256), 0, 0, 4, 1);
+        assert_eq!(f.pixel(3, 0), 0xaf_af_af);
+        // An empty span changes nothing.
+        tint_span(&mut f, (10, 10), 0, 0, 4, 1);
+        assert_eq!(f.pixel(0, 0), 0xaf_af_af);
     }
 }

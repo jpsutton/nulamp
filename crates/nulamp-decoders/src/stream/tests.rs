@@ -143,12 +143,12 @@ fn fetch_audio(location: &str, config: StreamConfig) -> (Vec<u8>, State) {
         let n = st.take(&mut buf);
         out.extend_from_slice(&buf[..n]);
         shared.cv.notify_all();
-        if st.net_done && st.ring.is_empty() {
+        if st.net_done && st.ahead() == 0 {
             st.apply_meta(true);
             break;
         }
         assert!(Instant::now() < deadline, "timed out");
-        if st.ring.is_empty() {
+        if st.ahead() == 0 {
             st = shared.wait_timeout(st, Duration::from_millis(50));
         }
     }
@@ -796,7 +796,10 @@ fn file_server(frames: usize) -> Server {
 fn range_requests_seek_in_files() {
     let frames = 400;
     let server = file_server(frames);
-    let factory = StreamFactory::new(config());
+    let factory = StreamFactory::new(StreamConfig {
+        spool: false,
+        ..config()
+    });
     let mut d = open(&factory, &server.url("/files/x?id=1"));
     let mut seeked = None;
     let run = drain(&mut d, |d, total| {
@@ -838,10 +841,163 @@ fn range_requests_seek_in_files() {
     );
 }
 
+/// Frames decoded after each seek of `seeks` (seek, at total frames decoded), with no
+/// buffered-span check.
+fn seek_run(d: &mut StreamDecoder, seeks: &[(u64, usize)]) -> (Run, Vec<usize>) {
+    let mut marks = Vec::new();
+    let run = drain(d, |d, total| {
+        if let Some(&(ms, at)) = seeks.get(marks.len())
+            && total >= at
+        {
+            assert!(d.info().seekable);
+            assert_eq!(d.seek(ms).unwrap(), ms);
+            marks.push(total);
+        }
+    });
+    (run, marks)
+}
+
+/// Frames from `ms` to the end of an `frames`-frame file.
+fn frames_after(frames: usize, ms: u64) -> f64 {
+    (frames * FRAME_SAMPLES) as f64 - ms as f64 * 44.1
+}
+
+#[test]
+fn spooled_files_seek_without_new_requests() {
+    let frames = 400;
+    let server = file_server(frames);
+    let mut d = open(&StreamFactory::new(config()), &server.url("/files/x?id=1"));
+    // Forward, then back before the first seek point.
+    let (run, marks) = seek_run(
+        &mut d,
+        &[(8000, 20 * FRAME_SAMPLES), (2000, 40 * FRAME_SAMPLES)],
+    );
+    assert!(run.error.is_none(), "{:?}", run.error);
+    assert_eq!(marks.len(), 2);
+    let after = run.frames - marks[1];
+    let rest = frames_after(frames, 2000);
+    assert!(
+        (after as f64 - rest).abs() < FRAME_SAMPLES as f64 * 2.0,
+        "{after} frames after the seek, expected about {rest}"
+    );
+    assert_eq!(server.hits(), 1, "a spooled file is fetched once");
+    assert!(server.log.lock().unwrap()[0].header("Range").is_none());
+    assert_eq!(d.buffered_ms(), Some((0, u64::MAX)));
+}
+
+/// A server-side transcode: chunked, no length, no Range support.
+fn transcode_server(frames: usize) -> Server {
+    serve(move |_, s, _| {
+        let body = mp3(frames);
+        send(
+            s,
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: audio/mpeg\r\n",
+            b"",
+        );
+        for chunk in body.chunks(4096) {
+            let _ = write!(s, "{:x}\r\n", chunk.len());
+            let _ = s.write_all(chunk);
+            let _ = s.write_all(b"\r\n");
+        }
+        let _ = s.write_all(b"0\r\n\r\n");
+    })
+}
+
+#[test]
+fn finite_streams_without_ranges_seek_in_the_spool() {
+    let frames = 400;
+    let server = transcode_server(frames);
+    let factory = StreamFactory::new(config());
+    let options = StreamOptions {
+        finite: true,
+        ..StreamOptions::default()
+    };
+    let mut d = factory
+        .open_stream_with(&server.url("/Audio/1/universal"), &options)
+        .unwrap();
+    let (run, marks) = seek_run(
+        &mut d,
+        &[(6000, 20 * FRAME_SAMPLES), (1000, 30 * FRAME_SAMPLES)],
+    );
+    assert!(run.error.is_none(), "{:?}", run.error);
+    assert_eq!(marks.len(), 2);
+    let after = run.frames - marks[1];
+    let rest = frames_after(frames, 1000);
+    assert!(
+        (after as f64 - rest).abs() < FRAME_SAMPLES as f64 * 2.0,
+        "{after} frames after the seek, expected about {rest}"
+    );
+    assert_eq!(server.hits(), 1);
+    assert_eq!(d.buffered_ms(), Some((0, u64::MAX)));
+
+    // Without the hint the same response is a live stream.
+    let mut live = open(&factory, &server.url("/Audio/1/universal"));
+    let run = drain(&mut live, |_, _| {});
+    assert!(!live.info().seekable);
+    assert_eq!(live.buffered_ms(), None);
+    assert_eq!(run.frames, frames * FRAME_SAMPLES);
+}
+
+#[test]
+fn partly_received_spool_reports_its_span() {
+    // Half the file, then a stall: the spool holds the first half.
+    let frames = 400;
+    let server = serve(move |_, s, _| {
+        let body = mp3(frames);
+        send(
+            s,
+            &format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: audio/mpeg\r\n",
+                body.len()
+            ),
+            &body[..body.len() / 2],
+        );
+        thread::sleep(Duration::from_secs(3));
+    });
+    let mut d = open(&StreamFactory::new(config()), &server.url("/a.mp3"));
+    let mut out = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let expected = frames as u64 * FRAME_SAMPLES as u64 * 1000 / 44_100 / 2;
+    loop {
+        assert!(Instant::now() < deadline, "no span reported");
+        out.clear();
+        let _ = d.read(&mut out);
+        if let Some((0, end)) = d.buffered_ms()
+            && end.abs_diff(expected) < 100
+        {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn seeks_before_decoding_wait_for_it() {
+    let frames = 400;
+    let server = file_server(frames);
+    let mut d = open(&StreamFactory::new(config()), &server.url("/a.mp3"));
+    // Still connecting: the seek is done once the stream is known.
+    assert_eq!(d.seek(5000).unwrap(), 5000);
+    let run = drain(&mut d, |_, _| {});
+    assert!(run.error.is_none(), "{:?}", run.error);
+    let rest = frames_after(frames, 5000);
+    assert!(
+        (run.frames as f64 - rest).abs() < FRAME_SAMPLES as f64 * 2.0,
+        "{} frames, expected about {rest}",
+        run.frames
+    );
+}
+
 #[test]
 fn live_streams_do_not_seek() {
     let server = icy_server(8192, 30, b"StreamTitle='x';");
     let mut d = open(&StreamFactory::new(config()), &server.url("/"));
+    let mut out = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !matches!(d.read(&mut out), Ok(ReadStatus::Frames(_))) {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(1));
+    }
     assert!(d.seek(1000).is_err());
 }
 

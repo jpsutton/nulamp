@@ -58,6 +58,9 @@ pub struct PlayerStatus {
     /// Length in ms; `None` when unknown (streams).
     pub length_ms: Option<u64>,
     pub seekable: bool,
+    /// The span whose data is at hand, `(start, end)` in ms, for network streams; `end` is
+    /// `u64::MAX` when all of it is.
+    pub buffered_ms: Option<(u64, u64)>,
     pub kbps: Option<u32>,
     pub sample_rate: Option<u32>,
     pub channels: Option<u32>,

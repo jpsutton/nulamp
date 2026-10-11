@@ -42,9 +42,11 @@ pub const PROVIDER_PREFIX: &str = "jellyfin-";
 pub const MUSIC: &str = "music";
 
 /// Containers (with their audio codec where it matters) that nulamp's network input decodes
-/// as they are; the server transcodes anything else to MP3.
-const DIRECT_CONTAINERS: &str =
-    "mp3,flac,ogg|vorbis,oga|vorbis,wav,m4a|aac,m4a|alac,mp4|aac,m4b|aac,aac";
+/// as they are; the server transcodes anything else to MP3. Files played as they are seek
+/// exactly; a transcode seeks only in what has been downloaded (NET13).
+const DIRECT_CONTAINERS: &str = "mp3,flac,ogg|vorbis,ogg|flac,oga|vorbis,oga|flac,wav,aiff,aif,\
+     m4a|aac,m4a|alac,mp4|aac,mp4|alac,m4b|aac,m4b|alac,aac,mka|vorbis,mka|flac,mka|aac,\
+     mka|mp3,webm|vorbis,caf|alac,caf|aac";
 
 /// Playlist entries fetched per request.
 const CHUNK: u64 = 2000;

@@ -88,6 +88,12 @@ pub trait Decoder: Send {
     /// Current bit rate in kbps (changes for VBR).
     fn kbps(&self) -> Option<u32>;
 
+    /// The time span whose data is at hand without waiting for the network, as `(start, end)`
+    /// in ms; `end` is `u64::MAX` when everything is. `None` for local files and live streams.
+    fn buffered_ms(&self) -> Option<(u64, u64)> {
+        None
+    }
+
     /// "In sync" state for the status light (02 §4). Network decoders clear it while buffering.
     fn in_sync(&self) -> bool {
         true
