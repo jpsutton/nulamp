@@ -13,6 +13,7 @@ pub mod module_decoder;
 pub mod opus_decoder;
 pub mod stream;
 pub mod symphonia_decoder;
+pub mod video;
 
 use std::fmt;
 

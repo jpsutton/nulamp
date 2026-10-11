@@ -5,8 +5,9 @@
  *
  * One handle opens a local file with libavformat, decodes its best audio stream with
  * libavcodec and converts every frame to interleaved 32-bit float with libswresample, keeping
- * the source sample rate and channel count. Only the "file" protocol is allowed. A handle is
- * used by one thread at a time.
+ * the source sample rate and channel count. A video file without audio plays as silence of
+ * the video's length (video.c shows the picture). Only the "file" protocol is allowed. A handle
+ * is used by one thread at a time.
  */
 
 #include <limits.h>
@@ -67,6 +68,9 @@ typedef struct Nlff {
     int flushing;
     /* `frame` holds a decoded frame not yet returned (read ahead by a seek). */
     int have_frame;
+    /* A video file without audio: silence of `silent_frames` frames. */
+    int silent;
+    int64_t silent_frames;
 } Nlff;
 
 static void set_error(char *err, int len, const char *what, int code) {
@@ -100,6 +104,40 @@ static int64_t frames_from_ts(const Nlff *h, int64_t ts) {
 
 static int64_t ts_from_frames(const Nlff *h, int64_t frames) {
     return av_rescale_q(frames, (AVRational){1, h->rate}, h->tb);
+}
+
+/*
+ * A video file without an audio stream plays as 48 kHz stereo silence of the video's length.
+ * Returns 1 when `h` was set up that way.
+ */
+static int open_silent(Nlff *h, int decode, NlffInfo *info) {
+    unsigned i;
+    int video = 0;
+    for (i = 0; i < h->fmt->nb_streams; i++) {
+        AVStream *st = h->fmt->streams[i];
+        if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+            !(st->disposition & AV_DISPOSITION_ATTACHED_PIC))
+            video = 1;
+    }
+    if (!video || h->fmt->duration == AV_NOPTS_VALUE || h->fmt->duration <= 0)
+        return 0;
+    h->silent = 1;
+    h->rate = 48000;
+    h->channels = 2;
+    h->silent_frames = av_rescale(h->fmt->duration, h->rate, AV_TIME_BASE);
+    memset(info, 0, sizeof *info);
+    info->sample_rate = h->rate;
+    info->channels = h->channels;
+    info->length_frames = h->silent_frames;
+    info->seekable = 1;
+    snprintf(info->codec, sizeof info->codec, "%s", "No audio");
+    if (decode) {
+        h->buf_frames = 4096;
+        h->buf = av_calloc((size_t)h->buf_frames * 2, sizeof(float));
+        if (!h->buf)
+            return 0;
+    }
+    return 1;
 }
 
 /*
@@ -142,6 +180,8 @@ Nlff *nlff_open(const char *path, int decode, NlffInfo *info, char *err, int err
         return NULL;
     }
     r = av_find_best_stream(h->fmt, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
+    if (r < 0 && open_silent(h, decode, info))
+        return h;
     if (r < 0) {
         set_error(err, err_len, r == AVERROR_DECODER_NOT_FOUND ? "no decoder for the audio"
                                                               : "no audio stream", 0);
@@ -302,6 +342,16 @@ static int64_t frame_ts(const AVFrame *f) {
  * the frame count, 0 at the end, or a negative error.
  */
 int nlff_read(Nlff *h, const float **data, int *channels, int64_t *bytes) {
+    if (h->silent) {
+        int n = (int)FFMIN((int64_t)h->buf_frames, h->silent_frames - h->pos);
+        if (n <= 0)
+            return 0;
+        h->pos += n;
+        *data = h->buf;
+        *channels = h->channels;
+        *bytes = 0;
+        return n;
+    }
     for (;;) {
         int64_t ts, pos = h->pos;
         int n, skip = 0;
@@ -345,10 +395,16 @@ int nlff_read(Nlff *h, const float **data, int *channels, int64_t *bytes) {
  * back. Returns 0 or a negative error.
  */
 int nlff_seek(Nlff *h, int64_t target) {
-    AVCodecParameters *par = h->fmt->streams[h->stream]->codecpar;
-    int64_t margin = FFMAX(FFMAX(par->seek_preroll, par->frame_size), h->rate / 20);
+    AVCodecParameters *par;
+    int64_t margin;
     int attempt, r = 0;
 
+    if (h->silent) {
+        h->pos = FFMIN(FFMAX(target, 0), h->silent_frames);
+        return 0;
+    }
+    par = h->fmt->streams[h->stream]->codecpar;
+    margin = FFMAX(FFMAX(par->seek_preroll, par->frame_size), h->rate / 20);
     av_frame_unref(h->frame);
     h->have_frame = 0;
     for (attempt = 0; attempt < 5; attempt++, margin *= 4) {
@@ -388,7 +444,8 @@ int nlff_seek(Nlff *h, int64_t target) {
  * `*iter` NULL; returns 1 with the next key and value, 0 at the end.
  */
 int nlff_tag_next(Nlff *h, int which, const void **iter, const char **key, const char **value) {
-    const AVDictionary *d = which == 0 ? h->fmt->metadata : h->fmt->streams[h->stream]->metadata;
+    const AVDictionary *d =
+        which == 0 ? h->fmt->metadata : h->silent ? NULL : h->fmt->streams[h->stream]->metadata;
     const AVDictionaryEntry *e =
         av_dict_get(d, "", (const AVDictionaryEntry *)*iter, AV_DICT_IGNORE_SUFFIX);
     if (!e)

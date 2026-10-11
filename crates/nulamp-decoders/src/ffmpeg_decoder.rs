@@ -1,5 +1,6 @@
 //! Decoder for formats the built-in decoders lack (09 §1): Windows Media Audio, WavPack,
-//! Monkey's Audio, Musepack and TTA, through the system FFmpeg libraries. It is also the
+//! Monkey's Audio, Musepack and TTA, and the sound of video files (silence for a video without
+//! audio), through the system FFmpeg libraries. It is also the
 //! fallback for local files another decoder fails to open (for example MP4 files Symphonia
 //! cannot read), see [`crate::Registry::open`].
 //!
@@ -68,6 +69,12 @@ const EXTENSIONS: &[(&str, &str)] = &[
     ("ape", "Monkey's Audio Files"),
     ("mpc;mp+;mpp", "Musepack Files"),
     ("tta", "TTA Files"),
+    // Video files the built-in decoders do not claim (09 §1); their picture is shown by
+    // `crate::video`.
+    (
+        "avi;mkv;m4v;mov;flv;nsv;wmv;mpg;mpeg;m2v;ogv",
+        "Video Files",
+    ),
 ];
 
 /// The licence of the libavcodec in use, for example "LGPL version 2.1 or later".
