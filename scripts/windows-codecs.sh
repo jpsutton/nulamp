@@ -8,8 +8,9 @@
 #   zlib.
 #
 # Usage: scripts/windows-codecs.sh <work dir> [<dist folder>]
-#   Builds into <work dir> (vcpkg checkout, binary cache in <work dir>/cache). In GitHub Actions
-#   it points FFMPEG_DIR and OPENMPT_LIB_DIR at the result and adds its DLLs to PATH.
+#   Builds into <work dir> (vcpkg checkout, binary cache in <work dir>/cache) and prints the
+#   FFMPEG_DIR and OPENMPT_LIB_DIR to build nulamp with, and the DLL folder to add to PATH. In
+#   GitHub Actions it sets them for the following steps.
 #   With <dist folder>, copies the DLLs and their licences there and writes the sources of the
 #   LGPL libraries to <dist folder>/../<name>-lgpl-sources.tar.gz.
 # Run from Git Bash on Windows.
@@ -39,9 +40,12 @@ if ! grep -aq "LGPL version 2.1 or later" "$avcodec"; then
   exit 1
 fi
 
+env_lines="FFMPEG_DIR=$(cygpath -w "$inst")
+OPENMPT_LIB_DIR=$(cygpath -w "$inst/lib")"
+echo "$env_lines"
+echo "add to PATH: $(cygpath -w "$inst/bin")"
 if [ -n "${GITHUB_ENV:-}" ]; then
-  echo "FFMPEG_DIR=$(cygpath -w "$inst")" >> "$GITHUB_ENV"
-  echo "OPENMPT_LIB_DIR=$(cygpath -w "$inst/lib")" >> "$GITHUB_ENV"
+  echo "$env_lines" >> "$GITHUB_ENV"
   cygpath -w "$inst/bin" >> "$GITHUB_PATH"
 fi
 
