@@ -37,6 +37,9 @@ typedef struct NlfvInfo {
     /* Video streams in the file and the one decoded (0-based among them). */
     int32_t streams;
     int32_t current;
+    /* Audio streams in the file and the one the audio decoder picks by default (-1: none). */
+    int32_t audio_streams;
+    int32_t audio_best;
     /* Length in ms, -1 when unknown. */
     int64_t length_ms;
     char codec[128];
@@ -50,6 +53,10 @@ typedef struct Nlfv {
     /* Indexes of the video streams (attached pictures such as cover art are not video). */
     int *streams;
     int nstreams;
+    /* Indexes of the audio streams, and the default one among them (-1: none). */
+    int *audio;
+    int naudio;
+    int audio_best;
     int current;
     int stream;
     AVRational tb;
@@ -79,6 +86,7 @@ void nlfv_close(Nlfv *h) {
     avcodec_free_context(&h->dec);
     avformat_close_input(&h->fmt);
     av_free(h->streams);
+    av_free(h->audio);
     av_free(h);
 }
 
@@ -103,6 +111,8 @@ static void fill_info(Nlfv *h, NlfvInfo *info) {
     }
     info->streams = h->nstreams;
     info->current = h->current;
+    info->audio_streams = h->naudio;
+    info->audio_best = h->audio_best;
     info->length_ms = -1;
     if (h->fmt->duration != AV_NOPTS_VALUE && h->fmt->duration > 0)
         info->length_ms = av_rescale(h->fmt->duration, 1000, AV_TIME_BASE);
@@ -181,8 +191,9 @@ Nlfv *nlfv_open(const char *path, NlfvInfo *info, char *err, int err_len) {
         return NULL;
     }
     h->streams = av_malloc_array(h->fmt->nb_streams ? h->fmt->nb_streams : 1, sizeof(int));
+    h->audio = av_malloc_array(h->fmt->nb_streams ? h->fmt->nb_streams : 1, sizeof(int));
     h->pkt = av_packet_alloc();
-    if (!h->streams || !h->pkt) {
+    if (!h->streams || !h->audio || !h->pkt) {
         set_error(err, err_len, "out of memory", 0);
         nlfv_close(h);
         return NULL;
@@ -192,6 +203,8 @@ Nlfv *nlfv_open(const char *path, NlfvInfo *info, char *err, int err_len) {
         if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
             !(st->disposition & AV_DISPOSITION_ATTACHED_PIC) && st->codecpar->width > 0)
             h->streams[h->nstreams++] = (int)i;
+        if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+            h->audio[h->naudio++] = (int)i;
     }
     if (h->nstreams == 0) {
         set_error(err, err_len, "no video stream", 0);
@@ -201,6 +214,10 @@ Nlfv *nlfv_open(const char *path, NlfvInfo *info, char *err, int err_len) {
     /* The audio decoder counts from the start of the best audio stream. */
     h->zero = 0;
     audio = av_find_best_stream(h->fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    h->audio_best = -1;
+    for (i = 0; i < (unsigned)h->naudio; i++)
+        if (h->audio[i] == audio)
+            h->audio_best = (int)i;
     {
         AVStream *st = h->fmt->streams[audio >= 0 ? audio : h->streams[0]];
         if (st->start_time != AV_NOPTS_VALUE)
@@ -238,6 +255,21 @@ int nlfv_stream_name(Nlfv *h, int i, char *out, int len) {
              st->codecpar->width, st->codecpar->height, title ? " " : "",
              title ? title->value : "", lang ? " [" : "", lang ? lang->value : "",
              lang ? "]" : "");
+    return 0;
+}
+
+/* Description of the `i`-th audio stream for menus, for example "aac stereo [eng]". */
+int nlfv_audio_name(Nlfv *h, int i, char *out, int len) {
+    AVStream *st;
+    const AVDictionaryEntry *lang, *title;
+    if (i < 0 || i >= h->naudio || len <= 0)
+        return -1;
+    st = h->fmt->streams[h->audio[i]];
+    lang = av_dict_get(st->metadata, "language", NULL, 0);
+    title = av_dict_get(st->metadata, "title", NULL, 0);
+    snprintf(out, (size_t)len, "%s %dch%s%s%s%s%s", avcodec_get_name(st->codecpar->codec_id),
+             st->codecpar->ch_layout.nb_channels, title ? " " : "", title ? title->value : "",
+             lang ? " [" : "", lang ? lang->value : "", lang ? "]" : "");
     return 0;
 }
 

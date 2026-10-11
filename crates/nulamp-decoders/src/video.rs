@@ -48,6 +48,10 @@ pub struct VideoInfo {
     pub streams: Vec<String>,
     /// The stream shown (index into `streams`).
     pub current: usize,
+    /// Description of every audio stream, for the audio track menu.
+    pub audio_streams: Vec<String>,
+    /// The audio stream heard: the chosen one, else the file's default.
+    pub audio_current: Option<usize>,
 }
 
 /// A scaled picture ready to show: `width × height` pixels of `0x00RRGGBB`.
@@ -261,6 +265,8 @@ mod ffmpeg {
             pub fps_den: i32,
             pub streams: i32,
             pub current: i32,
+            pub audio_streams: i32,
+            pub audio_best: i32,
             pub length_ms: i64,
             pub codec: [c_char; 128],
         }
@@ -274,6 +280,7 @@ mod ffmpeg {
             ) -> *mut Nlfv;
             pub fn nlfv_close(h: *mut Nlfv);
             pub fn nlfv_stream_name(h: *mut Nlfv, i: c_int, out: *mut c_char, len: c_int) -> c_int;
+            pub fn nlfv_audio_name(h: *mut Nlfv, i: c_int, out: *mut c_char, len: c_int) -> c_int;
             pub fn nlfv_select(h: *mut Nlfv, which: c_int, info: *mut NlfvInfo) -> c_int;
             pub fn nlfv_seek(h: *mut Nlfv, ms: i64) -> c_int;
             pub fn nlfv_next(h: *mut Nlfv, pts_ms: *mut i64, status: *mut c_int) -> *mut c_void;
@@ -321,21 +328,34 @@ mod ffmpeg {
     const BACK_JUMP_MS: u64 = 250;
     const FORWARD_JUMP_MS: u64 = 2000;
 
-    fn info_of(h: &Handle, i: &ffi::NlfvInfo) -> VideoInfo {
+    fn info_of(h: &Handle, i: &ffi::NlfvInfo, location: &str) -> VideoInfo {
         // SAFETY: `codec` is NUL-terminated by the shim's snprintf.
         let codec = unsafe { CStr::from_ptr(i.codec.as_ptr()) }
             .to_string_lossy()
             .into_owned();
-        let streams = (0..i.streams.max(0))
-            .map(|n| {
-                let mut buf = [0 as c_char; 160];
-                // SAFETY: valid handle and buffer of the given size.
-                unsafe { ffi::nlfv_stream_name(h.0.as_ptr(), n, buf.as_mut_ptr(), 160) };
-                // SAFETY: NUL-terminated by snprintf (the buffer starts zeroed).
-                let name = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy();
-                format!("{}: {name}", n + 1)
-            })
-            .collect();
+        let names = |count: i32,
+                     f: unsafe extern "C" fn(
+            *mut ffi::Nlfv,
+            c_int,
+            *mut c_char,
+            c_int,
+        ) -> c_int| {
+            (0..count.max(0))
+                .map(|n| {
+                    let mut buf = [0 as c_char; 160];
+                    // SAFETY: valid handle and buffer of the given size.
+                    unsafe { f(h.0.as_ptr(), n, buf.as_mut_ptr(), 160) };
+                    // SAFETY: NUL-terminated by snprintf (the buffer starts zeroed).
+                    let name = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy();
+                    format!("{}: {name}", n + 1)
+                })
+                .collect::<Vec<_>>()
+        };
+        let streams = names(i.streams, ffi::nlfv_stream_name);
+        let audio_streams = names(i.audio_streams, ffi::nlfv_audio_name);
+        let audio_current = crate::ffmpeg_decoder::audio_track(location)
+            .filter(|n| *n < audio_streams.len())
+            .or_else(|| usize::try_from(i.audio_best).ok());
         let aspect = if i.dar_num > 0 && i.dar_den > 0 {
             i.dar_num as f64 / i.dar_den as f64
         } else if i.height > 0 {
@@ -352,6 +372,8 @@ mod ffmpeg {
             codec,
             streams,
             current: i.current.max(0) as usize,
+            audio_streams,
+            audio_current,
         }
     }
 
@@ -376,13 +398,14 @@ mod ffmpeg {
             return Err(msg.into_owned());
         };
         let h = Handle(h);
-        let info = info_of(&h, &info);
+        let info = info_of(&h, &info, location);
         Ok((h, info))
     }
 
     /// The decoding side of the worker.
     struct Worker {
         h: Handle,
+        location: String,
         info: VideoInfo,
         queue: VecDeque<Raw>,
         current: Option<Raw>,
@@ -513,7 +536,7 @@ mod ffmpeg {
                 log::debug!("cannot switch to video stream {index}: FFmpeg error {r}");
                 return false;
             }
-            self.info = info_of(&self.h, &i);
+            self.info = info_of(&self.h, &i, &self.location);
             self.shown = None;
             self.seek(target);
             true
@@ -531,6 +554,7 @@ mod ffmpeg {
         shared.lock().state = VideoState::Ready(info.clone());
         let mut w = Worker {
             h,
+            location: location.to_string(),
             info,
             queue: VecDeque::new(),
             current: None,
@@ -794,6 +818,62 @@ mod tests {
             let mut out = Vec::new();
             while let ReadStatus::Frames(_) = d.read(&mut out).unwrap() {}
             assert!(out.iter().any(|s| s.abs() > 0.1));
+        }
+
+        #[test]
+        fn audio_tracks_can_be_chosen() {
+            let path = std::env::temp_dir()
+                .join(format!("nulamp-video-{}-tracks.mkv", std::process::id()));
+            let ok = Command::new("ffmpeg")
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                ])
+                .arg("color=c=blue:s=64x48:r=10:d=1")
+                .args([
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:sample_rate=44100:duration=1",
+                ])
+                .args(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "1"])
+                .args(["-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "mpeg4"])
+                .args(["-c:a", "mp2", "-metadata:s:a:1", "language=fra"])
+                .arg(&path)
+                .status()
+                .is_ok_and(|s| s.success());
+            if !ok {
+                eprintln!("skipping: ffmpeg cannot write tracks.mkv");
+                return;
+            }
+            let f = Fixture(path);
+            let loc = f.location().to_string();
+            let v = VideoPlayer::open(&loc);
+            let info = ready(&v);
+            assert_eq!(info.audio_streams.len(), 2);
+            assert!(
+                info.audio_streams[1].contains("[fra]"),
+                "{:?}",
+                info.audio_streams
+            );
+            assert_eq!(info.audio_current, Some(0));
+            let peak = |loc: &str| {
+                let mut d = Registry::with_defaults().open(loc).unwrap();
+                let mut out = Vec::new();
+                while let ReadStatus::Frames(_) = d.read(&mut out).unwrap() {}
+                out.iter().fold(0f32, |m, s| m.max(s.abs()))
+            };
+            assert!(peak(&loc) > 0.1);
+            crate::ffmpeg_decoder::set_audio_track(&loc, Some(1));
+            assert_eq!(peak(&loc), 0.0);
+            assert_eq!(ready(&VideoPlayer::open(&loc)).audio_current, Some(1));
+            crate::ffmpeg_decoder::set_audio_track(&loc, None);
+            assert!(peak(&loc) > 0.1);
         }
 
         #[test]

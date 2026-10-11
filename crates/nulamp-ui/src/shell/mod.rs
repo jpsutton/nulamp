@@ -2952,9 +2952,13 @@ fn present_raw(
         return;
     };
     let (bw, bh) = (size.width as usize, size.height as usize);
-    for y in 0..bh {
-        for x in 0..bw {
-            buf[y * bw + x] = frame.pixel(x as i32, y as i32);
+    if (frame.width() as usize, frame.height() as usize) == (bw, bh) {
+        buf.copy_from_slice(frame.pixels());
+    } else {
+        for y in 0..bh {
+            for x in 0..bw {
+                buf[y * bw + x] = frame.pixel(x as i32, y as i32);
+            }
         }
     }
     let _ = buf.present();

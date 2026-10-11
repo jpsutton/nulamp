@@ -142,9 +142,11 @@ static int open_silent(Nlff *h, int decode, NlffInfo *info) {
 
 /*
  * Opens `path` (UTF-8). With `decode` 0 only the container is read (tags and stream
- * information). Returns NULL and an error text on failure.
+ * information). `audio` picks the audio stream (0-based among the audio streams; -1: the best
+ * one). Returns NULL and an error text on failure.
  */
-Nlff *nlff_open(const char *path, int decode, NlffInfo *info, char *err, int err_len) {
+Nlff *nlff_open(const char *path, int decode, int audio, NlffInfo *info, char *err,
+                int err_len) {
     static int quiet = 0;
     const AVCodec *codec = NULL;
     const AVCodecDescriptor *desc;
@@ -180,6 +182,22 @@ Nlff *nlff_open(const char *path, int decode, NlffInfo *info, char *err, int err
         return NULL;
     }
     r = av_find_best_stream(h->fmt, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
+    if (audio >= 0) {
+        int n = 0;
+        for (i = 0; i < h->fmt->nb_streams; i++) {
+            AVStream *st_i = h->fmt->streams[i];
+            if (st_i->codecpar->codec_type != AVMEDIA_TYPE_AUDIO)
+                continue;
+            if (n++ == audio) {
+                const AVCodec *c = avcodec_find_decoder(st_i->codecpar->codec_id);
+                if (c) {
+                    r = (int)i;
+                    codec = c;
+                }
+                break;
+            }
+        }
+    }
     if (r < 0 && open_silent(h, decode, info))
         return h;
     if (r < 0) {
