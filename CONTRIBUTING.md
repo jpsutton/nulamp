@@ -47,3 +47,5 @@ Use Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `test:`, `refactor
   never go into the repository.
 - Windows from Linux: `scripts/windows-check.sh` runs clippy for `x86_64-pc-windows-gnu` and the
   test suite under Wine, in Docker (`scripts/wincheck/Dockerfile`).
+- README screenshots: `cargo build --release -p nulamp`, then `scripts/screenshots/take.sh <music folder>`.
+  It runs nulamp in a container (Xvfb, PulseAudio null sink): no windows or sound on the host.
