@@ -67,6 +67,12 @@ printf '\n[nulamp]\nServer = https://github.com/jpsutton/nulamp/releases/latest/
 sudo pacman -Syu nulamp
 ```
 
+**Windows:** run `nulamp-<version>-windows-x86_64-setup.exe`. It installs for your user by default
+(no administrator prompt), adds a Start menu shortcut, opens `.wsz` skins with nulamp, and offers
+nulamp for audio files and playlists under *Open with* and in *Default apps* without changing your
+current defaults. The `.zip` is the same program without an installer. Builds are not code-signed
+yet, so Windows SmartScreen may warn the first time.
+
 **Other Linux distributions:** the AppImage needs glibc 2.39 or newer and bundles the extra codecs
 (an LGPL build of FFmpeg and libopenmpt); the exact FFmpeg source is attached to each release.
 
