@@ -50,17 +50,20 @@ jobs:
           $nsis = "${env:ProgramFiles(x86)}\NSIS"
           if (-not (Test-Path "$nsis\makensis.exe")) { choco install nsis -y --no-progress }
           $src = "$PWD\dist\nulamp-trial-x86_64-pc-windows-msvc"
-          & "$nsis\makensis.exe" -V2 "-DVERSION=0.0.0" "-DSRCDIR=$src" "-DOUTFILE=$PWD\dist\setup.exe" packaging\windows\nulamp.nsi
+          & "$nsis\makensis.exe" -V2 "-DVERSION=0.0.0" "-DSRCDIR=$src" "-DOUTFILE=$PWD\dist\nulamp-trial-setup.exe" packaging\windows\nulamp.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # Silent install, start check, uninstall.
-          & "$PWD\dist\setup.exe" /S /D="$env:RUNNER_TEMP\nulamp-inst" | Out-Null
-          Get-ChildItem "$env:RUNNER_TEMP\nulamp-inst" -Recurse | Select-Object FullName
-          $p = Start-Process "$env:RUNNER_TEMP\nulamp-inst\nulamp.exe" -PassThru
+          # Silent per-user install, start check, uninstall.
+          Start-Process "$PWD\dist\nulamp-trial-setup.exe" -ArgumentList "/S" -Wait
+          $dir = "$env:LOCALAPPDATA\Programs\nulamp"
+          Get-ChildItem $dir -Recurse | Select-Object -ExpandProperty FullName
+          $p = Start-Process "$dir\nulamp.exe" -PassThru
           Start-Sleep -Seconds 8
           if ($p.HasExited) { Write-Error "nulamp exited with $($p.ExitCode)"; exit 1 }
           Stop-Process -Id $p.Id
-          & "$env:RUNNER_TEMP\nulamp-inst\uninstall.exe" /S _?="$env:RUNNER_TEMP\nulamp-inst" | Out-Null
-          Get-ChildItem "$env:RUNNER_TEMP\nulamp-inst" -Recurse | Select-Object FullName
+          Start-Sleep -Seconds 1
+          Start-Process "$dir\uninstall.exe" -ArgumentList "/S" -Wait
+          Start-Sleep -Seconds 3
+          if (Test-Path $dir) { Get-ChildItem $dir -Recurse | Select-Object -ExpandProperty FullName }
       - name: Linked DLLs
         shell: pwsh
         run: |
@@ -71,6 +74,6 @@ jobs:
         with:
           name: trial
           path: |
-            dist/setup.exe
+            dist/nulamp-trial-setup.exe
             dist/nulamp-trial-x86_64-pc-windows-msvc
             dist/*-lgpl-sources.tar.gz

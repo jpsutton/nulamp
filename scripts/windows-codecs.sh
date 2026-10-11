@@ -96,8 +96,8 @@ TXT
 src="$work/lgpl-sources"
 rm -rf "$src"
 mkdir -p "$src/downloads" "$src/ports"
-for lib in ffmpeg mpg123; do
-  found=$(find "$vcpkg/downloads" -maxdepth 1 -type f -iname "*$lib*")
+for lib in "ffmpeg*$ffmpeg_version" "mpg123*$mpg123_version"; do
+  found=$(find "$vcpkg/downloads" -maxdepth 1 -type f -iname "*$lib.*")
   if [ -z "$found" ]; then
     echo "no $lib source archive in $vcpkg/downloads:" >&2
     ls "$vcpkg/downloads" >&2
