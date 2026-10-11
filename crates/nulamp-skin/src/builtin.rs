@@ -31,6 +31,7 @@ pub const FILES: &[(&str, &[u8])] = embed![
     "video.bmp",
     "mb.bmp",
     "pledit.txt",
+    "viscolor.txt",
     "readme.txt",
 ];
 
