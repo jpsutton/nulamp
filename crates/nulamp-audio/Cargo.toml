@@ -9,9 +9,9 @@ rust-version.workspace = true
 [dependencies]
 cpal = "0.18.2"
 log = "0.4.34"
-nulamp-core = { version = "0.3.0", path = "../nulamp-core" }
-nulamp-decoders = { version = "0.3.0", path = "../nulamp-decoders" }
-nulamp-eq = { version = "0.3.0", path = "../nulamp-eq" }
+nulamp-core = { version = "0.4.0", path = "../nulamp-core" }
+nulamp-decoders = { version = "0.4.0", path = "../nulamp-decoders" }
+nulamp-eq = { version = "0.4.0", path = "../nulamp-eq" }
 rtrb = "0.4.0"
 rubato = "5.0.1"
 thiserror = "2.0.21"
