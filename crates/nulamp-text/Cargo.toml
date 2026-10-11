@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 fontdb = "0.24.0"
 freetype-rs = "0.38.0"
-nulamp-skin = { version = "0.1.0", path = "../nulamp-skin" }
+nulamp-skin = { version = "0.2.0", path = "../nulamp-skin" }
 rustybuzz = "0.20.1"
 unicode-bidi = "0.3.18"
 
