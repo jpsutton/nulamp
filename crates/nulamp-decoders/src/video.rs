@@ -221,20 +221,6 @@ fn start_worker(location: String, shared: Arc<Shared>) -> Option<JoinHandle<()>>
     }
 }
 
-/// Fits a picture of display aspect `aspect` into `w`×`h`, centred: (x, y, width, height).
-/// The picture fills the area when `aspect` is not positive.
-pub fn fit(aspect: f64, w: u32, h: u32) -> (u32, u32, u32, u32) {
-    if w == 0 || h == 0 || !(aspect > 0.0) {
-        return (0, 0, w, h);
-    }
-    let (fw, fh) = if w as f64 / h as f64 > aspect {
-        (((h as f64 * aspect).round() as u32).clamp(1, w), h)
-    } else {
-        (w, ((w as f64 / aspect).round() as u32).clamp(1, h))
-    };
-    ((w - fw) / 2, (h - fh) / 2, fw, fh)
-}
-
 #[cfg(nulamp_ffmpeg)]
 mod ffmpeg {
     use std::collections::VecDeque;
@@ -604,14 +590,6 @@ mod ffmpeg {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fit_keeps_the_aspect_ratio() {
-        assert_eq!(fit(16.0 / 9.0, 256, 174), (0, 15, 256, 144));
-        assert_eq!(fit(4.0 / 3.0, 400, 150), (100, 0, 200, 150));
-        assert_eq!(fit(0.0, 10, 20), (0, 0, 10, 20));
-        assert_eq!(fit(2.0, 0, 20), (0, 0, 0, 20));
-    }
 
     #[test]
     fn video_locations() {

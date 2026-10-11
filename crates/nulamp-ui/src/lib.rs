@@ -20,6 +20,7 @@ pub mod prefs_dialog;
 pub mod shell;
 pub mod title;
 pub mod tray;
+pub mod video;
 pub mod wayland_limits;
 
 pub use shell::{PlayerHandle, Shell, UiPrefs};
