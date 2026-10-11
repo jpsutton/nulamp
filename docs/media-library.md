@@ -1,14 +1,15 @@
 # Media library
 
-The media library is in scope although the spec lists it as a non-goal (decision D4). It is designed from first principles: no reference code or plugin was consulted. The code lives in `crates/nulamp-library`, which depends on `nulamp-meta` (tags), `nulamp-core` (natural sort order) and `nulamp-tf` (title formatting fields), and on no UI crate. Choices are recorded as `ML*` rows in `decisions.md`.
+The media library is in scope although the spec lists it as a non-goal (decision D4). It is designed from first principles: no reference code or plugin was consulted. The code lives in `crates/nulamp-library`, which depends on `nulamp-meta` (tags), `nulamp-core` (natural sort order), `nulamp-tf` (title formatting fields), `ureq` and `serde_json` (Jellyfin), and on no UI crate. Choices are recorded as `ML*` rows in `decisions.md`.
 
 ## 1. Overview
 
 ```
 UI ──► Registry ──► Arc<dyn LibraryProvider>
-                     ├─ LocalLibrary   (SQLite index of watch folders)
-                     ├─ MockProvider   (in-memory, remote-style; tests)
-                     └─ later: Jellyfin, Subsonic, …
+                     ├─ LocalLibrary      (SQLite index of watch folders)
+                     ├─ JellyfinProvider  (music libraries of a Jellyfin server)
+                     ├─ MockProvider      (in-memory, remote-style; tests)
+                     └─ later: Subsonic, …
 ```
 
 Every provider offers the same browse tree, track listing, search, playback resolution and optional writes. The UI never needs to know which kind of source it talks to; it checks `capabilities()` to decide which commands to show.
@@ -36,7 +37,7 @@ Every provider offers the same browse tree, track listing, search, playback reso
 
 Optional methods return `Error::Unsupported` by default. `Subscribers` is a small helper that fans events out to every receiver and forgets dropped ones.
 
-`Registry` holds the providers in registration order (`register` replaces a provider with the same id). `provider_for(&TrackId)` and `resolve_playback(&TrackId)` route by the track's provider id, and `finish_play(&TrackId, played_ms, length_ms)` applies the play rule (§8) and records the play.
+`Registry` holds the providers in registration order (`register` replaces a provider with the same id). It can be shared: `register` and `unregister` take `&self`, so providers can come and go while the app runs (signing in to a server). `provider_for(&TrackId)` and `resolve_playback(&TrackId)` route by the track's provider id, and `finish_play(&TrackId, played_ms, length_ms)` applies the play rule (§8) and records the play.
 
 ## 3. Data model
 
@@ -133,7 +134,7 @@ let local = Arc::new(LocalLibrary::open(settings_dir.join("library.sqlite"), |ex
 local.add_folder(music_dir, true)?;
 local.scan(ScanMode::Incremental)?;          // progress arrives on local.subscribe()
 local.set_watching(true).ok();               // optional
-let mut registry = Registry::new();
+let registry = Arc::new(Registry::new());
 registry.register(local.clone());
 
 // Tree view: start at the root, expand on demand.
@@ -149,21 +150,46 @@ registry.finish_play(&track.id, played_ms, track.length_ms)?;
 
 ## 9. Remote providers
 
-The trait was shaped so that streaming servers map onto it directly; `MockProvider` (in-memory, `REMOTE`, `http://mock/stream/<id>` with an `Authorization: Bearer` header) proves the shape in the tests.
+The trait was shaped so that streaming servers map onto it directly; `MockProvider` (in-memory, `REMOTE`, `http://mock/stream/<id>` with an `Authorization: Bearer` header) proves the shape in the tests, and `JellyfinProvider` is the first real one.
 
-| Trait | Jellyfin | Subsonic / OpenSubsonic |
-|---|---|---|
-| `browse` | Artists, albums and genres from the items API filtered by item type and parent id; "Recently added" and "Most played" from the latest-items and sort-by-play-count queries | `getArtists` → `getArtist` → `getAlbum`; `getGenres`; `getAlbumList2` types `newest`, `frequent`, `highest`; `getPlaylists` |
-| `tracks`, `search` | Items query with `searchTerm`, sort and paging parameters | `search3` with count and offset; album and playlist contents |
-| `resolve_playback` | Audio stream URL; the access token goes in the `Authorization` header | `stream` URL; authentication parameters (user, salted token) are part of the URL, so `headers` stays empty |
-| `artwork` | Primary image of the item | `getCoverArt` |
-| `set_rating` | Server has favourites rather than stars: map 4–5 stars to favourite, or leave `WRITE_RATING` off | `setRating` (1–5, 0 clears) |
-| `record_play` | Mark played or report playback stopped with the position (`played_ms`) | `scrobble` with `submission=true` |
-| `edit_tags` | Not offered | Not offered |
-| playlists | Playlist API | `createPlaylist`, `updatePlaylist`, `deletePlaylist` |
-| `subscribe` | Server websocket or polling | Polling |
+### 9.1 Track locations
 
-Track ids are the server's item ids; `TrackId::provider` names the server account so several servers can be registered side by side. Servers search words rather than substrings, so a remote provider sends the free-text tokens to the server and applies field terms it cannot express with `Term::matches` on the results; `Sort::compare` sorts locally when the server cannot. Credentials and tokens belong to the provider's configuration and never appear in `Track::location`, only in `PlaybackLocation`.
+A remote track is put into a playlist as `library://<provider>/<track id>` (`TrackId::location`; `TrackId::from_location` reverses it), never as the server's stream URL. The app registers a "Media library" input in the decoder registry that claims these locations: when the track opens it calls `Registry::resolve_playback` and plays the returned URL with the returned headers through the network stream input (`StreamFactory::open_stream_with`, decision NET12), keeping the entry's title. So tokens never reach saved playlists, titles or the file-info dialog, and entries keep working after signing in again. Remote providers must resolve without blocking (no request), because the player opens tracks on its own thread.
+
+### 9.2 Jellyfin
+
+`nulamp_library::jellyfin` (Jellyfin 10.9 or newer):
+
+- `login(url, user, password)` reads `/System/Info/Public`, signs in with `/Users/AuthenticateByName` under a new random device id and lists the user's libraries (`/UserViews`). It returns an `Account`: server URL, server id and name, user id and name, access token, device id and every library with its collection type and an `enabled` flag (music libraries start enabled). The password is not kept. `libraries(account)` lists the libraries again and keeps the user's choices; `logout(account)` ends the session.
+- Requests carry `Authorization: MediaBrowser Client="nulamp", Device=…, DeviceId=…, Version=…, Token=…`.
+- `JellyfinProvider::new(account)` has the id `jellyfin-<user id>` and the name "Jellyfin: <server name>". It shows the enabled `music` libraries; other collection types are kept in the account for later (video).
+
+| Trait | Jellyfin |
+|---|---|
+| `browse` | One node per shown library (or the categories directly when one is shown): Artists (`/Artists/AlbumArtists`) → albums, Albums, Genres (`/MusicGenres`), Favorites, Most played; and Playlists (audio playlists of the user) |
+| `tracks`, `search` | `/Items` with `includeItemTypes=Audio`, `recursive`, the node's filter (`parentId`, `albumArtistIds`, `genreIds`, `filters=IsFavorite`/`IsPlayed`) and server paging and sorting, when there is no search and the server knows the sort (all keys except genre, rating and path; ties as in §6). Otherwise the node is listed in full (one request; playlists from `/Playlists/{id}/Items`, 2000 entries per request), kept for 5 minutes, and filtered with `Query::matches` and sorted with `Sort::compare`, so search behaves as in the local library |
+| `summary` | From a kept full listing; otherwise one counting request, with a length of 0 (the status line then shows only the count) |
+| `track` | `/Items/{id}` with media sources (bit rate, sample rate, channels, size) |
+| `resolve_playback` | `/Audio/{id}/universal`: the file as it is when its container is one the network input decodes (MP3, FLAC, Ogg Vorbis, WAV, AAC/ALAC in MP4), else an MP3 transcode at 320 kbit/s. The token goes in the `Authorization` header |
+| `artwork` | The primary image of the track, else of its album |
+| `record_play` | `POST /UserPlayedItems/{id}` (the server counts the play and sets the time); `TracksChanged` follows |
+| `set_rating`, `edit_tags`, playlists, `rescan` | Not offered |
+| `subscribe` | Only the event after a recorded play |
+
+### 9.3 Subsonic (not built)
+
+| Trait | Subsonic / OpenSubsonic |
+|---|---|
+| `browse` | `getArtists` → `getArtist` → `getAlbum`; `getGenres`; `getAlbumList2` types `newest`, `frequent`, `highest`; `getPlaylists` |
+| `tracks`, `search` | `search3` with count and offset; album and playlist contents |
+| `resolve_playback` | `stream` URL; authentication parameters (user, salted token) are part of the URL, so `headers` stays empty |
+| `artwork` | `getCoverArt` |
+| `set_rating` | `setRating` (1–5, 0 clears) |
+| `record_play` | `scrobble` with `submission=true` |
+| playlists | `createPlaylist`, `updatePlaylist`, `deletePlaylist` |
+| `subscribe` | Polling |
+
+Track ids are the server's item ids; `TrackId::provider` names the server account so several servers can be registered side by side. Credentials and tokens belong to the provider's configuration and never appear in `Track::location`, only in `PlaybackLocation`.
 
 ## 10. User interface
 
@@ -182,4 +208,6 @@ app ── MediaLibrary { registry, local } ──► Shell::with_library
 - **Window.** `LibraryWindow` is a generic skinned window (05 §1): search box, tree (`nulamp_skinui::TreeView`) and track list (`nulamp_skinui::Table`: sortable, resizable columns, multi-selection, vertical and horizontal `ScrollBar`s) with a movable splitter, Play/Enqueue buttons and the status line. All text is 1-bit (`PixelText`).
 - **Actions.** Play (replace the playlist), Enqueue (append), Play next (append and queue first), Insert (drag onto the playlist window), rate, file info, show in folder, add to a library playlist and remove from the library collect the selected rows through the worker first, so they work on rows that were never loaded.
 - **Plays.** `PlayTracker` follows the heard entry and its listening time; when it ends or is skipped the worker maps the file with `track_id_for_path` and calls `Registry::finish_play`.
-- **Settings.** Window geometry (`lib_*`) and the options of the preferences page "Media Library" (`library_folders`, `library_rescan_on_start`, `library_watch`) are stored in `nulamp.ini`.
+- **Remote tracks.** Actions on a remote provider's rows queue `library://` locations (§9.1) titled "artist - title"; their plays are recorded through `Registry::finish_play` like local ones.
+- **Changing providers.** `MediaLibrary::set_jellyfin` replaces the Jellyfin provider in the shared registry; the shell then restarts the worker and the tree (the window keeps its layout).
+- **Settings.** Window geometry (`lib_*`) and the options of the preferences page "Media Library" (`library_folders`, `library_rescan_on_start`, `library_watch`) are stored in `nulamp.ini`. The page "Jellyfin" signs in and out on a helper thread (dialogs poll for the answer with `Dialog::poll`) and chooses the shown libraries; the account is stored as `jellyfin_*` keys (the access token, never the password), and the settings file is written readable by the user only.

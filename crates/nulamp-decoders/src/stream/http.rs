@@ -202,15 +202,89 @@ pub(crate) fn io_error(e: io::Error) -> StreamError {
     }
 }
 
+/// Header names the client writes itself; extra headers may not use them (nor `Proxy-` names).
+const RESERVED_HEADERS: &[&str] = &[
+    "host",
+    "connection",
+    "range",
+    "content-length",
+    "transfer-encoding",
+];
+
+/// Extra request headers bound to one origin (scheme, host and port).
+#[derive(Debug)]
+pub(crate) struct OriginHeaders {
+    tls: bool,
+    host: String,
+    port: u16,
+    headers: Vec<(String, String)>,
+}
+
+impl OriginHeaders {
+    /// Headers for requests to `origin`'s scheme, host and port. Headers with a name that is
+    /// not an HTTP token, a reserved or `Proxy-` name, or a value with CR, LF or NUL are
+    /// dropped. `None` when no header is left.
+    pub fn new(origin: &Url, headers: &[(String, String)]) -> Option<OriginHeaders> {
+        let headers: Vec<(String, String)> = headers
+            .iter()
+            .filter(|(k, v)| {
+                let ok = valid_header(k, v);
+                if !ok {
+                    log::warn!("stream: dropped request header {:?}", k.trim());
+                }
+                ok
+            })
+            .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+            .collect();
+        (!headers.is_empty()).then(|| OriginHeaders {
+            tls: origin.tls,
+            host: origin.host.to_ascii_lowercase(),
+            port: origin.port,
+            headers,
+        })
+    }
+
+    /// True when `url` is on the origin.
+    fn applies_to(&self, url: &Url) -> bool {
+        url.tls == self.tls && url.port == self.port && url.host.eq_ignore_ascii_case(&self.host)
+    }
+
+    fn has(&self, name: &str) -> bool {
+        self.headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case(name))
+    }
+}
+
+fn valid_header(name: &str, value: &str) -> bool {
+    let name = name.trim();
+    let token = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
+    let lower = name.to_ascii_lowercase();
+    token
+        && !RESERVED_HEADERS.contains(&lower.as_str())
+        && !lower.starts_with("proxy-")
+        && !value.contains(['\r', '\n', '\0'])
+}
+
 /// Request settings and the socket hook used to abort blocking reads.
 pub(crate) struct Client<'a> {
     pub config: &'a StreamConfig,
     pub credentials: &'a CredentialStore,
     /// Called with each new socket, so another thread can shut it down.
     pub on_connect: &'a dyn Fn(&TcpStream),
+    /// Extra headers, sent only to their origin.
+    pub headers: Option<&'a OriginHeaders>,
 }
 
 impl Client<'_> {
+    /// The extra headers for a request to `url`.
+    fn headers_for(&self, url: &Url) -> Option<&OriginHeaders> {
+        self.headers.filter(|h| h.applies_to(url))
+    }
+
     /// GET `url`, following redirects and answering Basic authentication challenges.
     /// `range_from` > 0 asks for the bytes from that offset.
     pub fn get(&self, url: &Url, range_from: u64) -> Result<Response, StreamError> {
@@ -257,6 +331,13 @@ impl Client<'_> {
                     let realm = header("www-authenticate")
                         .and_then(|v| basic_realm(&v))
                         .unwrap_or_default();
+                    if self
+                        .headers_for(&url)
+                        .is_some_and(|h| h.has("authorization"))
+                    {
+                        // The caller's own authorization was refused; Basic would not be sent.
+                        return Err(StreamError::AuthRequired { realm });
+                    }
                     if let Some((r, _)) = &auth
                         && *r == realm
                     {
@@ -356,11 +437,15 @@ impl Client<'_> {
         if range_from > 0 {
             req.push_str(&format!("Range: bytes={range_from}-\r\n"));
         }
-        if let Some((u, p)) = basic {
+        let origin = self.headers_for(url);
+        if let Some((u, p)) = basic.filter(|_| !origin.is_some_and(|h| h.has("authorization"))) {
             req.push_str(&format!(
                 "Authorization: Basic {}\r\n",
                 base64(&format!("{u}:{p}"))
             ));
+        }
+        for (k, v) in origin.iter().flat_map(|h| &h.headers) {
+            req.push_str(&format!("{k}: {v}\r\n"));
         }
         req.push_str(&extra);
         req.push_str("\r\n");

@@ -12,11 +12,39 @@ pub struct TrackId {
     pub id: String,
 }
 
+/// URL scheme of [`TrackId::location`].
+pub const LIBRARY_SCHEME: &str = "library";
+
 impl TrackId {
     pub fn new(provider: impl Into<String>, id: impl Into<String>) -> Self {
         Self {
             provider: provider.into(),
             id: id.into(),
+        }
+    }
+
+    /// `library://<provider>/<id>`: names a track of a remote provider in a playlist. The
+    /// player resolves it with [`crate::Registry::resolve_playback`] each time it opens the
+    /// track, so saved playlists hold no server address or credentials.
+    pub fn location(&self) -> String {
+        format!(
+            "{LIBRARY_SCHEME}://{}/{}",
+            crate::enc_segment(&self.provider),
+            crate::enc_segment(&self.id)
+        )
+    }
+
+    /// The track named by a [`TrackId::location`], `None` for any other location.
+    pub fn from_location(location: &str) -> Option<Self> {
+        let (scheme, rest) = location.split_once("://")?;
+        if !scheme.eq_ignore_ascii_case(LIBRARY_SCHEME) {
+            return None;
+        }
+        match &crate::split_id(rest)[..] {
+            [provider, id] if !provider.is_empty() && !id.is_empty() => {
+                Some(Self::new(provider.clone(), id.clone()))
+            }
+            _ => None,
         }
     }
 }
@@ -430,6 +458,27 @@ mod tests {
         assert_eq!(leading_number("3/12"), Some(3));
         assert_eq!(leading_number(" 1999-05-01"), Some(1999));
         assert_eq!(leading_number("x"), None);
+    }
+
+    #[test]
+    fn library_locations() {
+        let id = TrackId::new("jellyfin-ab12", "c/d%e");
+        let loc = id.location();
+        assert_eq!(loc, "library://jellyfin-ab12/c%2Fd%25e");
+        assert_eq!(TrackId::from_location(&loc), Some(id));
+        assert_eq!(
+            TrackId::from_location("LIBRARY://p/1"),
+            Some(TrackId::new("p", "1"))
+        );
+        for bad in [
+            "http://p/1",
+            "library://p",
+            "library://p/1/2",
+            "library:///1",
+            "/p/1",
+        ] {
+            assert_eq!(TrackId::from_location(bad), None, "{bad}");
+        }
     }
 
     #[test]

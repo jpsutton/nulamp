@@ -105,6 +105,18 @@ impl<P: PlayerHandle> Shell<P> {
         self.draw_dialog(id);
     }
 
+    /// Lets dialogs take the results of background work; redraws the ones that changed.
+    pub(super) fn poll_dialogs(&mut self) {
+        let changed: Vec<WindowId> = self
+            .dialogs
+            .iter_mut()
+            .filter_map(|(id, d)| d.dialog.poll().then_some(*id))
+            .collect();
+        for id in changed {
+            self.draw_dialog(id);
+        }
+    }
+
     fn draw_dialog(&mut self, id: WindowId) {
         let Some(d) = self.dialogs.get_mut(&id) else {
             return;

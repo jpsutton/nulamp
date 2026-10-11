@@ -194,6 +194,8 @@ pub struct LibraryPrefs {
     pub rescan_on_start: bool,
     /// Follow file changes in the watch folders while running.
     pub watch: bool,
+    /// The signed-in Jellyfin account (preferences page "Jellyfin").
+    pub jellyfin: Option<nulamp_library::jellyfin::Account>,
 }
 
 impl Default for LibraryPrefs {
@@ -202,6 +204,7 @@ impl Default for LibraryPrefs {
             folders: Vec::new(),
             rescan_on_start: true,
             watch: true,
+            jellyfin: None,
         }
     }
 }
@@ -3038,7 +3041,7 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         }
         self.poll_player();
         self.refresh_title();
-        // Development aid: open a dialog at start-up (NULAMP_OPEN_DIALOG=about|url|jumpfile|skins).
+        // Development aid: open a dialog at start-up (NULAMP_OPEN_DIALOG=about|url|jumpfile|skins|…).
         if let Ok(which) = std::env::var("NULAMP_OPEN_DIALOG") {
             let id = self.ids[&Kind::Main];
             match which.as_str() {
@@ -3062,6 +3065,15 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
                         self.playlist_options(),
                     )
                     .with_page("Media Library")
+                    .wayland_native(self.wayland);
+                    self.open_dialog(el, Box::new(d));
+                }
+                "jellyfin" => {
+                    let d = crate::prefs_dialog::PrefsDialog::new(
+                        self.prefs.clone(),
+                        self.playlist_options(),
+                    )
+                    .with_page("Jellyfin")
                     .wayland_native(self.wayland);
                     self.open_dialog(el, Box::new(d));
                 }
@@ -3191,6 +3203,7 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         self.check_menu_focus();
         self.poll_remote(el);
         self.poll_url_expansions();
+        self.poll_dialogs();
         for kind in std::mem::take(&mut self.reopen) {
             if kind == Kind::Main {
                 self.reopen_main(el);

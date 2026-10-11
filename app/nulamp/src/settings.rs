@@ -159,6 +159,9 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
     ];
     let mut rows: Vec<(String, String)> =
         rows.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+    if let Some(a) = &p.library.jellyfin {
+        rows.extend(jellyfin_rows(a));
+    }
     rows.push(("hotkeys_enabled".into(), b(p.hotkeys.enabled)));
     for (i, hk) in p.hotkeys.bindings.iter().enumerate() {
         rows.push((
@@ -171,6 +174,78 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
         out.push_str(&format!("{k}={}\n", v.replace(['\n', '\r'], " ")));
     }
     out
+}
+
+/// A value of a tab- and `|`-separated list.
+fn list_value(s: &str) -> String {
+    s.replace(['\t', '|', '\n', '\r'], " ")
+}
+
+/// The signed-in Jellyfin account (`jellyfin_*`). The password is never stored, only the
+/// access token.
+fn jellyfin_rows(a: &nulamp_library::jellyfin::Account) -> Vec<(String, String)> {
+    // Each library is `<0|1>|<collection type>|<id>|<name>` (shown, type, id, name);
+    // libraries are separated by tabs.
+    let libraries = a
+        .libraries
+        .iter()
+        .map(|l| {
+            format!(
+                "{}|{}|{}|{}",
+                b(l.enabled),
+                list_value(&l.collection_type),
+                list_value(&l.id),
+                list_value(&l.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\t");
+    [
+        ("jellyfin_server", a.server_url.clone()),
+        ("jellyfin_server_id", a.server_id.clone()),
+        ("jellyfin_server_name", a.server_name.clone()),
+        ("jellyfin_user", a.user_name.clone()),
+        ("jellyfin_user_id", a.user_id.clone()),
+        ("jellyfin_token", a.token.clone()),
+        ("jellyfin_device_id", a.device_id.clone()),
+        ("jellyfin_libraries", libraries),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect()
+}
+
+/// The Jellyfin account of the settings file, when one is signed in.
+fn jellyfin_account(
+    get: &dyn Fn(&str) -> Option<String>,
+) -> Option<nulamp_library::jellyfin::Account> {
+    let server_url = get("jellyfin_server").filter(|v| !v.trim().is_empty())?;
+    let user_id = get("jellyfin_user_id").filter(|v| !v.trim().is_empty())?;
+    let token = get("jellyfin_token").filter(|v| !v.trim().is_empty())?;
+    let libraries = get("jellyfin_libraries")
+        .unwrap_or_default()
+        .split('\t')
+        .filter_map(|item| {
+            let mut f = item.splitn(4, '|');
+            let (on, kind, id, name) = (f.next()?, f.next()?, f.next()?, f.next()?);
+            (!id.is_empty()).then(|| nulamp_library::jellyfin::Library {
+                id: id.to_string(),
+                name: name.to_string(),
+                collection_type: kind.to_string(),
+                enabled: on.trim() == "1",
+            })
+        })
+        .collect();
+    Some(nulamp_library::jellyfin::Account {
+        server_url: server_url.trim().to_string(),
+        server_id: get("jellyfin_server_id").unwrap_or_default(),
+        server_name: get("jellyfin_server_name").unwrap_or_default(),
+        user_name: get("jellyfin_user").unwrap_or_default(),
+        user_id: user_id.trim().to_string(),
+        token: token.trim().to_string(),
+        device_id: get("jellyfin_device_id").unwrap_or_default(),
+        libraries,
+    })
 }
 
 /// Parses the settings file over the defaults.
@@ -335,6 +410,7 @@ pub fn from_ini(text: &str) -> (UiPrefs, PlayerState) {
     }
     p.library.rescan_on_start = flag("library_rescan_on_start", p.library.rescan_on_start);
     p.library.watch = flag("library_watch", p.library.watch);
+    p.library.jellyfin = jellyfin_account(&get);
     p.hotkeys.enabled = flag("hotkeys_enabled", p.hotkeys.enabled);
     if get("hotkey_0").is_some() {
         p.hotkeys.bindings = (0..)
@@ -385,7 +461,13 @@ pub fn save(dir: &Path, p: &UiPrefs, st: &PlayerState) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let path = settings_path(dir);
     let tmp = path.with_extension("ini.tmp");
-    std::fs::write(&tmp, to_ini(p, st))?;
+    let _ = std::fs::remove_file(&tmp);
+    let mut file = std::fs::OpenOptions::new();
+    file.write(true).create_new(true);
+    // Only the user may read it: it can hold a server access token.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut file, 0o600);
+    std::io::Write::write_all(&mut file.open(&tmp)?, to_ini(p, st).as_bytes())?;
     std::fs::rename(tmp, path)
 }
 
@@ -463,6 +545,36 @@ mod tests {
         assert_eq!(p2.lib_columns, [30, 120, 160, 1]);
         assert_eq!(p2.library, p.library);
         // An empty folder list stays empty.
+        p.library.jellyfin = Some(nulamp_library::jellyfin::Account {
+            server_url: "https://jf.example:8920".into(),
+            server_id: "srv".into(),
+            server_name: "Home".into(),
+            user_name: "me".into(),
+            user_id: "u1".into(),
+            token: "tok".into(),
+            device_id: "dev".into(),
+            libraries: vec![
+                nulamp_library::jellyfin::Library {
+                    id: "l1".into(),
+                    name: "Music | Lossless\tA".into(),
+                    collection_type: "music".into(),
+                    enabled: true,
+                },
+                nulamp_library::jellyfin::Library {
+                    id: "l2".into(),
+                    name: "Films".into(),
+                    collection_type: "movies".into(),
+                    enabled: false,
+                },
+            ],
+        });
+        let (p2, _) = from_ini(&to_ini(&p, &PlayerState::default()));
+        let a = p2.library.jellyfin.unwrap();
+        assert_eq!(a.libraries[0].name, "Music   Lossless A");
+        let mut expected = p.library.jellyfin.clone().unwrap();
+        expected.libraries[0].name = a.libraries[0].name.clone();
+        assert_eq!(a, expected);
+        p.library.jellyfin = None;
         p.library.folders.clear();
         let (p3, _) = from_ini(&to_ini(&p, &PlayerState::default()));
         assert!(p3.library.folders.is_empty());
