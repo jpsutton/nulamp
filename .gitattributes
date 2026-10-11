@@ -1,0 +1,2 @@
+# Generated files that tests compare byte for byte keep LF line endings on every platform.
+*.svg text eol=lf
