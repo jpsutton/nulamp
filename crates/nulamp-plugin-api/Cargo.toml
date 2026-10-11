@@ -23,15 +23,15 @@ host = [
 [dependencies]
 libloading = { version = "0.8.9", optional = true }
 log = { version = "0.4.34", optional = true }
-nulamp-audio = { version = "0.2.0", path = "../nulamp-audio", optional = true }
-nulamp-core = { version = "0.2.0", path = "../nulamp-core", optional = true }
-nulamp-decoders = { version = "0.2.0", path = "../nulamp-decoders", optional = true }
-nulamp-vis = { version = "0.2.0", path = "../nulamp-vis", optional = true }
+nulamp-audio = { version = "0.3.0", path = "../nulamp-audio", optional = true }
+nulamp-core = { version = "0.3.0", path = "../nulamp-core", optional = true }
+nulamp-decoders = { version = "0.3.0", path = "../nulamp-decoders", optional = true }
+nulamp-vis = { version = "0.3.0", path = "../nulamp-vis", optional = true }
 thiserror = { version = "2.0.21", optional = true }
 
 [dev-dependencies]
 # Built before the tests so that `tests/example_plugin.rs` finds its shared library.
-nulamp-plugin-example = { version = "0.2.0", path = "../nulamp-plugin-example" }
+nulamp-plugin-example = { version = "0.3.0", path = "../nulamp-plugin-example" }
 
 [lints]
 workspace = true
