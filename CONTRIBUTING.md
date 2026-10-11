@@ -24,6 +24,21 @@ Flow:
 CI runs only for pull requests, never on plain pushes. The full cross-platform build and tests
 run once per release, on the `staging` → `release` pull request.
 
+## Git access
+
+Always use the project owner's **personal** GitHub SSH key, `~/.ssh/id_ed25519_personal_github`,
+for this repository, never the machine's default `github.com` key (it belongs to a work account
+and is refused). Set it once per clone or worktree:
+
+```bash
+git config core.sshCommand "ssh -i ~/.ssh/id_ed25519_personal_github -o IdentitiesOnly=yes"
+```
+
+Commits use the personal email address, never a work identity. Unattended sessions that cannot
+unlock the SSH key push over HTTPS with the personal account's `gh` token
+(`gh auth token -u jpsutton`) through a per-command credential helper; do not switch the active
+`gh` account.
+
 ## Clean-room rule
 
 Do not read Winamp source code, or the source of other classic-skin re-implementations, from anywhere. Work only from `spec/`, public format standards and third-party library documentation. Record decisions in `docs/decisions.md`.
