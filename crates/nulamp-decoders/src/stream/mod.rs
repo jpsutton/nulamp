@@ -240,6 +240,22 @@ impl CredentialStore {
     }
 }
 
+/// Extra settings for one stream (media-library tracks).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamOptions {
+    /// Extra request headers (for example `Authorization`), sent only to the host and port of
+    /// the original location: never to a redirect target on another server, and never to a
+    /// proxy as proxy headers. Names that are not HTTP tokens, names the client sets itself
+    /// (`Host`, `Connection`, `Range`, `Content-Length`, `Transfer-Encoding`), `Proxy-` names
+    /// and values with CR, LF or NUL are dropped. An `Authorization` header replaces Basic
+    /// authentication for that server.
+    pub headers: Vec<(String, String)>,
+    /// Keep the playlist entry's title: the decoder reports no title changes (no
+    /// `[Connecting]`, buffer or stream titles), so a URL (which may carry credentials) or a
+    /// server file name never replaces it.
+    pub keep_title: bool,
+}
+
 /// Station and song fields of a stream (07 §8.4, §8.5).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StreamFields {
@@ -356,6 +372,7 @@ impl StreamFactory {
             config: &config,
             credentials: &self.inner.credentials,
             on_connect: &on_connect,
+            headers: None,
         };
         let url = url::Url::parse(location)?;
         match net::fetch(&client, &url, 0)? {
@@ -366,6 +383,15 @@ impl StreamFactory {
 
     /// Starts connecting to `location` and returns at once.
     pub fn open_stream(&self, location: &str) -> Result<StreamDecoder, DecodeError> {
+        self.open_stream_with(location, &StreamOptions::default())
+    }
+
+    /// [`StreamFactory::open_stream`] with extra settings.
+    pub fn open_stream_with(
+        &self,
+        location: &str,
+        options: &StreamOptions,
+    ) -> Result<StreamDecoder, DecodeError> {
         let config = self.config();
         let capacity = config.buffer_bytes.max(StreamConfig::MIN_BUFFER);
         let state = State::new(
@@ -381,14 +407,15 @@ impl StreamFactory {
             open.push((location.to_string(), Arc::downgrade(&shared)));
         }
         let spawn_err = |e: std::io::Error| DecodeError::Open(e.to_string());
-        let (s, creds, loc) = (
+        let (s, creds, loc, headers) = (
             shared.clone(),
             self.inner.credentials.clone(),
             location.to_string(),
+            options.headers.clone(),
         );
         std::thread::Builder::new()
             .name("nulamp-net".into())
-            .spawn(move || net::run(s, config, creds, loc))
+            .spawn(move || net::run(s, config, creds, loc, headers))
             .map_err(spawn_err)?;
         let s = shared.clone();
         if let Err(e) = std::thread::Builder::new()
@@ -404,6 +431,7 @@ impl StreamFactory {
             info,
             info_version: 0,
             last_title: None,
+            keep_title: options.keep_title,
             starved_since: None,
         })
     }
@@ -438,6 +466,8 @@ pub struct StreamDecoder {
     info: StreamInfo,
     info_version: u64,
     last_title: Option<String>,
+    /// Report no titles ([`StreamOptions::keep_title`]).
+    keep_title: bool,
     /// When the reader first found no decoded audio, for underrun detection.
     starved_since: Option<std::time::Instant>,
 }
@@ -537,6 +567,9 @@ impl Decoder for StreamDecoder {
     }
 
     fn take_title(&mut self) -> Option<String> {
+        if self.keep_title {
+            return None;
+        }
         let title = self.shared.lock().title();
         if self.last_title.as_deref() == Some(title.as_str()) {
             return None;

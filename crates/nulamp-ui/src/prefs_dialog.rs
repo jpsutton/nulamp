@@ -3,6 +3,7 @@
 use nulamp_skinui::{Form, FormEvent, Rect, Widget};
 
 use crate::dialogs::{Dialog, DialogResult, Outcome};
+use crate::prefs_jellyfin::{Change, JellyfinPage};
 use crate::shell::UiPrefs;
 use crate::wayland_limits;
 
@@ -17,7 +18,7 @@ pub struct PlaylistOptions {
     pub old_school_buttons: bool,
 }
 
-const PAGES: [&str; 9] = [
+const PAGES: [&str; 10] = [
     "Classic skins",
     "Playlist",
     "Playback",
@@ -26,10 +27,12 @@ const PAGES: [&str; 9] = [
     "Skins",
     "Crossfade",
     "Media Library",
+    "Jellyfin",
     "Video",
 ];
 const LIBRARY_PAGE: usize = 7;
-const VIDEO_PAGE: usize = 8;
+const JELLYFIN_PAGE: usize = 8;
+const VIDEO_PAGE: usize = 9;
 const PAGE_LIST: u32 = 1;
 const OK: u32 = 2;
 const CANCEL: u32 = 3;
@@ -220,19 +223,21 @@ pub struct PrefsDialog {
     pick_folder: fn() -> Option<std::path::PathBuf>,
     /// Running as a native Wayland window: options Wayland cannot support are greyed out.
     wayland_native: bool,
+    jellyfin: JellyfinPage,
 }
 
 impl PrefsDialog {
     pub fn new(prefs: UiPrefs, pl: PlaylistOptions) -> Self {
         let mut d = Self {
             form: Form::default(),
-            prefs,
             pl,
             page: 0,
             folder_sel: None,
             default_recursive: true,
             pick_folder: pick_library_folder,
             wayland_native: false,
+            jellyfin: JellyfinPage::new(prefs.library.jellyfin.as_ref()),
+            prefs,
         };
         d.build();
         d
@@ -383,6 +388,14 @@ impl PrefsDialog {
         if self.page == LIBRARY_PAGE {
             self.library_widgets(&mut widgets, x, y, cw - x - 6, ch - 32);
         }
+        if self.page == JELLYFIN_PAGE {
+            widgets.extend(self.jellyfin.widgets(
+                self.prefs.library.jellyfin.as_ref(),
+                x,
+                cw - x - 6,
+                ch - 32,
+            ));
+        }
         let mut num = |label: &str, value: String, id: u32, widgets: &mut Vec<Widget>| {
             widgets.push(Widget::Label {
                 rect: Rect::new(x, y + 2, 150, 14),
@@ -482,11 +495,31 @@ impl PrefsDialog {
                 self.form.set_tooltip(OPT + i as u32, why);
             }
         }
+        if self.page == JELLYFIN_PAGE {
+            self.jellyfin
+                .after_build(&mut self.form, self.prefs.library.jellyfin.as_ref());
+        }
         self.form.focus_id(PAGE_LIST);
+    }
+
+    /// Rebuilds the form, keeping the focused control.
+    fn rebuild_keeping_focus(&mut self) {
+        let focus = self
+            .form
+            .focus
+            .and_then(|i| self.form.widgets.get(i))
+            .and_then(Widget::id);
+        self.build();
+        if let Some(id) = focus {
+            self.form.focus_id(id);
+        }
     }
 
     /// Copies the visible page's controls back into the preferences.
     fn collect(&mut self) {
+        if self.page == JELLYFIN_PAGE {
+            self.jellyfin.collect(&self.form);
+        }
         for (i, o) in page_options(self.page).iter().enumerate() {
             if self.unavailable(o).is_some() {
                 continue;
@@ -562,9 +595,50 @@ impl Dialog for PrefsDialog {
         "prefs"
     }
 
+    fn poll(&mut self) -> bool {
+        // Typed text first: an answer may replace it (a signed-in address, a cleared password).
+        if self.page == JELLYFIN_PAGE {
+            self.jellyfin.collect(&self.form);
+        }
+        if !self.jellyfin.poll(&mut self.prefs.library.jellyfin) {
+            return false;
+        }
+        if self.page == JELLYFIN_PAGE {
+            self.rebuild_keeping_focus();
+        }
+        true
+    }
+
     fn handle(&mut self, ev: FormEvent) -> Outcome {
         if let Some(o) = self.library_event(&ev) {
             return o;
+        }
+        // Enter on the signed-out Jellyfin page signs in instead of closing the dialog.
+        let ev = match ev {
+            FormEvent::Submit
+                if self.page == JELLYFIN_PAGE
+                    && self
+                        .jellyfin
+                        .signs_in_on_enter(self.prefs.library.jellyfin.as_ref()) =>
+            {
+                FormEvent::Clicked(crate::prefs_jellyfin::CONNECT)
+            }
+            ev => ev,
+        };
+        if self.page == JELLYFIN_PAGE {
+            self.collect();
+            match self.jellyfin.event(&ev, &mut self.prefs.library.jellyfin) {
+                Change::None => {}
+                Change::List => {
+                    self.jellyfin
+                        .update_list(&mut self.form, self.prefs.library.jellyfin.as_ref());
+                    return Outcome::Keep;
+                }
+                Change::Page => {
+                    self.rebuild_keeping_focus();
+                    return Outcome::Keep;
+                }
+            }
         }
         match ev {
             FormEvent::Selected(PAGE_LIST, i) if i != self.page => {
@@ -725,6 +799,112 @@ mod tests {
         assert!(!d.form.is_enabled(OPT + rows[2].0));
         let p = result(d.handle(FormEvent::Clicked(OK)));
         assert!(p.always_on_top && !p.keep_on_screen && p.hotkeys.enabled);
+    }
+
+    #[test]
+    fn jellyfin_page_signs_in() {
+        use nulamp_library::jellyfin::{Account, Library};
+        fn login(server: &str, user: &str, pw: &str) -> nulamp_library::Result<Account> {
+            assert_eq!((server, user, pw), ("jf.lan", "me", "pw"));
+            Ok(Account {
+                server_url: "http://jf.lan".into(),
+                server_name: "Home".into(),
+                user_name: "me".into(),
+                user_id: "u".into(),
+                token: "t".into(),
+                libraries: vec![Library {
+                    id: "l".into(),
+                    name: "Music".into(),
+                    collection_type: "music".into(),
+                    enabled: true,
+                }],
+                ..Account::default()
+            })
+        }
+        let mut d = PrefsDialog::new(UiPrefs::default(), pl()).with_page("Jellyfin");
+        assert_eq!(d.page, JELLYFIN_PAGE);
+        d.jellyfin.login = login;
+        d.form.set_text(400, "jf.lan");
+        d.form.set_text(401, "me");
+        d.form.set_text(402, "pw");
+        // Enter in the fields signs in rather than closing the dialog.
+        assert!(matches!(d.handle(FormEvent::Submit), Outcome::Keep));
+        assert!(!d.form.is_enabled(403), "busy while signing in");
+        let mut polled = false;
+        for _ in 0..500 {
+            if d.poll() {
+                polled = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(polled);
+        assert!(!d.form.is_enabled(400), "signed in: the address is locked");
+        assert_eq!(d.form.text(402), "", "the password is cleared");
+        // Switching pages and back keeps the account; OK hands it over.
+        d.handle(FormEvent::Selected(PAGE_LIST, 0));
+        d.handle(FormEvent::Selected(PAGE_LIST, JELLYFIN_PAGE));
+        let p = result(d.handle(FormEvent::Clicked(OK)));
+        let a = p.library.jellyfin.unwrap();
+        assert_eq!(
+            (a.server_url.as_str(), a.token.as_str()),
+            ("http://jf.lan", "t")
+        );
+    }
+
+    #[test]
+    fn jellyfin_libraries_toggle_with_the_mouse() {
+        use nulamp_library::jellyfin::{Account, Library};
+        let lib = |id: &str| Library {
+            id: id.into(),
+            name: id.into(),
+            collection_type: "music".into(),
+            enabled: true,
+        };
+        let mut prefs = UiPrefs::default();
+        prefs.library.jellyfin = Some(Account {
+            user_id: "u".into(),
+            token: "t".into(),
+            libraries: vec![lib("a"), lib("b")],
+            ..Account::default()
+        });
+        let mut d = PrefsDialog::new(prefs, pl());
+        d.jellyfin.libraries = |a| Ok(a.libraries.clone());
+        d.handle(FormEvent::Selected(PAGE_LIST, JELLYFIN_PAGE));
+        let Some(Widget::List { rect, .. }) = d.form.find(404).cloned() else {
+            panic!("no library list");
+        };
+        let (x, y) = (rect.x + 10, rect.y + 1 + 14 + 5);
+        let click = |d: &mut PrefsDialog| {
+            for ev in [d.form.mouse_down(x, y), d.form.mouse_up(x, y)]
+                .into_iter()
+                .flatten()
+            {
+                d.handle(ev);
+            }
+        };
+        // A double-click on the second row hides library `b`.
+        click(&mut d);
+        click(&mut d);
+        let shown =
+            |d: &PrefsDialog| d.prefs.library.jellyfin.as_ref().unwrap().libraries[1].enabled;
+        assert!(!shown(&d));
+        assert!(!d.form.checked(405));
+        // The check box shows it again.
+        let Some(Widget::Check { rect, .. }) = d.form.find(405).cloned() else {
+            panic!("no check box");
+        };
+        for ev in [
+            d.form.mouse_down(rect.x + 4, rect.y + 4),
+            d.form.mouse_up(rect.x + 4, rect.y + 4),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            d.handle(ev);
+        }
+        assert!(shown(&d));
+        assert!(d.form.checked(405));
     }
 
     #[test]

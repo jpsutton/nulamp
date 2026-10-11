@@ -28,8 +28,9 @@ icon by [`tools/icongen`](tools/icongen).
   track choice. Not in the Windows builds yet.
 - Playlists: M3U/M3U8, PLS, XSPF, B4S, ASX, WPL, ZPL; title formatting; tag reading and writing;
   bookmarks; jump to file; queue.
-- Media library: a local SQLite library with folder watching and search, behind a provider
-  interface for other sources ([`docs/media-library.md`](docs/media-library.md)).
+- Media library: a local SQLite library with folder watching and search, plus the music
+  libraries of a Jellyfin server (10.9 or newer), behind a provider interface for other sources
+  ([`docs/media-library.md`](docs/media-library.md)).
 - Plugins: a C ABI for decoders, effects, visualizations and general modules
   ([`docs/plugins.md`](docs/plugins.md), [`include/nulamp_plugin.h`](include/nulamp_plugin.h)),
   plus built-in scripted effects ([`docs/scripted-dsp.md`](docs/scripted-dsp.md)).

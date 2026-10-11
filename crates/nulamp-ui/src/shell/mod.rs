@@ -208,6 +208,8 @@ pub struct LibraryPrefs {
     pub rescan_on_start: bool,
     /// Follow file changes in the watch folders while running.
     pub watch: bool,
+    /// The signed-in Jellyfin account (preferences page "Jellyfin").
+    pub jellyfin: Option<nulamp_library::jellyfin::Account>,
 }
 
 impl Default for LibraryPrefs {
@@ -216,6 +218,7 @@ impl Default for LibraryPrefs {
             folders: Vec::new(),
             rescan_on_start: true,
             watch: true,
+            jellyfin: None,
         }
     }
 }
@@ -1871,6 +1874,29 @@ impl<P: PlayerHandle> Shell<P> {
         }
     }
 
+    /// The clipboard's text as one line for a text field: up to the first line break, without
+    /// control characters. `None` when the clipboard is empty or unavailable.
+    pub(super) fn clipboard_line(&mut self) -> Option<String> {
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new().ok();
+        }
+        let text = match self.clipboard.as_mut()?.get_text() {
+            Ok(t) => t,
+            Err(e) => {
+                log::info!("clipboard not available: {e}");
+                return None;
+            }
+        };
+        let line: String = text
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        (!line.is_empty()).then_some(line)
+    }
+
     /// Applies preferences from the preferences dialog.
     fn apply_prefs(&mut self, prefs: UiPrefs, pl: crate::prefs_dialog::PlaylistOptions) {
         let aot_changed = prefs.always_on_top != self.prefs.always_on_top;
@@ -3120,7 +3146,7 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         }
         self.poll_player();
         self.refresh_title();
-        // Development aid: open a dialog at start-up (NULAMP_OPEN_DIALOG=about|url|jumpfile|skins).
+        // Development aid: open a dialog at start-up (NULAMP_OPEN_DIALOG=about|url|jumpfile|skins|…).
         if let Ok(which) = std::env::var("NULAMP_OPEN_DIALOG") {
             let id = self.ids[&Kind::Main];
             match which.as_str() {
@@ -3145,6 +3171,15 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
                         self.playlist_options(),
                     )
                     .with_page("Media Library")
+                    .wayland_native(self.wayland);
+                    self.open_dialog(el, Box::new(d));
+                }
+                "jellyfin" => {
+                    let d = crate::prefs_dialog::PrefsDialog::new(
+                        self.prefs.clone(),
+                        self.playlist_options(),
+                    )
+                    .with_page("Jellyfin")
                     .wayland_native(self.wayland);
                     self.open_dialog(el, Box::new(d));
                 }
@@ -3277,6 +3312,7 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         self.check_menu_focus();
         self.poll_remote(el);
         self.poll_url_expansions();
+        self.poll_dialogs();
         for kind in std::mem::take(&mut self.reopen) {
             if kind == Kind::Main {
                 self.reopen_main(el);
