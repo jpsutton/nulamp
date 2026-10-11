@@ -515,7 +515,7 @@ fn draw_title_area(f: &mut Frame, skin: &Skin, title: &TitleArea) {
 }
 
 /// Opacity of the buffered overlay, out of 256.
-const BUFFERED_ALPHA: u32 = 80;
+const BUFFERED_ALPHA: u32 = 56;
 
 /// Tints the part `span` (positions 0..=256) of a `w`×`h` bar at (x, y): lighter on a dark bar,
 /// darker on a light one, so any skin shows it.
@@ -681,15 +681,15 @@ mod tests {
         let mut f = Frame::new(20, 2, 0x10_20_30);
         tint_span(&mut f, (64, 128), 2, 0, 16, 2);
         assert_eq!(f.pixel(5, 0), 0x10_20_30);
-        assert_eq!(f.pixel(6, 1), 0x5a_65_70);
-        assert_eq!(f.pixel(9, 0), 0x5a_65_70);
+        assert_eq!(f.pixel(6, 1), 0x44_50_5d);
+        assert_eq!(f.pixel(9, 0), 0x44_50_5d);
         assert_eq!(f.pixel(10, 0), 0x10_20_30);
         // A light bar gets darker.
         let mut f = Frame::new(4, 1, 0xff_ff_ff);
         tint_span(&mut f, (0, 256), 0, 0, 4, 1);
-        assert_eq!(f.pixel(3, 0), 0xaf_af_af);
+        assert_eq!(f.pixel(3, 0), 0xc7_c7_c7);
         // An empty span changes nothing.
         tint_span(&mut f, (10, 10), 0, 0, 4, 1);
-        assert_eq!(f.pixel(0, 0), 0xaf_af_af);
+        assert_eq!(f.pixel(0, 0), 0xc7_c7_c7);
     }
 }

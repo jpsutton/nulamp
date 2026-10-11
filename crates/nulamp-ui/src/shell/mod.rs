@@ -3023,9 +3023,10 @@ fn seek_pos(s: &PlayerStatus) -> u32 {
     }
 }
 
-/// The downloaded part of a network stream as seek positions 0..=256.
+/// The downloaded part of a network stream as seek positions 0..=256; nothing once all of it
+/// is downloaded.
 fn buffered_span(s: &PlayerStatus) -> Option<(u32, u32)> {
-    let (start, end) = s.buffered_ms?;
+    let (start, end) = s.buffered_ms.filter(|&(_, end)| end != u64::MAX)?;
     let l = s.length_ms.filter(|&l| l > 0)?;
     let pos = |ms: u64| (ms.min(l) * 256 / l) as u32;
     Some((pos(start), pos(end)))
