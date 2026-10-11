@@ -27,7 +27,7 @@ fi
 mkdir -p "$work/cache"
 export VCPKG_BINARY_SOURCES="clear;files,$(cygpath -w "$work/cache"),readwrite"
 export VCPKG_DISABLE_METRICS=1
-ports=("ffmpeg[core,avcodec,avformat,swresample,swscale,zlib]" libopenmpt)
+ports=("${VCPKG_PORTS[@]}")
 args=(--triplet x64-windows --x-install-root="$(cygpath -w "$work/installed")"
   --clean-after-build)
 "$vcpkg/vcpkg.exe" install "${args[@]}" "${ports[@]}"
@@ -78,6 +78,14 @@ TXT
 src="$work/lgpl-sources"
 rm -rf "$src"
 mkdir -p "$src/downloads" "$src/ports"
-cp "$vcpkg"/downloads/*FFmpeg* "$vcpkg"/downloads/*mpg123* "$src/downloads/"
+for lib in ffmpeg mpg123; do
+  found=$(find "$vcpkg/downloads" -maxdepth 1 -type f -iname "*$lib*")
+  if [ -z "$found" ]; then
+    echo "no $lib source archive in $vcpkg/downloads:" >&2
+    ls "$vcpkg/downloads" >&2
+    exit 1
+  fi
+  echo "$found" | while read -r f; do cp "$f" "$src/downloads/"; done
+done
 cp -r "$vcpkg/ports/ffmpeg" "$vcpkg/ports/mpg123" "$src/ports/"
 tar -C "$src" -czf "$dist/../$(basename "$dist")-lgpl-sources.tar.gz" downloads ports

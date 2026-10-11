@@ -48,16 +48,23 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: ./scripts/windows-zlib.sh
-      - name: Codec library cache (Windows)
+      - name: Restore the codec library cache (Windows)
         if: runner.os == 'Windows'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: codecs/cache
-          key: vcpkg-codecs-${{ hashFiles('scripts/windows-codecs.sh', 'scripts/windows-codecs-versions.sh') }}
+          key: vcpkg-codecs-${{ hashFiles('scripts/windows-codecs-versions.sh') }}
       - name: FFmpeg and libopenmpt (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: ./scripts/windows-codecs.sh codecs
+      # Saved even when a later step fails: the first build takes about 25 minutes.
+      - name: Save the codec library cache (Windows)
+        if: always() && runner.os == 'Windows'
+        uses: actions/cache/save@v4
+        with:
+          path: codecs/cache
+          key: vcpkg-codecs-${{ hashFiles('scripts/windows-codecs-versions.sh') }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --all-targets
       - name: Check the opt-in audio CD backend

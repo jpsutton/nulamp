@@ -12,13 +12,21 @@ jobs:
       - name: zlib headers for the bundled FreeType
         shell: bash
         run: ./scripts/windows-zlib.sh --release
-      - uses: actions/cache@v4
+      - name: Restore the codec library cache
+        uses: actions/cache/restore@v4
         with:
           path: codecs/cache
-          key: vcpkg-codecs-${{ hashFiles('scripts/windows-codecs.sh', 'scripts/windows-codecs-versions.sh') }}
+          key: vcpkg-codecs-${{ hashFiles('scripts/windows-codecs-versions.sh') }}
       - name: FFmpeg and libopenmpt
         shell: bash
         run: ./scripts/windows-codecs.sh codecs
+      # Saved even when a later step fails: the first build takes about 25 minutes.
+      - name: Save the codec library cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: codecs/cache
+          key: vcpkg-codecs-${{ hashFiles('scripts/windows-codecs-versions.sh') }}
       - uses: Swatinem/rust-cache@v2
       - name: ffmpeg tool for test fixtures
         run: choco install ffmpeg -y --no-progress
