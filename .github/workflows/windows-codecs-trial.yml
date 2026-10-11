@@ -1,0 +1,51 @@
+# TEMPORARY: validates the Windows codec build on this branch; removed before merging.
+name: Windows codecs trial
+on:
+  push:
+    branches: ["feat/windows-codecs"]
+jobs:
+  trial:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: zlib headers for the bundled FreeType
+        shell: bash
+        run: ./scripts/windows-zlib.sh --release
+      - uses: actions/cache@v4
+        with:
+          path: codecs/cache
+          key: vcpkg-codecs-${{ hashFiles('scripts/windows-codecs.sh', 'scripts/windows-codecs-versions.sh') }}
+      - name: FFmpeg and libopenmpt
+        shell: bash
+        run: ./scripts/windows-codecs.sh codecs
+      - uses: Swatinem/rust-cache@v2
+      - name: ffmpeg tool for test fixtures
+        run: choco install ffmpeg -y --no-progress
+      - name: Build
+        run: cargo build --release --locked -p nulamp
+      - name: Decoder tests
+        run: cargo test --release -p nulamp-decoders -- --nocapture
+      - name: Package and installer
+        shell: bash
+        run: |
+          name=nulamp-trial-x86_64-pc-windows-msvc
+          mkdir -p "dist/$name/plugin-sdk"
+          cp target/release/nulamp.exe README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          cp include/nulamp_plugin.h docs/plugins.md "dist/$name/plugin-sdk/"
+          ./scripts/windows-codecs.sh codecs "dist/$name"
+          ls -la "dist/$name" "dist/$name/third-party" dist
+          "/c/Program Files (x86)/NSIS/makensis.exe" -V2 -DVERSION=0.0.0 "-DSRCDIR=$(cygpath -w "$PWD/dist/$name")" "-DOUTFILE=$(cygpath -w "$PWD/dist/setup.exe")" packaging/windows/nulamp.nsi
+          ls -la dist
+      - name: Linked DLLs
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object { $_.FullName -like '*Hostx64\x64*' } | Select-Object -First 1
+          & $dumpbin.FullName /dependents target\release\nulamp.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trial
+          path: |
+            dist/setup.exe
+            dist/*-lgpl-sources.tar.gz
