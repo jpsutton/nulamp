@@ -20,6 +20,7 @@ pub mod instance;
 pub mod mpris;
 pub mod numbered;
 pub mod request;
+pub mod screensaver;
 pub mod snapshot;
 
 pub use args::{Invocation, StartMode, parse_args};

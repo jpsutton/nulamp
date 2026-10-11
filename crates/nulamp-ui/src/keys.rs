@@ -27,6 +27,8 @@ pub enum KeyAction {
     EditBookmarks,
     ToggleMainWindow,
     ToggleVideoWindow,
+    /// Video full screen (11 §2.1 Alt+Enter).
+    VideoFullScreen,
     ShadeFocused,
     ToggleEasyMove,
     SkinBrowser,
@@ -60,6 +62,7 @@ pub fn global(key: KeyCode, m: Mods) -> Option<KeyAction> {
         // Not in the spec (decision MLUI6).
         (KeyL, false, true, false) => Some(Do(Action::ToggleLibraryWindow)),
         (KeyV, false, true, false) => Some(KeyAction::ToggleVideoWindow),
+        (Enter | NumpadEnter, false, true, false) => Some(KeyAction::VideoFullScreen),
         (KeyF, false, true, false) => Some(Do(Action::Menu {
             kind: MenuKind::Main,
             x: 6,

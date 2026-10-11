@@ -202,26 +202,41 @@ impl Player {
         // the next track (gapless or crossfade), the heard one is opened again.
         if let Some((id, _)) = &self.heard
             && self.opened != Some(*id)
+            && self.reopen_heard(ms)
         {
-            let id = *id;
-            if let Some(i) = self.engine.playlist.index_of(id) {
-                self.engine.playlist.set_current(i);
-            }
-            self.opened = Some(id);
-            if let Some(loc) = self.location(id) {
-                self.reopened = Some(id);
-                let gain = (self.gain_for)(&loc);
-                self.audio.send(Control::Open {
-                    token: token(id),
-                    location: loc,
-                    start_ms: ms,
-                    gain,
-                    crossfade: false,
-                });
-                return;
-            }
+            return;
         }
         self.audio.send(Control::Seek(ms));
+    }
+
+    /// Opens the heard track again, from `ms` (also after its decoder settings changed, such as
+    /// a chosen audio stream of a video file). Returns false when nothing is heard.
+    pub fn reopen_heard(&mut self, ms: u64) -> bool {
+        if self.engine.state == PlayState::Stopped {
+            return false;
+        }
+        let Some((id, _)) = &self.heard else {
+            return false;
+        };
+        let id = *id;
+        let Some(loc) = self.location(id) else {
+            return false;
+        };
+        if let Some(i) = self.engine.playlist.index_of(id) {
+            self.engine.playlist.set_current(i);
+        }
+        self.draining = false;
+        self.opened = Some(id);
+        self.reopened = Some(id);
+        let gain = (self.gain_for)(&loc);
+        self.audio.send(Control::Open {
+            token: token(id),
+            location: loc,
+            start_ms: ms,
+            gain,
+            crossfade: false,
+        });
+        true
     }
 
     /// Processes audio events. Call regularly (every UI tick).

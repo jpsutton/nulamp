@@ -13,6 +13,7 @@ pub mod module_decoder;
 pub mod opus_decoder;
 pub mod stream;
 pub mod symphonia_decoder;
+pub mod video;
 
 use std::fmt;
 
@@ -124,6 +125,15 @@ pub fn ffmpeg_tags(location: &str) -> Option<FileTags> {
         let _ = location;
         None
     }
+}
+
+/// Chooses the audio stream (0-based) of a file with several, or `None` for its default one.
+/// The file then opens through FFmpeg the next time it is played. Does nothing without FFmpeg.
+pub fn set_audio_track(location: &str, index: Option<usize>) {
+    #[cfg(nulamp_ffmpeg)]
+    ffmpeg_decoder::set_audio_track(location, index);
+    #[cfg(not(nulamp_ffmpeg))]
+    let _ = (location, index);
 }
 
 /// The licence of the FFmpeg libraries in use (for example "LGPL version 2.1 or later"), or

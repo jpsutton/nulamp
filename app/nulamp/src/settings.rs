@@ -150,6 +150,29 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
         ),
         ("library_rescan_on_start", b(p.library.rescan_on_start)),
         ("library_watch", b(p.library.watch)),
+        // Video window keys as named in 11 §1.3.
+        ("video_wx", p.video_pos.0.to_string()),
+        ("video_wy", p.video_pos.1.to_string()),
+        ("video_width", p.video_size.0.to_string()),
+        ("video_height", p.video_size.1.to_string()),
+        ("video_open", b(p.video_visible)),
+        ("video_enabled", b(p.video.enabled)),
+        ("video_open_on_start", b(p.video.open_on_start)),
+        ("video_close_on_end", b(p.video.close_on_end)),
+        ("video_stop_on_close", b(p.video.stop_on_close)),
+        ("video_resize", b(p.video.resize_to_video)),
+        ("video_fullscreen_on_start", b(p.video.fullscreen_on_start)),
+        (
+            "video_leave_fullscreen",
+            b(p.video.leave_fullscreen_on_stop),
+        ),
+        ("video_lock_aspect", b(p.video.lock_aspect)),
+        (
+            "video_aspect",
+            nulamp_ui::video::format_aspect(p.video.aspect),
+        ),
+        ("video_logo", b(p.video.logo_when_idle)),
+        ("video_no_screensaver", b(p.video.inhibit_screensaver)),
         ("volume", st.volume.to_string()),
         ("balance", st.balance.to_string()),
         ("shuffle", b(st.shuffle)),
@@ -335,6 +358,29 @@ pub fn from_ini(text: &str) -> (UiPrefs, PlayerState) {
     }
     p.library.rescan_on_start = flag("library_rescan_on_start", p.library.rescan_on_start);
     p.library.watch = flag("library_watch", p.library.watch);
+    set_i!(p.video_pos.0, "video_wx", i32);
+    set_i!(p.video_pos.1, "video_wy", i32);
+    if let Some(n) = num("video_width") {
+        p.video_size.0 = n.clamp(275, 10_000) as i32;
+    }
+    if let Some(n) = num("video_height") {
+        p.video_size.1 = n.clamp(116, 10_000) as i32;
+    }
+    p.video_visible = flag("video_open", p.video_visible);
+    let v = &mut p.video;
+    v.enabled = flag("video_enabled", v.enabled);
+    v.open_on_start = flag("video_open_on_start", v.open_on_start);
+    v.close_on_end = flag("video_close_on_end", v.close_on_end);
+    v.stop_on_close = flag("video_stop_on_close", v.stop_on_close);
+    v.resize_to_video = flag("video_resize", v.resize_to_video);
+    v.fullscreen_on_start = flag("video_fullscreen_on_start", v.fullscreen_on_start);
+    v.leave_fullscreen_on_stop = flag("video_leave_fullscreen", v.leave_fullscreen_on_stop);
+    v.lock_aspect = flag("video_lock_aspect", v.lock_aspect);
+    if let Some(a) = get("video_aspect").and_then(|t| nulamp_ui::video::parse_aspect(&t)) {
+        v.aspect = a;
+    }
+    v.logo_when_idle = flag("video_logo", v.logo_when_idle);
+    v.inhibit_screensaver = flag("video_no_screensaver", v.inhibit_screensaver);
     p.hotkeys.enabled = flag("hotkeys_enabled", p.hotkeys.enabled);
     if get("hotkey_0").is_some() {
         p.hotkeys.bindings = (0..)
@@ -466,5 +512,32 @@ mod tests {
         p.library.folders.clear();
         let (p3, _) = from_ini(&to_ini(&p, &PlayerState::default()));
         assert!(p3.library.folders.is_empty());
+    }
+
+    #[test]
+    fn video_round_trip() {
+        let (d, _) = from_ini("");
+        assert_eq!(d.video, nulamp_ui::video::VideoPrefs::default());
+        assert!(!d.video_visible);
+        let mut p = UiPrefs {
+            video_pos: (500, 40),
+            video_size: (400, 319),
+            video_visible: true,
+            ..UiPrefs::default()
+        };
+        p.video.enabled = false;
+        p.video.stop_on_close = true;
+        p.video.lock_aspect = false;
+        p.video.aspect = Some(16.0 / 9.0);
+        p.video.inhibit_screensaver = false;
+        let ini = to_ini(&p, &PlayerState::default());
+        assert!(
+            ini.contains("video_wx=500") && ini.contains("video_open=1"),
+            "{ini}"
+        );
+        let (p2, _) = from_ini(&ini);
+        assert_eq!((p2.video_pos, p2.video_size), ((500, 40), (400, 319)));
+        assert!(p2.video_visible);
+        assert_eq!(p2.video, p.video);
     }
 }

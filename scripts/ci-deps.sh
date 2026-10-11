@@ -9,7 +9,7 @@ case "$(uname -s)" in
     # NULAMP_NO_CODEC_DEV=1 leaves out the distribution's FFmpeg, libopenmpt and libcdio
     # development packages (the AppImage links its own builds of the first two).
     codecs="libopenmpt-dev libcdio-dev libavformat-dev libavcodec-dev libavutil-dev \
-      libswresample-dev ffmpeg"
+      libswresample-dev libswscale-dev ffmpeg"
     if [ "${NULAMP_NO_CODEC_DEV:-}" = 1 ]; then codecs=""; fi
     $sudo apt-get update
     # shellcheck disable=SC2086 # $codecs is a word list.

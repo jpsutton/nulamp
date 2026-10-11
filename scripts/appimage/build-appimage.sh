@@ -35,7 +35,7 @@ bin="target/${CARGO_TARGET:+$CARGO_TARGET/}release/nulamp"
 
 # The binary must need exactly the bundled libraries (a distribution FFmpeg or libopenmpt on the
 # build machine could otherwise win the link).
-for lib in libavformat libavcodec libavutil libswresample libopenmpt; do
+for lib in libavformat libavcodec libavutil libswresample libswscale libopenmpt; do
   soname=$(readelf -d "$PREFIX/lib/$lib.so" | sed -n 's/.*SONAME.*\[\(.*\)\]/\1/p')
   readelf -d "$bin" | grep -q "NEEDED.*\[$soname\]" || {
     echo "nulamp does not link the bundled $soname:" >&2
@@ -50,7 +50,8 @@ cp README.md LICENSE-MIT LICENSE-APACHE "$appdir/usr/share/doc/nulamp/"
 cp "$PREFIX/src/COPYING.LGPLv2.1" "$appdir/usr/share/doc/nulamp/third-party/FFmpeg-LGPL-2.1.txt"
 cat > "$appdir/usr/share/doc/nulamp/third-party/README" <<TXT
 This AppImage bundles:
-- FFmpeg ${FFMPEG_VERSION} (libavformat, libavcodec, libavutil, libswresample), LGPL-2.1-or-later,
+- FFmpeg ${FFMPEG_VERSION} (libavformat, libavcodec, libavutil, libswresample, libswscale),
+  LGPL-2.1-or-later,
   built without GPL or non-free parts. Its exact source is published next to this AppImage
   (ffmpeg-${FFMPEG_VERSION}.tar.xz) and at ${FFMPEG_URL}. Configuration: scripts/appimage/build-deps.sh
   in the nulamp repository. You may replace the bundled libraries with your own build.
@@ -64,12 +65,12 @@ LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$TOOLS/linux
   --exclude-library 'libbrotli*' --exclude-library 'libbz2*' --exclude-library 'libpng*' \
   > /dev/null
 # Only nulamp's own libraries: everything else comes from the host.
-extra=$(ls "$appdir/usr/lib" | grep -vE '^lib(avformat|avcodec|avutil|swresample|openmpt)\.so' || true)
+extra=$(ls "$appdir/usr/lib" | grep -vE '^lib(avformat|avcodec|avutil|swresample|swscale|openmpt)\.so' || true)
 if [ -n "$extra" ]; then
   echo "unexpected bundled libraries: $extra" >&2
   exit 1
 fi
-for lib in libavformat libavcodec libavutil libswresample libopenmpt; do
+for lib in libavformat libavcodec libavutil libswresample libswscale libopenmpt; do
   ls "$appdir"/usr/lib/"$lib".so.* > /dev/null || { echo "$lib was not bundled" >&2; exit 1; }
 done
 
