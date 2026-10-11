@@ -71,8 +71,10 @@ The exact sources of FFmpeg and mpg123, with the vcpkg build scripts and patches
 published next to this build as "$(basename "$dist")-lgpl-sources.tar.gz". You may replace
 these DLLs with your own builds of the same libraries.
 TXT
-# Corresponding source of the LGPL libraries: the source archives vcpkg used and its ports.
-"$vcpkg/vcpkg.exe" install "${args[@]}" --only-downloads "${ports[@]}" > /dev/null
+# Corresponding source of the LGPL libraries: the source archives vcpkg used and its ports. A
+# separate install root without the binary cache makes vcpkg fetch every source again.
+"$vcpkg/vcpkg.exe" install --triplet x64-windows --x-install-root="$(cygpath -w "$work/dl-root")" \
+  --binarysource=clear --only-downloads "${ports[@]}" > /dev/null
 src="$work/lgpl-sources"
 rm -rf "$src"
 mkdir -p "$src/downloads" "$src/ports"
