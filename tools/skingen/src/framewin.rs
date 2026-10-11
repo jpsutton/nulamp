@@ -411,7 +411,19 @@ pub fn video_like(label: &str) -> Canvas {
             c.px(122 - k, 81 + 35 - (o - k), pal::LABEL_DIM);
         }
     }
-    c.well(92, 42 + 15, 30, 14, pal::BLACK);
+    // The info text well, (92, h − 27) to (w − 25, h − 13) (05 §2), across the bottom pieces:
+    // the left piece from x 92, the fill tile, and the right piece up to 25 from its end.
+    c.rect(92, 42 + 11, 33, 14, pal::BLACK);
+    c.hline(91, 42 + 10, 34, pal::SHADOW);
+    c.vline(91, 42 + 10, 16, pal::SHADOW);
+    c.hline(92, 42 + 25, 33, pal::HILITE);
+    c.rect(127, 81 + 11, 25, 14, pal::BLACK);
+    c.hline(127, 81 + 10, 25, pal::SHADOW);
+    c.hline(127, 81 + 25, 25, pal::HILITE);
+    c.rect(0, 81 + 11, 100, 14, pal::BLACK);
+    c.hline(0, 81 + 10, 100, pal::SHADOW);
+    c.hline(0, 81 + 25, 101, pal::HILITE);
+    c.vline(100, 81 + 10, 16, pal::HILITE);
     let glyphs = ['F', '1', '2', 'T', 'M'];
     for (i, g) in glyphs.iter().enumerate() {
         let x = 9 + 15 * i as i32;

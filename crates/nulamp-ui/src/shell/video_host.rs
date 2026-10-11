@@ -12,7 +12,7 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::KeyCode;
-use winit::window::{Fullscreen, WindowId};
+use winit::window::{Fullscreen, WindowId, WindowLevel};
 
 use super::{DOUBLE_CLICK_MS, Kind, PlayerHandle, Shell};
 use crate::video::{
@@ -470,8 +470,29 @@ impl<P: PlayerHandle> Shell<P> {
         if let Some(w) = self.video_window() {
             let want = self.video.fullscreen;
             if want != w.fullscreen().is_some() {
+                // Window managers do not resize a window of fixed size to the screen. winit keeps
+                // the creation size as the limits of a fixed window: clear them first.
+                if want {
+                    w.set_min_inner_size(None::<PhysicalSize<u32>>);
+                    w.set_max_inner_size(None::<PhysicalSize<u32>>);
+                    w.set_resizable(true);
+                }
                 w.set_fullscreen(want.then_some(Fullscreen::Borderless(None)));
+                if !want {
+                    w.set_resizable(false);
+                }
             }
+            // Some window managers do not make utility windows full screen: cover the monitor
+            // and stay on top anyway.
+            if want && let Some(m) = w.current_monitor() {
+                w.set_outer_position(m.position());
+                let _ = w.request_inner_size(m.size());
+            }
+            w.set_window_level(if want || self.prefs.always_on_top {
+                WindowLevel::AlwaysOnTop
+            } else {
+                WindowLevel::Normal
+            });
             if want {
                 w.focus_window();
             }

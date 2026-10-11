@@ -7,6 +7,7 @@ use nulamp_render::eq_window::{EqView, draw_eq};
 use nulamp_render::gen_window::{GenView, draw_gen_frame};
 use nulamp_render::main_window::*;
 use nulamp_render::playlist_window::{MiniTime, PlFrameView, PopupMenu, draw_playlist_frame};
+use nulamp_render::video_window::{VideoButton, VideoView, draw_video_frame};
 use nulamp_render::{Frame, blit, scale};
 use nulamp_skin::Skin;
 
@@ -247,6 +248,26 @@ fn generic_window_titles() {
     s.pledit.use_gen_nums = true;
     let on = draw_gen_frame(&s, &v);
     common::check("gen-title", &strip(&[off, on], 0, 0, 275, 20));
+}
+
+#[test]
+fn video_window() {
+    let s = skin();
+    let view = |w, h, active, pressed| VideoView {
+        w,
+        h,
+        active,
+        pressed,
+        close_pressed: false,
+    };
+    common::check(
+        "video-275x232",
+        &draw_video_frame(&s, &view(275, 232, true, None)),
+    );
+    common::check(
+        "video-350x145",
+        &draw_video_frame(&s, &view(350, 145, false, Some(VideoButton::Zoom100))),
+    );
 }
 
 #[test]
