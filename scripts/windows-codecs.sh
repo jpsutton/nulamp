@@ -53,21 +53,26 @@ fi
 dist="$(mkdir -p "$2" && cd "$2" && pwd)"
 # Only the DLLs nulamp.exe loads, directly or through another of them: the names in each
 # binary's import table that are files in vcpkg's bin folder (which also holds vcpkg's build
-# tools).
+# tools) or in Visual Studio's C++ runtime redistributable folder (app-local runtime, so the
+# Visual C++ Redistributable need not be installed).
 imports() { grep -aoiE '[a-z0-9_+.-]+\.dll' "$1" | tr 'A-Z' 'a-z' | sort -u; }
+vswhere="$(cygpath -u "${PROGRAMFILES:-C:\\Program Files} (x86)")/Microsoft Visual Studio/Installer/vswhere.exe"
+crt=$("$vswhere" -latest -products '*' -find 'VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT' | head -1 | tr -d '\r')
+[ -n "$crt" ] || { echo "no Visual C++ runtime redistributable folder" >&2; exit 1; }
+crt=$(cygpath -u "$crt")
 todo=("$dist/nulamp.exe")
 while [ ${#todo[@]} -gt 0 ]; do
   file="${todo[0]}"
   todo=("${todo[@]:1}")
   for dll in $(imports "$file"); do
-    lib=$(find "$inst/bin" -maxdepth 1 -type f -iname "$dll" | head -1)
+    lib=$(find "$inst/bin" "$crt" -maxdepth 1 -type f -iname "$dll" | head -1)
     if [ -n "$lib" ] && [ ! -e "$dist/$(basename "$lib")" ]; then
       cp "$lib" "$dist/"
       todo+=("$dist/$(basename "$lib")")
     fi
   done
 done
-for lib in avcodec avformat avutil swresample swscale openmpt; do
+for lib in avcodec avformat avutil swresample swscale openmpt vcruntime140 msvcp140; do
   ls "$dist"/$lib*.dll > /dev/null 2>&1 || { echo "nulamp.exe does not load $lib" >&2; exit 1; }
 done
 third="$dist/third-party"
@@ -84,6 +89,8 @@ nulamp for Windows includes these libraries, built with vcpkg ${VCPKG_TAG} (MSVC
   LGPL-2.1-or-later, built without GPL or non-free parts.
 - mpg123 ${mpg123_version}, LGPL-2.1.
 - libopenmpt, BSD-3-Clause; libogg and libvorbis, BSD-3-Clause; zlib, zlib licence.
+- The Microsoft Visual C++ runtime (vcruntime140*.dll, msvcp140*.dll), redistributed under the
+  Visual Studio licence terms.
 
 The exact sources of FFmpeg and mpg123, with the vcpkg build scripts and patches used, are
 published next to this build as "$(basename "$dist")-lgpl-sources.tar.gz". You may replace
