@@ -294,8 +294,7 @@ fn fit_pane(t: &mut Table) {
     t.columns[0].width = (avail - others).max(nulamp_skinui::table::MIN_COL_W);
 }
 
-fn pane(title: &str, cols: [(&str, i32, bool); 3], rect: Rect) -> Table {
-    let _ = title;
+fn pane(cols: [(&str, i32, bool); 3], rect: Rect) -> Table {
     let mut t = Table::new(
         rect,
         cols.iter()
@@ -350,7 +349,6 @@ impl LibraryWindow {
             form: build_form(&l, prefs.group_buttons, ""),
             tree: TreeView::new(l.tree),
             artists: pane(
-                "Artist",
                 [
                     ("Artist", 100, false),
                     ("Albums", 48, true),
@@ -359,7 +357,6 @@ impl LibraryWindow {
                 l.artists,
             ),
             albums: pane(
-                "Album",
                 [
                     ("Album", 100, false),
                     ("Year", 40, true),
@@ -418,16 +415,11 @@ impl LibraryWindow {
         if self.geometry.artist_w > 0 {
             self.geometry.artist_w = l.artists.w;
         }
-        let third = if self.prefs.group_buttons {
-            l.extra
-        } else {
-            l.extra
-        };
         for (widget, r) in self
             .form
             .widgets
             .iter_mut()
-            .zip([l.label, l.search, l.clear, l.play, third])
+            .zip([l.label, l.search, l.clear, l.play, l.extra])
         {
             set_rect(widget, r);
         }

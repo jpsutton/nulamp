@@ -155,7 +155,10 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
         ("library_watch", b(p.library.watch)),
         ("library_activate", p.library.activate.name().to_string()),
         ("library_play_all_media", b(p.library.play_all_media)),
-        ("library_play_all_playlists", b(p.library.play_all_playlists)),
+        (
+            "library_play_all_playlists",
+            b(p.library.play_all_playlists),
+        ),
         (
             "library_resize_mode",
             match p.library.resize_mode {
@@ -169,7 +172,10 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
         ("library_bolt", b(p.library.bolt_opens_library)),
         ("library_tree_icons", b(p.library.tree_icons)),
         ("library_tree_full_row", b(p.library.tree_full_row)),
-        ("library_tree_item_height", p.library.tree_item_height.to_string()),
+        (
+            "library_tree_item_height",
+            p.library.tree_item_height.to_string(),
+        ),
         ("library_alt_rows", b(p.library.alt_rows)),
         ("volume", st.volume.to_string()),
         ("balance", st.balance.to_string()),
