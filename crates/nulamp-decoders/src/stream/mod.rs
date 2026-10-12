@@ -261,7 +261,20 @@ pub struct StreamOptions {
     /// The location is a file, not a live stream, even when the server sends no
     /// `Content-Length` (a media server's transcode): it is spooled and seekable (NET13).
     pub finite: bool,
+    /// The location is a video file (a media server's movie or episode) with this playlist
+    /// location: FFmpeg decodes its sound, whatever the container, from a demuxer the video
+    /// window finds by that location and shares, so the file is downloaded once (V10). A file
+    /// with Range support seeks with requests rather than being spooled, with a larger buffer
+    /// (NET15). Without FFmpeg, Symphonia tries.
+    pub video: Option<String>,
+    /// With `video`: the audio stream to decode (0-based among the file's audio streams), as
+    /// [`crate::set_audio_track`] chooses for local files; `None` for the default one.
+    pub audio_track: Option<usize>,
 }
+
+/// Smallest network buffer of a video stream (NET15): its bit rate is many times an audio
+/// stream's.
+pub const VIDEO_BUFFER: usize = 4 * 1024 * 1024;
 
 /// Station and song fields of a stream (07 §8.4, §8.5).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -400,7 +413,10 @@ impl StreamFactory {
         options: &StreamOptions,
     ) -> Result<StreamDecoder, DecodeError> {
         let config = self.config();
-        let capacity = config.buffer_bytes.max(StreamConfig::MIN_BUFFER);
+        let mut capacity = config.buffer_bytes.max(StreamConfig::MIN_BUFFER);
+        if options.video.is_some() {
+            capacity = capacity.max(VIDEO_BUFFER);
+        }
         let mut state = State::new(
             location,
             capacity,
@@ -409,6 +425,8 @@ impl StreamFactory {
         );
         state.finite = options.finite;
         state.spool_enabled = config.spool;
+        state.video = options.video.clone();
+        state.audio_track = options.audio_track;
         let shared = Arc::new(Shared::new(state));
         {
             let mut open = self.inner.open.lock().unwrap_or_else(|e| e.into_inner());

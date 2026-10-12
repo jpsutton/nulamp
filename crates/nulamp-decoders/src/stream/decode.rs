@@ -1,5 +1,6 @@
-//! The decoding thread: feeds the ring buffer to Symphonia through a [`MediaSource`] and
-//! queues decoded blocks for the audio thread.
+//! The decoding thread: feeds the ring buffer to Symphonia through a [`MediaSource`] (or, for
+//! a video file, to FFmpeg through a [`ByteSource`]) and queues decoded blocks for the audio
+//! thread.
 
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::Arc;
@@ -10,6 +11,7 @@ use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 
 use super::shared::{Block, MAX_QUEUED_FRAMES, Phase, Shared, State};
+use crate::ffmpeg_io::ByteSource;
 use crate::symphonia_decoder::SymphoniaDecoder;
 use crate::{DecodeError, Decoder, ReadStatus, StreamInfo};
 
@@ -118,6 +120,17 @@ impl MediaSource for RingSource {
     }
 }
 
+/// FFmpeg gets the length at once: it needs it to find the index at the end of some files.
+impl ByteSource for RingSource {
+    fn byte_len(&mut self) -> Option<u64> {
+        byte_len(&self.shared.lock())
+    }
+
+    fn seekable(&self) -> bool {
+        self.seekable
+    }
+}
+
 /// The stream's length: from the headers, or a complete spool's size.
 fn byte_len(st: &State) -> Option<u64> {
     st.total_len
@@ -135,8 +148,61 @@ fn done(shared: &Shared, error: Option<DecodeError>) {
     shared.cv.notify_all();
 }
 
+/// Probes the stream with Symphonia.
+fn open_symphonia(
+    source: RingSource,
+    hint: Option<&str>,
+    spooled: bool,
+) -> Result<Box<dyn Decoder>, DecodeError> {
+    let mss = MediaSourceStream::new(Box::new(source), Default::default());
+    let mut h = Hint::new();
+    if let Some(ext) = hint {
+        h.with_extension(ext);
+    }
+    let format = symphonia::default::get_probe()
+        .probe(
+            &h,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .map_err(|e| DecodeError::Unsupported(format!("stream format: {e}")))?;
+    // A spool reads like a local file: seeks are exact. Range seeks guess the byte offset
+    // instead of reading from the start.
+    let dec = SymphoniaDecoder::new(format)?;
+    Ok(Box::new(if spooled { dec } else { dec.with_coarse_seek() }))
+}
+
+/// Opens the sound of a video file with FFmpeg, through a demuxer the video window shares
+/// under `key` (Symphonia without FFmpeg).
+fn open_video(
+    source: RingSource,
+    key: &str,
+    name: &str,
+    audio: Option<usize>,
+    hint: Option<&str>,
+    spooled: bool,
+) -> Result<Box<dyn Decoder>, DecodeError> {
+    #[cfg(nulamp_ffmpeg)]
+    {
+        let _ = (hint, spooled);
+        let io = crate::ffmpeg_io::Io::new(Box::new(source));
+        Ok(Box::new(crate::ffmpeg_decoder::open_video(
+            key,
+            name,
+            Some(io),
+            audio,
+        )?))
+    }
+    #[cfg(not(nulamp_ffmpeg))]
+    {
+        let _ = (key, name, audio);
+        open_symphonia(source, hint, spooled)
+    }
+}
+
 pub(crate) fn run(shared: Arc<Shared>) {
-    let (hint, seekable, len, spooled) = {
+    let (hint, seekable, len, spooled, video, name) = {
         let mut st = shared.lock();
         while !st.headers_ready && !st.net_done && !st.abort {
             st = shared.wait(st);
@@ -148,40 +214,32 @@ pub(crate) fn run(shared: Arc<Shared>) {
             drop(st);
             return done(&shared, None);
         }
-        (st.hint, st.seekable, st.total_len, st.spool.is_some())
+        let video = st.video.clone().map(|key| (key, st.audio_track));
+        (
+            st.hint,
+            st.seekable,
+            st.total_len,
+            st.spool.is_some(),
+            video,
+            st.fields.location.clone(),
+        )
     };
     let source = RingSource {
         shared: shared.clone(),
         seekable,
     };
-    let mss = MediaSourceStream::new(Box::new(source), Default::default());
-    let mut h = Hint::new();
-    if let Some(ext) = hint {
-        h.with_extension(ext);
-    }
-    let format = match symphonia::default::get_probe().probe(
-        &h,
-        mss,
-        FormatOptions::default(),
-        MetadataOptions::default(),
-    ) {
-        Ok(f) => f,
+    let opened = match video {
+        Some((key, audio)) => open_video(source, &key, &name, audio, hint, spooled),
+        None => open_symphonia(source, hint, spooled),
+    };
+    let mut dec = match opened {
+        Ok(d) => d,
         Err(e) => {
             if shared.lock().abort {
                 return;
             }
-            return done(
-                &shared,
-                Some(DecodeError::Unsupported(format!("stream format: {e}"))),
-            );
+            return done(&shared, Some(e));
         }
-    };
-    // A spool reads like a local file: seeks are exact. Range seeks guess the byte offset
-    // instead of reading from the start.
-    let mut dec = match SymphoniaDecoder::new(format) {
-        Ok(d) if spooled => d,
-        Ok(d) => d.with_coarse_seek(),
-        Err(e) => return done(&shared, Some(e)),
     };
     let mut info = StreamInfo {
         seekable,

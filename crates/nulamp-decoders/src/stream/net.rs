@@ -163,8 +163,10 @@ fn apply_headers(st: &mut State, resp: &Response, url: &Url, first: bool) {
     let live = st.fields.metaint > 0;
     let ranged = st.total_len.is_some() && resp.accepts_ranges() && !live;
     let finite = !live && (st.total_len.is_some() || st.finite);
-    // Very large files with Range support seek with requests rather than fill the disk.
-    let too_big = ranged && st.total_len.is_some_and(|t| t > spool::MAX_RANGED);
+    // Very large files with Range support seek with requests rather than fill the disk, and so
+    // do video files: FFmpeg reads their index at the end before playing (NET15).
+    let too_big =
+        ranged && (st.video.is_some() || st.total_len.is_some_and(|t| t > spool::MAX_RANGED));
     if finite && st.spool_enabled && !too_big {
         st.spool = Spool::new()
             .inspect_err(|e| log::warn!("stream: no spool file: {e}"))

@@ -241,6 +241,7 @@ impl LibraryProvider for MockProvider {
                 "Authorization".to_string(),
                 format!("Bearer {}", self.token),
             )],
+            video: false,
         })
     }
 
