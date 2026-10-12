@@ -90,7 +90,7 @@ const WATCHED_PERCENT: u64 = 90;
 /// Containers (with their audio codec where it matters) that nulamp's network input decodes
 /// as they are; the server transcodes anything else to MP3. Files played as they are seek
 /// exactly; a transcode seeks only in what has been downloaded (NET13).
-const DIRECT_CONTAINERS: &str = "mp3,flac,ogg|vorbis,ogg|flac,oga|vorbis,oga|flac,wav,aiff,aif,\
+const DIRECT_CONTAINERS: &str = "mp3,flac,ogg|vorbis,ogg|flac,ogg|opus,oga|vorbis,oga|flac,oga|opus,wav,aiff,aif,\
      m4a|aac,m4a|alac,mp4|aac,mp4|alac,m4b|aac,m4b|alac,aac,mka|vorbis,mka|flac,mka|aac,\
      mka|mp3,webm|vorbis,caf|alac,caf|aac";
 

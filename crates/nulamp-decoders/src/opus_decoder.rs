@@ -412,9 +412,14 @@ fn last_granule<R: Read + Seek>(r: &mut R, len: u64, serial: u32) -> std::io::Re
     Ok(None)
 }
 
+/// Where the Ogg bytes come from: a file, or the spool of a network stream.
+pub trait OpusSource: Read + Seek + Send {}
+
+impl<T: Read + Seek + Send> OpusSource for T {}
+
 /// Decoder for one Ogg Opus logical stream (the first one in the file).
 pub struct OpusDecoder {
-    reader: PacketReader<BufReader<File>>,
+    reader: PacketReader<BufReader<Box<dyn OpusSource>>>,
     file_len: u64,
     serial: u32,
     head: OpusHead,
@@ -451,7 +456,18 @@ impl OpusDecoder {
             .metadata()
             .map_err(|e| DecodeError::Open(e.to_string()))?
             .len();
-        let mut reader = PacketReader::new(BufReader::new(file));
+        Self::open_source(Box::new(file), file_len, true)
+    }
+
+    /// Opens the Opus stream in `source`, `file_len` bytes long. `scan_end` reads the last
+    /// page for the length; without it the length stays unknown (a download still running,
+    /// where the last page is not there yet).
+    pub fn open_source(
+        source: Box<dyn OpusSource>,
+        file_len: u64,
+        scan_end: bool,
+    ) -> Result<Self, DecodeError> {
+        let mut reader = PacketReader::new(BufReader::new(source));
         let oerr = |e: ogg::OggReadError| DecodeError::Open(e.to_string());
 
         let first = reader
@@ -492,9 +508,13 @@ impl OpusDecoder {
                 first_page = p;
             }
         }
-        let end_gp = last_granule(reader.get_mut(), file_len, serial)
-            .map_err(|e| DecodeError::Open(e.to_string()))?
-            .unwrap_or(NO_GRANULE);
+        let end_gp = if scan_end {
+            last_granule(reader.get_mut(), file_len, serial)
+                .map_err(|e| DecodeError::Open(e.to_string()))?
+                .unwrap_or(NO_GRANULE)
+        } else {
+            NO_GRANULE
+        };
         reader
             .seek_bytes(SeekFrom::Start(first_page.offset))
             .map_err(|e| DecodeError::Open(e.to_string()))?;
