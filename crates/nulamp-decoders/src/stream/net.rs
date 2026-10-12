@@ -1,6 +1,6 @@
 //! The network thread: connects, resolves playlist URLs, strips in-band metadata into the
-//! stream fields and fills the ring buffer. Reconnects live streams (07 §8.7) and serves
-//! Range requests for seeks.
+//! stream fields and fills the ring buffer or the spool. Reconnects live streams (07 §8.7),
+//! resumes dropped files and serves Range requests for seeks.
 
 use std::io::Read;
 use std::net::TcpStream;
@@ -12,6 +12,7 @@ use nulamp_playlist::{Format, Resolver, is_hls};
 use super::http::{Client, OriginHeaders, Response, io_error};
 use super::icy::{IcyParser, parse_metadata};
 use super::shared::{Phase, Shared, State, prebuffer_percent};
+use super::spool::{self, Spool};
 use super::url::{Url, is_stream_location};
 use super::{CredentialStore, StreamConfig, StreamError};
 
@@ -83,6 +84,10 @@ pub(crate) fn hint_for(content_type: &str) -> Option<&'static str> {
         "audio/flac" | "audio/x-flac" => "flac",
         "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
         "audio/mp4" | "audio/x-m4a" => "m4a",
+        "audio/aiff" | "audio/x-aiff" => "aiff",
+        "audio/x-matroska" | "audio/matroska" => "mkv",
+        "audio/webm" => "webm",
+        "audio/x-caf" => "caf",
         _ => return None,
     })
 }
@@ -148,10 +153,26 @@ fn apply_headers(st: &mut State, resp: &Response, url: &Url, first: bool) {
             "aac" | "aacp" => Some("aac"),
             "ogg" | "oga" | "opus" => Some("ogg"),
             "flac" => Some("flac"),
+            "aiff" | "aif" => Some("aiff"),
+            "mka" | "mkv" => Some("mkv"),
+            "webm" => Some("webm"),
+            "caf" => Some("caf"),
             _ => None,
         });
     st.total_len = resp.total_length();
-    st.seekable = st.total_len.is_some() && resp.accepts_ranges() && st.fields.metaint == 0;
+    let live = st.fields.metaint > 0;
+    let ranged = st.total_len.is_some() && resp.accepts_ranges() && !live;
+    let finite = !live && (st.total_len.is_some() || st.finite);
+    // Very large files with Range support seek with requests rather than fill the disk, and so
+    // do video files: FFmpeg reads their index at the end before playing (NET15).
+    let too_big =
+        ranged && (st.video.is_some() || st.total_len.is_some_and(|t| t > spool::MAX_RANGED));
+    if finite && st.spool_enabled && !too_big {
+        st.spool = Spool::new()
+            .inspect_err(|e| log::warn!("stream: no spool file: {e}"))
+            .ok();
+    }
+    st.seekable = ranged || st.spool.is_some();
     st.headers_ready = true;
 }
 
@@ -199,7 +220,7 @@ fn pump(shared: &Shared, resp: &mut Response, epoch: u64, skip: u64) -> (u64, En
             let mut st = shared.lock();
             if st.epoch == epoch {
                 // Takes effect when the decoder reaches this byte.
-                let offset = st.pos + st.ring.len() as u64;
+                let offset = st.received();
                 st.pending_meta.push_back((offset, parse_metadata(block)));
             }
         }
@@ -249,7 +270,7 @@ fn reconnect(
         *tries += 1;
         {
             let mut st = shared.lock();
-            if st.ring.is_empty() {
+            if st.ahead() == 0 {
                 st.phase = Phase::Connecting;
                 shared.cv.notify_all();
             }
@@ -337,10 +358,14 @@ pub(crate) fn run(
             }
             if !matches!(end, End::Stopped) {
                 let mut st = shared.lock();
-                let received = st.pos + st.ring.len() as u64;
+                let received = st.received();
                 if st.seekable {
-                    if st.total_len.is_some_and(|t| received < t) && tries < config.reconnect_tries
-                    {
+                    // A spooled file of unknown length is cut short when its connection failed.
+                    let short = match st.total_len {
+                        Some(t) => received < t,
+                        None => matches!(end, End::Error(_)),
+                    };
+                    if short && tries < config.reconnect_tries {
                         // Dropped in the middle of a file: continue where it stopped.
                         tries += 1;
                         st.restart.get_or_insert(received);
@@ -413,6 +438,8 @@ mod tests {
         );
         assert_eq!(hint_for("audio/aacp"), Some("aac"));
         assert_eq!(hint_for("application/ogg"), Some("ogg"));
+        assert_eq!(hint_for("audio/x-aiff"), Some("aiff"));
+        assert_eq!(hint_for("audio/x-matroska"), Some("mkv"));
         assert_eq!(hint_for("text/html"), None);
     }
 }

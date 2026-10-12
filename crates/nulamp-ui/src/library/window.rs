@@ -130,7 +130,10 @@ fn set_rect(w: &mut Widget, r: Rect) {
         | Widget::Edit { rect, .. }
         | Widget::List { rect, .. }
         | Widget::Check { rect, .. }
-        | Widget::TextBox { rect, .. } => *rect = r,
+        | Widget::TextBox { rect, .. }
+        | Widget::Radio { rect, .. }
+        | Widget::Slider { rect, .. }
+        | Widget::Group { rect, .. } => *rect = r,
     }
 }
 

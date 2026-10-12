@@ -3,16 +3,17 @@
 //! [`login`] signs in with a user name and password and returns an [`Account`]: the server
 //! address, the access token and the server's libraries. The app stores the account (never
 //! the password) and builds a [`JellyfinProvider`] from it. The provider shows the libraries
-//! the user enabled; only music libraries are offered for now, but [`Library`] keeps the
-//! collection type of every library so other kinds can be added later.
+//! the user enabled: music, movies, TV shows, music videos and home videos ([`LibraryKind`]);
+//! [`Library`] keeps the collection type of every library, shown or not.
 //!
 //! Listings without a search are paged and sorted by the server. A search, a sort the server
 //! cannot do, a playlist and the root of several libraries are listed in full once, kept for a
 //! few minutes, and filtered with [`Query::matches`] and sorted with [`Sort::compare`] in
 //! memory, so search behaves as in the local library.
 //!
-//! Tracks are located by [`TrackId::location`] (`library://<provider>/<item>`); playback
-//! resolves that to the server's universal audio URL with the token in the `Authorization`
+//! Tracks are located by [`TrackId::location`] (`library://<provider>/<item>`, and
+//! `library://<provider>/video:<item>` for videos); playback resolves that to the server's
+//! universal audio URL, or a video's file as it is, with the token in the `Authorization`
 //! header. Requires Jellyfin 10.9 or newer.
 
 mod client;
@@ -33,7 +34,7 @@ use crate::provider::{LibraryProvider, Subscribers};
 use crate::query::{Query, Sort, SortKey};
 use crate::{enc_segment, split_id};
 use client::Client;
-use dto::{AuthResult, Item, ItemList, PublicInfo};
+use dto::{AuthResult, Item, ItemList, PublicInfo, item_of};
 
 /// Prefix of every Jellyfin provider id; the rest is the user's id on the server.
 pub const PROVIDER_PREFIX: &str = "jellyfin-";
@@ -41,10 +42,57 @@ pub const PROVIDER_PREFIX: &str = "jellyfin-";
 /// Collection type of music libraries.
 pub const MUSIC: &str = "music";
 
+/// What a library holds: it decides the library's browse tree and the items it lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LibraryKind {
+    /// `music`: songs.
+    Music,
+    /// `movies`.
+    Movies,
+    /// `tvshows`: series, seasons and episodes.
+    Shows,
+    /// `musicvideos` and `homevideos`.
+    Videos,
+}
+
+impl LibraryKind {
+    /// The kind of a collection type; `None` for kinds the provider does not show (mixed
+    /// folders, books, photos, …).
+    pub fn of(collection_type: &str) -> Option<Self> {
+        Some(match collection_type {
+            MUSIC => Self::Music,
+            "movies" => Self::Movies,
+            "tvshows" => Self::Shows,
+            "musicvideos" | "homevideos" => Self::Videos,
+            _ => return None,
+        })
+    }
+
+    pub fn is_video(self) -> bool {
+        self != Self::Music
+    }
+
+    /// The `includeItemTypes` of the library's tracks.
+    fn item_types(self) -> &'static str {
+        match self {
+            Self::Music => "Audio",
+            Self::Movies => "Movie",
+            Self::Shows => "Episode",
+            Self::Videos => "Video,MusicVideo",
+        }
+    }
+}
+
+/// Share of a video, in percent, that must be played for it to count as watched (Jellyfin's
+/// own default for marking an item played).
+const WATCHED_PERCENT: u64 = 90;
+
 /// Containers (with their audio codec where it matters) that nulamp's network input decodes
-/// as they are; the server transcodes anything else to MP3.
-const DIRECT_CONTAINERS: &str =
-    "mp3,flac,ogg|vorbis,oga|vorbis,wav,m4a|aac,m4a|alac,mp4|aac,m4b|aac,aac";
+/// as they are; the server transcodes anything else to MP3. Files played as they are seek
+/// exactly; a transcode seeks only in what has been downloaded (NET13).
+const DIRECT_CONTAINERS: &str = "mp3,flac,ogg|vorbis,ogg|flac,oga|vorbis,oga|flac,wav,aiff,aif,\
+     m4a|aac,m4a|alac,mp4|aac,mp4|alac,m4b|aac,m4b|alac,aac,mka|vorbis,mka|flac,mka|aac,\
+     mka|mp3,webm|vorbis,caf|alac,caf|aac";
 
 /// Playlist entries fetched per request.
 const CHUNK: u64 = 2000;
@@ -70,8 +118,16 @@ pub struct Library {
 }
 
 impl Library {
+    pub fn kind(&self) -> Option<LibraryKind> {
+        LibraryKind::of(&self.collection_type)
+    }
+
     pub fn is_music(&self) -> bool {
-        self.collection_type == MUSIC
+        self.kind() == Some(LibraryKind::Music)
+    }
+
+    pub fn is_video(&self) -> bool {
+        self.kind().is_some_and(LibraryKind::is_video)
     }
 }
 
@@ -110,9 +166,11 @@ impl Account {
         format!("{PROVIDER_PREFIX}{}", self.user_id)
     }
 
-    /// The enabled libraries the provider shows (music only for now).
+    /// The enabled libraries of a kind the provider shows.
     pub fn shown_libraries(&self) -> impl Iterator<Item = &Library> {
-        self.libraries.iter().filter(|l| l.enabled && l.is_music())
+        self.libraries
+            .iter()
+            .filter(|l| l.enabled && l.kind().is_some())
     }
 
     fn client(&self) -> Client {
@@ -121,7 +179,7 @@ impl Account {
 }
 
 /// Signs in to the server at `url` and lists the user's libraries (music libraries start
-/// enabled). Blocks; call it off the user-interface thread.
+/// enabled, video libraries hidden). Blocks; call it off the user-interface thread.
 pub fn login(url: &str, user: &str, password: &str) -> Result<Account> {
     let base = normalize_url(url)
         .ok_or_else(|| Error::InvalidArgument("no server address given".into()))?;
@@ -174,7 +232,8 @@ pub fn login(url: &str, user: &str, password: &str) -> Result<Account> {
 }
 
 /// The account's libraries as the server lists them now. Libraries already in
-/// `account.libraries` keep their `enabled` flag; new music libraries start enabled.
+/// `account.libraries` keep their `enabled` flag; new music libraries start enabled, new video
+/// libraries hidden.
 pub fn libraries(account: &Account) -> Result<Vec<Library>> {
     let views: ItemList = account
         .client()
@@ -213,15 +272,29 @@ enum Scope {
     Union(Vec<Vec<(&'static str, String)>>),
     /// A playlist, in its own order.
     Playlist(String),
+    /// The next episode to watch of each series of a library, in the server's order.
+    NextUp(String),
     /// No tracks (the playlist folder).
     Empty,
 }
 
 /// Server sort for a [`Sort`]: the `SortBy` list and the number of leading keys that follow
 /// the direction (as [`Sort::compare`] does). `None` when the server cannot sort by the key.
-fn server_sort(sort: Sort) -> Option<(&'static [&'static str], usize)> {
+/// Videos have no artist or album on the server: an episode's series and season stand in, as
+/// in [`Item::to_track`].
+fn server_sort(sort: Sort, video: bool) -> Option<(&'static [&'static str], usize)> {
     const TRACK: [&str; 3] = ["ParentIndexNumber", "IndexNumber", "SortName"];
+    const SERIES: [&str; 4] = [
+        "SeriesSortName",
+        "ParentIndexNumber",
+        "IndexNumber",
+        "SortName",
+    ];
     let keys: &'static [&'static str] = match sort.key {
+        SortKey::Artist | SortKey::Album | SortKey::Position if video => &SERIES,
+        SortKey::Title if video => &["SortName", "ProductionYear"],
+        SortKey::Year if video => &["ProductionYear", "SortName"],
+        SortKey::PlayCount if video => &["PlayCount", "SortName"],
         SortKey::Artist | SortKey::Position => &[
             "Artist",
             "Album",
@@ -276,7 +349,7 @@ struct View {
     tracks: Arc<Vec<Track>>,
 }
 
-/// The tracks of an account's enabled music libraries.
+/// The tracks and videos of an account's enabled libraries.
 pub struct JellyfinProvider {
     account: Account,
     id: String,
@@ -337,27 +410,76 @@ impl JellyfinProvider {
         self.account.shown_libraries().collect()
     }
 
-    /// The category nodes of a library.
-    fn categories(lib: &str) -> Vec<BrowseNode> {
-        let l = enc_segment(lib);
+    /// The kind of the shown library `id` (music when unknown).
+    fn kind(&self, id: &str) -> LibraryKind {
+        self.account
+            .shown_libraries()
+            .find(|l| l.id == id)
+            .and_then(Library::kind)
+            .unwrap_or(LibraryKind::Music)
+    }
+
+    /// Whether a video library is shown (video playlists and playlist entries are then
+    /// listed too).
+    fn shows_video(&self) -> bool {
+        self.account.shown_libraries().any(Library::is_video)
+    }
+
+    /// `parentId` and the item types of library `l`'s tracks.
+    fn in_library(&self, l: &str) -> Vec<(&'static str, String)> {
         vec![
-            BrowseNode::new(format!("artists/{l}"), "Artists", NodeKind::Category, true),
-            BrowseNode::new(format!("albums/{l}"), "Albums", NodeKind::Category, true),
-            BrowseNode::new(format!("genres/{l}"), "Genres", NodeKind::Category, true),
-            BrowseNode::new(
-                format!("favorites/{l}"),
-                "Favorites",
-                NodeKind::SmartList,
-                false,
-            ),
-            BrowseNode::new(
-                format!("played/{l}"),
-                "Most played",
-                NodeKind::SmartList,
-                false,
-            )
-            .with_sort(Sort::desc(SortKey::PlayCount)),
+            ("parentId", l.to_string()),
+            ("includeItemTypes", self.kind(l).item_types().to_string()),
         ]
+    }
+
+    /// The category nodes of a library.
+    fn categories(lib: &Library) -> Vec<BrowseNode> {
+        let l = enc_segment(&lib.id);
+        let node = |id: &str, label: &str, kind, expandable| {
+            BrowseNode::new(format!("{id}/{l}"), label, kind, expandable)
+        };
+        let favorites = || node("favorites", "Favorites", NodeKind::SmartList, false);
+        let unwatched = || {
+            node("unwatched", "Unwatched", NodeKind::SmartList, false)
+                .with_sort(Sort::asc(SortKey::Artist))
+        };
+        let recent = || {
+            node("recent", "Recently added", NodeKind::SmartList, false)
+                .with_sort(Sort::desc(SortKey::DateAdded))
+        };
+        match lib.kind().unwrap_or(LibraryKind::Music) {
+            LibraryKind::Music => vec![
+                node("artists", "Artists", NodeKind::Category, true),
+                node("albums", "Albums", NodeKind::Category, true),
+                node("genres", "Genres", NodeKind::Category, true),
+                favorites(),
+                node("played", "Most played", NodeKind::SmartList, false)
+                    .with_sort(Sort::desc(SortKey::PlayCount)),
+            ],
+            LibraryKind::Movies => vec![
+                node("movies", "Movies", NodeKind::Category, false)
+                    .with_sort(Sort::asc(SortKey::Title)),
+                node("genres", "Genres", NodeKind::Category, true),
+                favorites(),
+                unwatched().with_sort(Sort::asc(SortKey::Title)),
+                recent(),
+            ],
+            LibraryKind::Shows => vec![
+                node("shows", "Shows", NodeKind::Category, true),
+                node("nextup", "Next up", NodeKind::SmartList, false)
+                    .with_sort(Sort::asc(SortKey::Position)),
+                unwatched(),
+                recent(),
+            ],
+            LibraryKind::Videos => vec![
+                node("videos", "Videos", NodeKind::Category, false)
+                    .with_sort(Sort::asc(SortKey::Title)),
+                favorites(),
+                unwatched().with_sort(Sort::asc(SortKey::Title)),
+                recent(),
+            ],
+        }
     }
 
     fn album_node(item: &Item, detail: Option<String>) -> BrowseNode {
@@ -384,9 +506,14 @@ impl JellyfinProvider {
     fn scope(&self, node: &BrowseNode) -> Result<Scope> {
         let seg = split_id(&node.id);
         let s: Vec<&str> = seg.iter().map(String::as_str).collect();
-        let parent = |l: &str| vec![("parentId", l.to_string())];
+        let audio = |p: &str| {
+            vec![
+                ("parentId", p.to_string()),
+                ("includeItemTypes", "Audio".to_string()),
+            ]
+        };
         let with = |l: &str, k: &'static str, v: &str| {
-            let mut p = parent(l);
+            let mut p = self.in_library(l);
             p.push((k, v.to_string()));
             p
         };
@@ -395,32 +522,42 @@ impl JellyfinProvider {
                 let libs = self.libraries();
                 match libs.len() {
                     0 => Scope::Empty,
-                    1 => Scope::Items(parent(&libs[0].id)),
-                    _ => Scope::Union(libs.iter().map(|l| parent(&l.id)).collect()),
+                    1 => Scope::Items(self.in_library(&libs[0].id)),
+                    _ => Scope::Union(libs.iter().map(|l| self.in_library(&l.id)).collect()),
                 }
             }
-            ["lib" | "artists" | "albums" | "genres", l] => Scope::Items(parent(l)),
+            [
+                "lib" | "artists" | "albums" | "genres" | "movies" | "shows" | "videos" | "recent",
+                l,
+            ] => Scope::Items(self.in_library(l)),
             ["artist", l, a] => Scope::Items(with(l, "albumArtistIds", a)),
-            ["album", b] => Scope::Items(parent(b)),
+            ["album", b] => Scope::Items(audio(b)),
             ["genre", l, g] => Scope::Items(with(l, "genreIds", g)),
             ["favorites", l] => Scope::Items(with(l, "filters", "IsFavorite")),
             ["played", l] => Scope::Items(with(l, "filters", "IsPlayed")),
+            ["unwatched", l] => Scope::Items(with(l, "filters", "IsUnplayed")),
+            ["nextup", l] => Scope::NextUp(l.to_string()),
+            ["series", _, p] | ["season", p] => Scope::Items(vec![
+                ("parentId", p.to_string()),
+                ("includeItemTypes", "Episode".to_string()),
+            ]),
             ["playlists"] => Scope::Empty,
             ["playlist", p] => Scope::Playlist(p.to_string()),
             _ => return Err(Error::NotFound(format!("browse node `{}`", node.id))),
         })
     }
 
-    /// Audio items of one query, `page` of them in server order `sort`.
+    /// Items of one query (its parameters name the item types), `page` of them in server
+    /// order `sort`.
     fn query_page(
         &self,
         params: &[(&'static str, String)],
         sort: Option<Sort>,
         page: Page,
     ) -> Result<(Vec<Track>, u64)> {
+        let video = is_video_query(params);
         let mut q = params.to_vec();
         q.extend([
-            ("includeItemTypes", "Audio".to_string()),
             ("recursive", "true".to_string()),
             ("fields", TRACK_FIELDS.to_string()),
             ("enableImageTypes", "Primary".to_string()),
@@ -431,21 +568,21 @@ impl JellyfinProvider {
         if page.limit != u64::MAX {
             q.push(("limit", page.limit.to_string()));
         }
-        if let Some((keys, primary)) =
-            sort.and_then(|s| server_sort(s).map(|k| (s, k)))
-                .map(|(s, (keys, primary))| {
-                    let dir = |i: usize| {
-                        if s.descending && i < primary {
-                            "Descending"
-                        } else {
-                            "Ascending"
-                        }
-                    };
-                    (
-                        keys.join(","),
-                        (0..keys.len()).map(dir).collect::<Vec<_>>().join(","),
-                    )
-                })
+        if let Some((keys, primary)) = sort
+            .and_then(|s| server_sort(s, video).map(|k| (s, k)))
+            .map(|(s, (keys, primary))| {
+                let dir = |i: usize| {
+                    if s.descending && i < primary {
+                        "Descending"
+                    } else {
+                        "Ascending"
+                    }
+                };
+                (
+                    keys.join(","),
+                    (0..keys.len()).map(dir).collect::<Vec<_>>().join(","),
+                )
+            })
         {
             q.push(("sortBy", keys));
             q.push(("sortOrder", primary));
@@ -488,10 +625,11 @@ impl JellyfinProvider {
             let items = list.into_items();
             offset += items.len() as u64;
             let done = (items.len() as u64) < CHUNK || offset >= total;
+            let video = self.shows_video();
             out.extend(
                 items
                     .iter()
-                    .filter(|i| i.is_audio())
+                    .filter(|i| i.is_audio() || (video && i.is_video()))
                     .map(|i| i.to_track(&self.id)),
             );
             if done {
@@ -519,6 +657,21 @@ impl JellyfinProvider {
                 all
             }
             Scope::Playlist(id) => self.playlist_all(id)?,
+            Scope::NextUp(l) => {
+                let q = vec![
+                    self.user(),
+                    ("parentId", l.clone()),
+                    ("fields", TRACK_FIELDS.to_string()),
+                    ("enableImageTypes", "Primary".to_string()),
+                    ("imageTypeLimit", "1".to_string()),
+                    ("limit", CHUNK.to_string()),
+                ];
+                let list: ItemList = self.client.get_json("/Shows/NextUp", &q)?;
+                list.into_items()
+                    .iter()
+                    .map(|i| i.to_track(&self.id))
+                    .collect()
+            }
             Scope::Empty => Vec::new(),
         });
         let mut cache = self.cache();
@@ -552,7 +705,8 @@ impl JellyfinProvider {
         }
         let all = self.all_tracks(node, scope)?;
         let mut list: Vec<Track> = all.iter().filter(|t| query.matches(t)).cloned().collect();
-        let playlist_order = matches!(scope, Scope::Playlist(_)) && sort.key == SortKey::Position;
+        let playlist_order =
+            matches!(scope, Scope::Playlist(_) | Scope::NextUp(_)) && sort.key == SortKey::Position;
         if playlist_order {
             if sort.descending {
                 list.reverse();
@@ -573,7 +727,10 @@ impl JellyfinProvider {
 
     /// Whether the server can list this page itself.
     fn server_side(scope: &Scope, query: &Query, sort: Sort) -> bool {
-        matches!(scope, Scope::Items(_)) && query.is_empty() && server_sort(sort).is_some()
+        match scope {
+            Scope::Items(p) => query.is_empty() && server_sort(sort, is_video_query(p)).is_some(),
+            _ => false,
+        }
     }
 
     fn fetch_item(&self, id: &TrackId) -> Result<Option<Item>> {
@@ -582,12 +739,22 @@ impl JellyfinProvider {
             self.user(),
             ("fields", format!("{TRACK_FIELDS},MediaSources")),
         ];
-        match self.client.get_json(&format!("/Items/{}", seg(&id.id)), &q) {
+        match self
+            .client
+            .get_json(&format!("/Items/{}", seg(item_of(&id.id).0)), &q)
+        {
             Ok(item) => Ok(Some(item)),
             Err(Error::NotFound(_)) => Ok(None),
             Err(e) => Err(e),
         }
     }
+}
+
+/// Whether a query lists videos (by its item types).
+fn is_video_query(params: &[(&'static str, String)]) -> bool {
+    params
+        .iter()
+        .any(|(k, v)| *k == "includeItemTypes" && v != "Audio")
 }
 
 /// A server id as one URL path segment.
@@ -611,8 +778,8 @@ impl LibraryProvider for JellyfinProvider {
     }
 
     fn browse(&self, node: &BrowseNode) -> Result<Vec<BrowseNode>> {
-        let seg = split_id(&node.id);
-        let s: Vec<&str> = seg.iter().map(String::as_str).collect();
+        let parts = split_id(&node.id);
+        let s: Vec<&str> = parts.iter().map(String::as_str).collect();
         let named = |items: Vec<Item>, f: &dyn Fn(&Item) -> BrowseNode| -> Vec<BrowseNode> {
             items.iter().map(f).collect()
         };
@@ -621,7 +788,7 @@ impl LibraryProvider for JellyfinProvider {
             [""] => {
                 let libs = self.libraries();
                 let mut out = match libs[..] {
-                    [one] => Self::categories(&one.id),
+                    [one] => Self::categories(one),
                     _ => libs
                         .iter()
                         .map(|l| {
@@ -642,7 +809,10 @@ impl LibraryProvider for JellyfinProvider {
                 ));
                 out
             }
-            ["lib", l] => Self::categories(l),
+            ["lib", l] => match self.libraries().into_iter().find(|x| x.id == l) {
+                Some(lib) => Self::categories(lib),
+                None => Vec::new(),
+            },
             ["artists", l] => {
                 let items = self.items(
                     "/Artists/AlbumArtists",
@@ -685,7 +855,18 @@ impl LibraryProvider for JellyfinProvider {
                 named(items, &|i| Self::album_node(i, i.album_artist.clone()))
             }
             ["genres", l] => {
-                let items = self.items("/MusicGenres", vec![("parentId", l.into()), by_name])?;
+                let kind = self.kind(l);
+                let items = if kind == LibraryKind::Music {
+                    self.items("/MusicGenres", vec![("parentId", l.into()), by_name])?
+                } else {
+                    let types = ("includeItemTypes", kind.item_types().to_string());
+                    self.items("/Genres", vec![("parentId", l.into()), types, by_name])?
+                };
+                let sort = if kind.is_video() {
+                    Sort::asc(SortKey::Title)
+                } else {
+                    Sort::asc(SortKey::Artist)
+                };
                 named(items, &|i| {
                     BrowseNode::new(
                         format!("genre/{}/{}", enc_segment(l), enc_segment(&i.id)),
@@ -693,6 +874,48 @@ impl LibraryProvider for JellyfinProvider {
                         NodeKind::Genre,
                         false,
                     )
+                    .with_sort(sort)
+                })
+            }
+            ["shows", l] => {
+                let items = self.items(
+                    "/Items",
+                    vec![
+                        ("parentId", l.into()),
+                        ("includeItemTypes", "Series".into()),
+                        ("recursive", "true".into()),
+                        by_name,
+                    ],
+                )?;
+                named(items, &|i| {
+                    let mut n = BrowseNode::new(
+                        format!("series/{}/{}", enc_segment(l), enc_segment(&i.id)),
+                        i.name(),
+                        NodeKind::Series,
+                        true,
+                    )
+                    .with_detail(i.production_year.map(|y| y.to_string()))
+                    .with_sort(Sort::asc(SortKey::Track));
+                    if let Some(c) = i.child_count {
+                        n = n.with_count(c);
+                    }
+                    n
+                })
+            }
+            ["series", _, p] => {
+                let items = self.items(&format!("/Shows/{}/Seasons", seg(p)), Vec::new())?;
+                named(items, &|i| {
+                    let mut n = BrowseNode::new(
+                        format!("season/{}", enc_segment(&i.id)),
+                        i.name(),
+                        NodeKind::Season,
+                        false,
+                    )
+                    .with_sort(Sort::asc(SortKey::Track));
+                    if let Some(c) = i.child_count {
+                        n = n.with_count(c);
+                    }
+                    n
                 })
             }
             ["playlists"] => {
@@ -704,9 +927,14 @@ impl LibraryProvider for JellyfinProvider {
                         by_name,
                     ],
                 )?;
+                let video = self.shows_video();
                 items
                     .iter()
-                    .filter(|i| i.media_type.as_deref().is_none_or(|m| m == "Audio"))
+                    .filter(|i| match i.media_type.as_deref() {
+                        None | Some("Audio") => true,
+                        Some("Video") => video,
+                        Some(_) => false,
+                    })
                     .map(|i| {
                         let mut n = BrowseNode::new(
                             format!("playlist/{}", enc_segment(&i.id)),
@@ -722,9 +950,17 @@ impl LibraryProvider for JellyfinProvider {
                     })
                     .collect()
             }
-            ["album", _] | ["genre", _, _] | ["favorites", _] | ["played", _] | ["playlist", _] => {
-                Vec::new()
-            }
+            ["album", _]
+            | ["genre", _, _]
+            | ["favorites", _]
+            | ["played", _]
+            | ["unwatched", _]
+            | ["recent", _]
+            | ["nextup", _]
+            | ["movies", _]
+            | ["videos", _]
+            | ["season", _]
+            | ["playlist", _] => Vec::new(),
             _ => return Err(Error::NotFound(format!("browse node `{}`", node.id))),
         })
     }
@@ -792,26 +1028,39 @@ impl LibraryProvider for JellyfinProvider {
     }
 
     /// The universal audio URL: the file as it is when nulamp decodes its format, else an
-    /// MP3 transcode. Needs no request, so opening a track never waits for the server.
+    /// MP3 transcode. A video's file as it is (nulamp decodes it with FFmpeg). Needs no
+    /// request, so opening a track never waits for the server.
     fn resolve_playback(&self, id: &TrackId) -> Result<PlaybackLocation> {
         self.check(id)?;
         let a = &self.account;
-        let location = format!(
-            "{}/Audio/{}/universal?userId={}&deviceId={}&container={}&transcodingContainer=mp3\
-             &transcodingProtocol=http&audioCodec=mp3&audioBitRate=320000\
-             &maxStreamingBitrate=1000000000&enableRedirection=false",
-            a.server_url,
-            seg(&id.id),
-            seg(&a.user_id),
-            seg(&a.device_id),
-            DIRECT_CONTAINERS.replace('|', "%7C"),
-        );
+        let (item, video) = item_of(&id.id);
+        let location = if video {
+            format!(
+                "{}/Videos/{}/stream?static=true&mediaSourceId={}&deviceId={}",
+                a.server_url,
+                seg(item),
+                seg(item),
+                seg(&a.device_id),
+            )
+        } else {
+            format!(
+                "{}/Audio/{}/universal?userId={}&deviceId={}&container={}&transcodingContainer=mp3\
+                 &transcodingProtocol=http&audioCodec=mp3&audioBitRate=320000\
+                 &maxStreamingBitrate=1000000000&enableRedirection=false",
+                a.server_url,
+                seg(item),
+                seg(&a.user_id),
+                seg(&a.device_id),
+                DIRECT_CONTAINERS.replace('|', "%7C"),
+            )
+        };
         Ok(PlaybackLocation {
             location,
             headers: vec![(
                 "Authorization".to_string(),
                 self.client.authorization().to_string(),
             )],
+            video,
         })
     }
 
@@ -832,11 +1081,20 @@ impl LibraryProvider for JellyfinProvider {
         }
     }
 
-    /// Marks the track played (the server counts the play and sets the time).
+    /// A song counts by the usual rule; a video once [`WATCHED_PERCENT`] of it was played.
+    fn counts_play(&self, id: &TrackId, played_ms: u64, length_ms: u64) -> bool {
+        if item_of(&id.id).1 {
+            length_ms > 0 && played_ms.saturating_mul(100) >= length_ms * WATCHED_PERCENT
+        } else {
+            crate::should_count_play(played_ms, length_ms)
+        }
+    }
+
+    /// Marks the track or video played (the server counts the play and sets the time).
     fn record_play(&self, id: &TrackId, _played_ms: u64) -> Result<()> {
         self.check(id)?;
         self.client.post(
-            &format!("/UserPlayedItems/{}", seg(&id.id)),
+            &format!("/UserPlayedItems/{}", seg(item_of(&id.id).0)),
             &[self.user()],
             None,
         )?;

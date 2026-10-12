@@ -3,8 +3,9 @@
  *
  * One handle opens a local file with libavformat, decodes one of its video streams with
  * libavcodec and converts frames to native-endian 0x00RRGGBB pixels with libswscale. Audio is
- * decoded separately (shim.c); the caller paces the frames against the audio clock. Only the
- * "file" protocol is allowed. A handle is used by one thread at a time.
+ * decoded separately (shim.c) from the same demuxer (demux.h): this side only gets the packets
+ * of its stream, through a callback. The caller paces the frames against the audio clock. A
+ * handle is used by one thread at a time.
  *
  * Times are milliseconds from the start of the file's audio (or, without audio, its video), the
  * same zero the audio decoder counts from.
@@ -23,6 +24,8 @@
 #include <libavutil/mem.h>
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
+
+#include "demux.h"
 
 /* Must match `NlfvInfo` in video.rs. */
 typedef struct NlfvInfo {
@@ -64,6 +67,9 @@ typedef struct Nlfv {
     int64_t zero;
     int flushing;
     int eof;
+    /* Packets of `stream`, from the shared demuxer. */
+    NlPull pull;
+    void *pull_opaque;
 } Nlfv;
 
 static void set_error(char *err, int len, const char *what, int code) {
@@ -84,7 +90,6 @@ void nlfv_close(Nlfv *h) {
     sws_freeContext(h->sws);
     av_packet_free(&h->pkt);
     avcodec_free_context(&h->dec);
-    avformat_close_input(&h->fmt);
     av_free(h->streams);
     av_free(h->audio);
     av_free(h);
@@ -126,7 +131,6 @@ static void fill_info(Nlfv *h, NlfvInfo *info) {
 static int open_stream(Nlfv *h, int which) {
     const AVCodec *codec;
     AVStream *st;
-    unsigned i;
     int r;
 
     avcodec_free_context(&h->dec);
@@ -134,8 +138,6 @@ static int open_stream(Nlfv *h, int which) {
     h->sws = NULL;
     h->current = which;
     h->stream = h->streams[which];
-    for (i = 0; i < h->fmt->nb_streams; i++)
-        h->fmt->streams[i]->discard = (int)i == h->stream ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
     st = h->fmt->streams[h->stream];
     h->tb = st->time_base;
     codec = avcodec_find_decoder(st->codecpar->codec_id);
@@ -157,39 +159,24 @@ static int open_stream(Nlfv *h, int which) {
 }
 
 /*
- * Opens `path` (UTF-8) and its first video stream. Returns NULL and an error text when the
- * file cannot be opened or has no video.
+ * Opens the picture of the shared demuxer `d`: its default video stream, with packets from
+ * `pull` (the caller routes the stream nlfv_stream reports to it). Returns NULL and an error
+ * text when the file has no video.
  */
-Nlfv *nlfv_open(const char *path, NlfvInfo *info, char *err, int err_len) {
-    static int quiet = 0;
-    AVDictionary *opts = NULL;
+Nlfv *nlfv_open_demux(NlDemux *d, NlPull pull, void *opaque, NlfvInfo *info, char *err,
+                      int err_len) {
     unsigned i;
     int r, audio;
     Nlfv *h;
 
-    if (!quiet) {
-        av_log_set_level(AV_LOG_QUIET);
-        quiet = 1;
-    }
     h = av_mallocz(sizeof *h);
     if (!h) {
         set_error(err, err_len, "out of memory", 0);
         return NULL;
     }
-    av_dict_set(&opts, "protocol_whitelist", "file", 0);
-    r = avformat_open_input(&h->fmt, path, NULL, &opts);
-    av_dict_free(&opts);
-    if (r < 0) {
-        set_error(err, err_len, "cannot open", r);
-        nlfv_close(h);
-        return NULL;
-    }
-    r = avformat_find_stream_info(h->fmt, NULL);
-    if (r < 0) {
-        set_error(err, err_len, "no stream information", r);
-        nlfv_close(h);
-        return NULL;
-    }
+    h->fmt = nld_fmt(d);
+    h->pull = pull;
+    h->pull_opaque = opaque;
     h->streams = av_malloc_array(h->fmt->nb_streams ? h->fmt->nb_streams : 1, sizeof(int));
     h->audio = av_malloc_array(h->fmt->nb_streams ? h->fmt->nb_streams : 1, sizeof(int));
     h->pkt = av_packet_alloc();
@@ -284,23 +271,20 @@ int nlfv_select(Nlfv *h, int which, NlfvInfo *info) {
     return r;
 }
 
-/* Goes to the key frame at or before `ms`; the next frames start there. */
-int nlfv_seek(Nlfv *h, int64_t ms) {
-    int64_t ts = av_rescale_q(h->zero + ms * 1000, AV_TIME_BASE_Q, h->tb);
-    int r = avformat_seek_file(h->fmt, h->stream, INT64_MIN, ts, ts, 0);
-    if (r < 0)
-        r = av_seek_frame(h->fmt, h->stream, ts, AVSEEK_FLAG_BACKWARD);
-    if (r < 0)
-        return r;
+/* After the shared demuxer moved: drops what the decoder holds. */
+void nlfv_reset(Nlfv *h) {
     avcodec_flush_buffers(h->dec);
     h->flushing = 0;
     h->eof = 0;
-    return 0;
 }
+
+/* The stream index the decoder reads. */
+int nlfv_stream(const Nlfv *h) { return h->stream; }
 
 /*
  * Decodes the next frame. Returns a new frame (free it with nlfv_frame_free) and its time in
- * `*pts_ms` (-1 when unknown), or NULL with `*status` 0 at the end or a negative error.
+ * `*pts_ms` (-1 when unknown), or NULL with `*status` 0 at the end, 1 when no packet is ready
+ * yet, or a negative error.
  */
 void *nlfv_next(Nlfv *h, int64_t *pts_ms, int *status) {
     AVFrame *f = av_frame_alloc();
@@ -331,18 +315,18 @@ void *nlfv_next(Nlfv *h, int64_t *pts_ms, int *status) {
         }
         if (r == AVERROR_INVALIDDATA)
             continue;
-        r = av_read_frame(h->fmt, h->pkt);
-        if (r < 0) {
-            if (r != AVERROR_EOF && !(h->fmt->pb && avio_feof(h->fmt->pb))) {
+        r = h->pull(h->pull_opaque, h->pkt);
+        if (r == 2) {
+            *status = 1;
+            break;
+        }
+        if (r <= 0) {
+            if (r < 0) {
                 *status = r;
                 break;
             }
             h->flushing = 1;
             avcodec_send_packet(h->dec, NULL);
-            continue;
-        }
-        if (h->pkt->stream_index != h->stream) {
-            av_packet_unref(h->pkt);
             continue;
         }
         r = avcodec_send_packet(h->dec, h->pkt);

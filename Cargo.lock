@@ -1756,7 +1756,7 @@ dependencies = [
 
 [[package]]
 name = "nulamp"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "encoding_rs",
  "env_logger",
@@ -1779,7 +1779,7 @@ dependencies = [
 
 [[package]]
 name = "nulamp-audio"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cpal",
  "log",
@@ -1793,14 +1793,14 @@ dependencies = [
 
 [[package]]
 name = "nulamp-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "rand",
 ]
 
 [[package]]
 name = "nulamp-decoders"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cc",
  "encoding_rs",
@@ -1812,13 +1812,14 @@ dependencies = [
  "rustls",
  "rustysynth",
  "symphonia",
+ "tempfile",
  "thiserror 2.0.21",
  "webpki-roots",
 ]
 
 [[package]]
 name = "nulamp-eq"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "encoding_rs",
  "thiserror 2.0.21",
@@ -1826,11 +1827,11 @@ dependencies = [
 
 [[package]]
 name = "nulamp-icon"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "nulamp-icongen"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "nulamp-icon",
  "png",
@@ -1838,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "nulamp-library"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "log",
  "notify",
@@ -1855,7 +1856,7 @@ dependencies = [
 
 [[package]]
 name = "nulamp-meta"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "lofty",
  "nulamp-tf",
@@ -1865,14 +1866,14 @@ dependencies = [
 
 [[package]]
 name = "nulamp-pixelfont"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "nulamp-skin",
 ]
 
 [[package]]
 name = "nulamp-playlist"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "encoding_rs",
  "thiserror 2.0.21",
@@ -1880,7 +1881,7 @@ dependencies = [
 
 [[package]]
 name = "nulamp-plugin-api"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "libloading",
  "log",
@@ -1894,14 +1895,14 @@ dependencies = [
 
 [[package]]
 name = "nulamp-plugin-example"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "nulamp-plugin-api",
 ]
 
 [[package]]
 name = "nulamp-remote"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "interprocess",
  "log",
@@ -1915,7 +1916,7 @@ dependencies = [
 
 [[package]]
 name = "nulamp-render"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "nulamp-skin",
  "nulamp-vis",
@@ -1924,7 +1925,7 @@ dependencies = [
 
 [[package]]
 name = "nulamp-script"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "nulamp-audio",
  "thiserror 2.0.21",
@@ -1932,7 +1933,7 @@ dependencies = [
 
 [[package]]
 name = "nulamp-skin"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "encoding_rs",
  "thiserror 2.0.21",
@@ -1942,14 +1943,14 @@ dependencies = [
 
 [[package]]
 name = "nulamp-skingen"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "nulamp-skin",
 ]
 
 [[package]]
 name = "nulamp-skinui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "nulamp-pixelfont",
  "nulamp-render",
@@ -1959,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "nulamp-text"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "fontdb",
  "freetype-rs",
@@ -1970,14 +1971,14 @@ dependencies = [
 
 [[package]]
 name = "nulamp-tf"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
 ]
 
 [[package]]
 name = "nulamp-ui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arboard",
  "global-hotkey",
@@ -2013,7 +2014,7 @@ dependencies = [
 
 [[package]]
 name = "nulamp-vis"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "nulamp-skin",
  "realfft",
@@ -2021,7 +2022,7 @@ dependencies = [
 
 [[package]]
 name = "nulamp-xdrive"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "x11rb",
 ]

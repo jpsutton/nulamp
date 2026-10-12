@@ -88,8 +88,11 @@ pub struct MainView {
     pub volume_pressed: bool,
     pub balance: i8,
     pub balance_pressed: bool,
-    /// Seek position 0..=256 while playing a seekable item; `None` hides the thumb.
+    /// Seek position 0..=256 while playing an item of known length; `None` hides the thumb.
     pub seek: Option<u32>,
+    /// The downloaded part of a network stream, as positions 0..=256 (`start`, `end`): drawn
+    /// as a translucent overlay on the seek bar.
+    pub seek_buffered: Option<(u32, u32)>,
     pub seek_pressed: bool,
     /// While dragging the seek bar: the thumb's pixel offset (0..=218), overriding `seek`.
     pub seek_drag: Option<i32>,
@@ -122,6 +125,7 @@ impl Default for MainView {
             balance: 0,
             balance_pressed: false,
             seek: None,
+            seek_buffered: None,
             seek_pressed: false,
             seek_drag: None,
             shuffle: false,
@@ -154,7 +158,7 @@ pub fn draw_main(skin: &Skin, v: &MainView) -> Frame {
     draw_balance(&mut f, skin, v.balance, v.balance_pressed);
     if let Some(pos) = v.seek {
         let x = v.seek_drag.unwrap_or_else(|| seek_thumb_x(pos));
-        draw_seek(&mut f, skin, x, v.seek_pressed);
+        draw_seek(&mut f, skin, x, v.seek_pressed, v.seek_buffered);
     }
     draw_buttons(&mut f, skin, v);
     draw_title_area(&mut f, skin, &v.title);
@@ -393,9 +397,18 @@ pub fn seek_thumb_x(pos: u32) -> i32 {
     (pos as i32 * 219 / 256).clamp(0, 219)
 }
 
-fn draw_seek(f: &mut Frame, skin: &Skin, thumb_x: i32, pressed: bool) {
+fn draw_seek(
+    f: &mut Frame,
+    skin: &Skin,
+    thumb_x: i32,
+    pressed: bool,
+    buffered: Option<(u32, u32)>,
+) {
     let p = skin.bitmap(B::Posbar);
     blit(f, p, 0, 0, 248, 10, 16, 72);
+    if let Some(span) = buffered {
+        draw_buffered(f, span, (16, 72, 248, 10), MAIN_THUMB);
+    }
     blit(
         f,
         p,
@@ -501,6 +514,111 @@ fn draw_title_area(f: &mut Frame, skin: &Skin, title: &TitleArea) {
     }
 }
 
+/// Opacity of the buffered overlay, out of 256.
+const BUFFERED_ALPHA: u32 = 56;
+
+/// Rows (or columns) whose mean luminance differs by at most this belong to the same groove.
+const GROOVE_STEP: u32 = 4;
+
+/// How a seek thumb moves along its bar: (x offset at position 0, travel in pixels, width).
+type ThumbTravel = (i32, i32, i32);
+const MAIN_THUMB: ThumbTravel = (0, 219, 29);
+const SHADE_THUMB: ThumbTravel = (1, 12, 3);
+
+fn luminance(p: u32) -> u32 {
+    ((p >> 16 & 255) * 299 + (p >> 8 & 255) * 587 + (p & 255) * 114) / 1000
+}
+
+/// The longest run of neighbours that differ by at most [`GROOVE_STEP`], as `start..end`.
+fn longest_run(values: &[u32]) -> (usize, usize) {
+    let (mut best, mut start) = ((0, values.len().min(1)), 0);
+    for i in 1..=values.len() {
+        if i == values.len() || values[i].abs_diff(values[i - 1]) > GROOVE_STEP {
+            if i - start > best.1 - best.0 {
+                best = (start, i);
+            }
+            start = i;
+        }
+    }
+    best
+}
+
+/// The groove of the `w`×`h` bar at (x, y) as (x, y, w, h): the longest run of rows of even
+/// brightness (measured over the middle half, away from the end caps), then the longest run
+/// of columns within those rows. Any skin's posbar has one; a flat bar is all groove.
+fn groove(f: &Frame, (x, y, w, h): (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    let rows: Vec<u32> = (y..y + h)
+        .map(|ty| {
+            let xs = x + w / 4..x + w - w / 4;
+            let n = xs.len().max(1) as u32;
+            xs.map(|tx| luminance(f.pixel(tx, ty))).sum::<u32>() / n
+        })
+        .collect();
+    let (r0, r1) = longest_run(&rows);
+    let cols: Vec<u32> = (x..x + w)
+        .map(|tx| {
+            let n = (r1 - r0).max(1) as u32;
+            (r0..r1)
+                .map(|r| luminance(f.pixel(tx, y + r as i32)))
+                .sum::<u32>()
+                / n
+        })
+        .collect();
+    let (c0, c1) = longest_run(&cols);
+    (
+        x + c0 as i32,
+        y + r0 as i32,
+        (c1 - c0) as i32,
+        (r1 - r0) as i32,
+    )
+}
+
+/// Draws the buffered span (positions 0..=256) of the `w`×`h` seek bar at (x, y) as a thin
+/// translucent band centred in the bar's groove: lighter in a dark groove, darker in a light
+/// one, so any skin shows it. A position maps to where the thumb's centre would be, so the
+/// band ends under the thumb when the playhead reaches the end of the download.
+fn draw_buffered(f: &mut Frame, span: (u32, u32), bar: (i32, i32, i32, i32), thumb: ThumbTravel) {
+    let (gx, gy, gw, gh) = groove(f, bar);
+    // One pixel in from the groove's ends; a third of its height, at least 2 rows.
+    let (left, right) = (gx + 1, gx + gw - 1);
+    let bh = ((gh + 1) / 3).max(2).min(gh);
+    let by = gy + (gh - bh) / 2;
+    let (off, travel, tw) = thumb;
+    let px = |pos: u32| bar.0 + off + pos.min(256) as i32 * travel / 256 + tw / 2;
+    let x0 = if span.0 == 0 {
+        left
+    } else {
+        px(span.0).max(left)
+    };
+    let x1 = if span.1 >= 256 {
+        right
+    } else {
+        px(span.1).min(right)
+    };
+    if x1 <= x0 || bh <= 0 {
+        return;
+    }
+    let (mut sum, mut n) = (0u32, 0u32);
+    for ty in by..by + bh {
+        for tx in left..right {
+            sum += luminance(f.pixel(tx, ty));
+            n += 1;
+        }
+    }
+    let to = if sum / n.max(1) < 128 { 255 } else { 0 };
+    let mix = |c: u32| (c * (256 - BUFFERED_ALPHA) + to * BUFFERED_ALPHA) / 256;
+    for ty in by..by + bh {
+        for tx in x0..x1 {
+            let p = f.pixel(tx, ty);
+            f.set(
+                tx,
+                ty,
+                mix(p >> 16 & 255) << 16 | mix(p >> 8 & 255) << 8 | mix(p & 255),
+            );
+        }
+    }
+}
+
 // ----- Windowshade mode -----
 
 /// Shade-mode mini seek thumb (02 §2.4): x offset p (1..=13) and source x.
@@ -524,6 +642,9 @@ fn draw_shade(skin: &Skin, v: &MainView) -> Frame {
     draw_shade_time(&mut f, skin, v.time);
     if let Some(pos) = v.seek {
         blit(&mut f, t, 0, 36, 17, 7, 226, 4);
+        if let Some(span) = v.seek_buffered {
+            draw_buffered(&mut f, span, (226, 4, 17, 7), SHADE_THUMB);
+        }
         let (p, sx) = shade_seek_geometry(pos);
         blit(&mut f, t, sx, 36, 3, 7, 226 + p, 4);
     }
@@ -621,5 +742,35 @@ mod tests {
         assert_eq!(shade_seek_geometry(0), (1, 17));
         assert_eq!(shade_seek_geometry(256), (13, 23));
         assert_eq!(shade_seek_geometry(128), (7, 20));
+    }
+
+    #[test]
+    fn buffered_band_sits_in_the_groove() {
+        // A dark groove in rows 1..5 between light borders.
+        let mut f = Frame::new(20, 6, 0x80_80_80);
+        for y in 1..5 {
+            for x in 0..20 {
+                f.set(x, y, 0x10_10_10);
+            }
+        }
+        assert_eq!(groove(&f, (0, 0, 20, 6)), (0, 1, 20, 4));
+        // Thumb 4 wide travelling 16: position 128 is at x 8 + 2.
+        draw_buffered(&mut f, (0, 128), (0, 0, 20, 6), (0, 16, 4));
+        let lit = 0x44_44_44;
+        assert_eq!(f.pixel(1, 2), lit);
+        assert_eq!(f.pixel(9, 3), lit);
+        assert_eq!(f.pixel(0, 2), 0x10_10_10, "inset from the groove's end");
+        assert_eq!(f.pixel(10, 2), 0x10_10_10, "ends at the thumb's centre");
+        assert_eq!(f.pixel(5, 1), 0x10_10_10, "thinner than the groove");
+        assert_eq!(f.pixel(5, 4), 0x10_10_10);
+        assert_eq!(f.pixel(5, 0), 0x80_80_80);
+        // A light groove gets darker.
+        let mut f = Frame::new(8, 4, 0xff_ff_ff);
+        draw_buffered(&mut f, (0, 256), (0, 0, 8, 4), (0, 4, 4));
+        assert_eq!(f.pixel(3, 1), 0xc7_c7_c7);
+        // An empty span changes nothing.
+        let mut f = Frame::new(8, 4, 0xff_ff_ff);
+        draw_buffered(&mut f, (100, 100), (0, 0, 8, 4), (0, 4, 4));
+        assert!(f.pixels().iter().all(|&p| p == 0xff_ff_ff));
     }
 }

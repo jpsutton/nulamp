@@ -70,9 +70,16 @@ pub trait LibraryProvider: Send + Sync {
         Err(Error::Unsupported)
     }
 
+    /// Whether playing `played_ms` of a track `length_ms` long counts as a play
+    /// ([`Registry::finish_play`]). The default is [`crate::should_count_play`]; a provider
+    /// with videos asks for more of a film than of a song.
+    fn counts_play(&self, _id: &TrackId, played_ms: u64, length_ms: u64) -> bool {
+        crate::should_count_play(played_ms, length_ms)
+    }
+
     /// Records one finished play ([`Capabilities::RECORD_PLAY`]). The caller decides whether
-    /// a play counts, normally with [`crate::should_count_play`]; `played_ms` is passed on to
-    /// providers that report listening time.
+    /// a play counts, normally with [`LibraryProvider::counts_play`]; `played_ms` is passed on
+    /// to providers that report listening time.
     fn record_play(&self, _id: &TrackId, _played_ms: u64) -> Result<()> {
         Err(Error::Unsupported)
     }
@@ -194,14 +201,13 @@ impl Registry {
         self.provider_for(track)?.resolve_playback(track)
     }
 
-    /// Records a play through the track's provider when [`crate::should_count_play`] says
-    /// it counts. Returns whether a play was recorded.
+    /// Records a play through the track's provider when [`LibraryProvider::counts_play`]
+    /// says it counts. Returns whether a play was recorded.
     pub fn finish_play(&self, track: &TrackId, played_ms: u64, length_ms: u64) -> Result<bool> {
-        if !crate::should_count_play(played_ms, length_ms) {
-            return Ok(false);
-        }
         let provider = self.provider_for(track)?;
-        if !provider.capabilities().contains(Capabilities::RECORD_PLAY) {
+        if !provider.capabilities().contains(Capabilities::RECORD_PLAY)
+            || !provider.counts_play(track, played_ms, length_ms)
+        {
             return Ok(false);
         }
         provider.record_play(track, played_ms)?;

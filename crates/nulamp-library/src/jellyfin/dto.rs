@@ -70,7 +70,22 @@ pub struct MediaSource {
     pub media_streams: Option<Vec<MediaStream>>,
 }
 
-/// A `BaseItemDto`: a library, artist, album, genre, playlist or track.
+/// Prefix of the track ids of video items (`video:<item id>`): playback then needs no request
+/// to know the item is a video.
+pub const VIDEO_ID: &str = "video:";
+
+/// Item types that play as videos.
+const VIDEO_TYPES: [&str; 4] = ["Movie", "Episode", "Video", "MusicVideo"];
+
+/// The server item of a track id, and whether it is a video.
+pub fn item_of(id: &str) -> (&str, bool) {
+    match id.strip_prefix(VIDEO_ID) {
+        Some(item) => (item, true),
+        None => (id, false),
+    }
+}
+
+/// A `BaseItemDto`: a library, artist, album, genre, playlist, series, season, track or video.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Item {
@@ -88,6 +103,10 @@ pub struct Item {
     pub album: Option<String>,
     pub album_id: Option<String>,
     pub album_artist: Option<String>,
+    pub series_name: Option<String>,
+    pub series_id: Option<String>,
+    pub series_primary_image_tag: Option<String>,
+    pub season_name: Option<String>,
     pub genres: Option<Vec<String>>,
     pub container: Option<String>,
     pub date_created: Option<String>,
@@ -109,7 +128,15 @@ impl Item {
         self.kind.as_deref() == Some("Audio")
     }
 
-    /// The item whose primary image shows this track: its own, else its album's.
+    /// A movie, episode, music video or other video.
+    pub fn is_video(&self) -> bool {
+        self.kind
+            .as_deref()
+            .is_some_and(|k| VIDEO_TYPES.contains(&k))
+    }
+
+    /// The item whose primary image shows this track: its own, else its album's or its
+    /// series'.
     fn artwork_item(&self) -> Option<String> {
         if self
             .image_tags
@@ -121,10 +148,18 @@ impl Item {
         self.album_primary_image_tag
             .as_ref()
             .and(self.album_id.clone())
+            .or_else(|| {
+                self.series_primary_image_tag
+                    .as_ref()
+                    .and(self.series_id.clone())
+            })
     }
 
-    /// The track this item describes, owned by `provider`.
+    /// The track this item describes, owned by `provider`. An episode's series is its artist
+    /// and album artist and its season its album, so lists group and sort it as music; its
+    /// season and episode numbers are the disc and track numbers.
     pub fn to_track(&self, provider: &str) -> Track {
+        let episode = self.kind.as_deref() == Some("Episode");
         let mut tags = BTreeMap::new();
         let mut put = |k: &str, v: Option<String>| {
             if let Some(v) = v.filter(|v| !v.is_empty()) {
@@ -132,15 +167,25 @@ impl Item {
             }
         };
         put("title", self.name.clone());
-        put("artist", self.artists.as_ref().map(|a| a.join("; ")));
-        put("album", self.album.clone());
-        put("albumartist", self.album_artist.clone());
+        if episode {
+            put("artist", self.series_name.clone());
+            put("album", self.season_name.clone());
+            put("albumartist", self.series_name.clone());
+        } else {
+            put("artist", self.artists.as_ref().map(|a| a.join("; ")));
+            put("album", self.album.clone());
+            put("albumartist", self.album_artist.clone());
+        }
         put("year", self.production_year.map(|y| y.to_string()));
         put("genre", self.genres.as_ref().map(|g| g.join("; ")));
         let number = |n: Option<i32>| n.filter(|n| *n >= 0).map(|n| n.to_string());
         put("track", number(self.index_number));
         put("disc", number(self.parent_index_number));
-        let id = TrackId::new(provider, self.id.clone());
+        let id = if self.is_video() {
+            TrackId::new(provider, format!("{VIDEO_ID}{}", self.id))
+        } else {
+            TrackId::new(provider, self.id.clone())
+        };
         let user = self.user_data.as_ref();
         let source = self.media_sources.as_ref().and_then(|s| s.first());
         let audio = source
@@ -270,5 +315,45 @@ mod tests {
         let t = bare.to_track("jf");
         assert!(t.tags.is_empty());
         assert_eq!(t.artwork, None);
+    }
+
+    #[test]
+    fn videos_from_items() {
+        let ep: Item = serde_json::from_str(
+            r#"{"Id":"e1","Name":"Pilot","Type":"Episode","RunTimeTicks":26000000000,
+                "SeriesName":"Show","SeriesId":"s1","SeasonName":"Season 1",
+                "IndexNumber":1,"ParentIndexNumber":1,"ProductionYear":2010,
+                "SeriesPrimaryImageTag":"x","ImageTags":{},
+                "MediaSources":[{"Bitrate":4000000,"MediaStreams":[
+                    {"Type":"Video","Codec":"h264"},
+                    {"Type":"Audio","Codec":"ac3","SampleRate":48000,"Channels":6}]}]}"#,
+        )
+        .unwrap();
+        let t = ep.to_track("jf");
+        assert_eq!(t.id, TrackId::new("jf", "video:e1"));
+        assert_eq!(t.location, "library://jf/video:e1");
+        assert_eq!(t.title(), Some("Pilot"));
+        assert_eq!(t.artist(), Some("Show"));
+        assert_eq!(t.albumartist(), Some("Show"));
+        assert_eq!(t.album(), Some("Season 1"));
+        assert_eq!((t.disc_number(), t.track_number()), (Some(1), Some(1)));
+        assert_eq!(t.length_ms, 2_600_000);
+        assert_eq!(t.codec.as_deref(), Some("AC3"));
+        assert_eq!(t.channels, Some(6));
+        assert_eq!(t.artwork.as_deref(), Some("s1"));
+
+        let movie: Item = serde_json::from_str(
+            r#"{"Id":"m1","Name":"Film","Type":"Movie","ProductionYear":1999,
+                "Genres":["Drama"],"Container":"mkv","ImageTags":{"Primary":"p"}}"#,
+        )
+        .unwrap();
+        let t = movie.to_track("jf");
+        assert_eq!(t.id.id, "video:m1");
+        assert_eq!(t.artist(), None);
+        assert_eq!(t.genre(), Some("Drama"));
+        assert_eq!(t.codec.as_deref(), Some("MKV"));
+        assert_eq!(t.artwork.as_deref(), Some("m1"));
+        assert_eq!(item_of("video:m1"), ("m1", true));
+        assert_eq!(item_of("a1"), ("a1", false));
     }
 }

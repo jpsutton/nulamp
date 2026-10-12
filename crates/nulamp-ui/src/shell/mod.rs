@@ -881,7 +881,10 @@ impl<P: PlayerHandle> Shell<P> {
             volume_pressed: self.main_input.volume_pressed,
             balance: s.balance,
             balance_pressed: self.main_input.balance_pressed,
-            seek: (open && s.seekable && s.length_ms.is_some()).then(|| seek_pos(&s)),
+            // The thumb shows progress whenever the length is known; dragging needs a seekable
+            // item (`MainContext`).
+            seek: (open && s.length_ms.is_some()).then(|| seek_pos(&s)),
+            seek_buffered: buffered_span(&s).filter(|_| open),
             seek_pressed: self.main_input.seek_drag.is_some(),
             seek_drag: self.main_input.seek_drag,
             shuffle: s.shuffle,
@@ -1901,6 +1904,7 @@ impl<P: PlayerHandle> Shell<P> {
     fn apply_prefs(&mut self, prefs: UiPrefs, pl: crate::prefs_dialog::PlaylistOptions) {
         let aot_changed = prefs.always_on_top != self.prefs.always_on_top;
         let eq_double_changed = prefs.eq_double != self.prefs.eq_double;
+        let vis_mode_changed = prefs.vis.mode != self.prefs.vis.mode;
         // Keep window-owned state that the dialog does not edit.
         let keep = self.prefs.clone();
         self.library_prefs_changed(&keep.library, &prefs.library);
@@ -1932,6 +1936,9 @@ impl<P: PlayerHandle> Shell<P> {
         self.pl.old_school_buttons = pl.old_school_buttons;
         self.update_pl_font();
         self.visualizer.set_settings(self.prefs.vis);
+        if vis_mode_changed {
+            self.visualizer.reset();
+        }
         self.player.set_eq(&self.prefs.eq);
         self.player.set_playback_prefs(&self.prefs);
         if aot_changed {
@@ -3018,6 +3025,15 @@ fn seek_pos(s: &PlayerStatus) -> u32 {
         Some(l) if l > 0 => (s.position_ms.min(l) * 256 / l) as u32,
         _ => 0,
     }
+}
+
+/// The downloaded part of a network stream as seek positions 0..=256; nothing once all of it
+/// is downloaded.
+fn buffered_span(s: &PlayerStatus) -> Option<(u32, u32)> {
+    let (start, end) = s.buffered_ms.filter(|&(_, end)| end != u64::MAX)?;
+    let l = s.length_ms.filter(|&l| l > 0)?;
+    let pos = |ms: u64| (ms.min(l) * 256 / l) as u32;
+    Some((pos(start), pos(end)))
 }
 
 fn builtin_cursor(shape: CursorShape) -> CursorIcon {

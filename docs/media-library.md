@@ -7,7 +7,7 @@ The media library is in scope although the spec lists it as a non-goal (decision
 ```
 UI ──► Registry ──► Arc<dyn LibraryProvider>
                      ├─ LocalLibrary      (SQLite index of watch folders)
-                     ├─ JellyfinProvider  (music libraries of a Jellyfin server)
+                     ├─ JellyfinProvider  (music and video libraries of a Jellyfin server)
                      ├─ MockProvider      (in-memory, remote-style; tests)
                      └─ later: Subsonic, …
 ```
@@ -154,25 +154,28 @@ The trait was shaped so that streaming servers map onto it directly; `MockProvid
 
 ### 9.1 Track locations
 
-A remote track is put into a playlist as `library://<provider>/<track id>` (`TrackId::location`; `TrackId::from_location` reverses it), never as the server's stream URL. The app registers a "Media library" input in the decoder registry that claims these locations: when the track opens it calls `Registry::resolve_playback` and plays the returned URL with the returned headers through the network stream input (`StreamFactory::open_stream_with`, decision NET12), keeping the entry's title. So tokens never reach saved playlists, titles or the file-info dialog, and entries keep working after signing in again. Remote providers must resolve without blocking (no request), because the player opens tracks on its own thread.
+A remote track is put into a playlist as `library://<provider>/<track id>` (`TrackId::location`; `TrackId::from_location` reverses it), never as the server's stream URL. The app registers a "Media library" input in the decoder registry that claims these locations: when the track opens it calls `Registry::resolve_playback` and plays the returned URL with the returned headers through the network stream input (`StreamFactory::open_stream_with`, decision NET12), keeping the entry's title. A location marked `video` is opened as a video stream instead: FFmpeg decodes its sound from a demuxer the video window shares, so the file is downloaded once (decisions NET15, V9, V10). So tokens never reach saved playlists, titles or the file-info dialog, and entries keep working after signing in again. Remote providers must resolve without blocking (no request), because the player opens tracks on its own thread.
 
 ### 9.2 Jellyfin
 
 `nulamp_library::jellyfin` (Jellyfin 10.9 or newer):
 
-- `login(url, user, password)` reads `/System/Info/Public`, signs in with `/Users/AuthenticateByName` under a new random device id and lists the user's libraries (`/UserViews`). It returns an `Account`: server URL, server id and name, user id and name, access token, device id and every library with its collection type and an `enabled` flag (music libraries start enabled). The password is not kept. `libraries(account)` lists the libraries again and keeps the user's choices; `logout(account)` ends the session.
+- `login(url, user, password)` reads `/System/Info/Public`, signs in with `/Users/AuthenticateByName` under a new random device id and lists the user's libraries (`/UserViews`). It returns an `Account`: server URL, server id and name, user id and name, access token, device id and every library with its collection type and an `enabled` flag (music libraries start enabled, video libraries hidden). The password is not kept. `libraries(account)` lists the libraries again and keeps the user's choices; `logout(account)` ends the session.
 - Requests carry `Authorization: MediaBrowser Client="nulamp", Device=…, DeviceId=…, Version=…, Token=…`.
-- `JellyfinProvider::new(account)` has the id `jellyfin-<user id>` and the name "Jellyfin: <server name>". It shows the enabled `music` libraries; other collection types are kept in the account for later (video).
+- `JellyfinProvider::new(account)` has the id `jellyfin-<user id>` and the name "Jellyfin: <server name>". It shows the enabled libraries of the kinds in `LibraryKind`: `music`, `movies`, `tvshows`, and `musicvideos` or `homevideos` (shown as "Videos"); other collection types are kept in the account but never shown (decision ML17).
+- Videos are tracks like songs, with the id `video:<item id>` (so `library://<provider>/video:<item id>` in playlists). An episode's series is its artist and album artist, its season its album, and its season and episode numbers its disc and track numbers, so the usual columns, sorts and searches apply.
 
 | Trait | Jellyfin |
 |---|---|
-| `browse` | One node per shown library (or the categories directly when one is shown): Artists (`/Artists/AlbumArtists`) → albums, Albums, Genres (`/MusicGenres`), Favorites, Most played; and Playlists (audio playlists of the user) |
-| `tracks`, `search` | `/Items` with `includeItemTypes=Audio`, `recursive`, the node's filter (`parentId`, `albumArtistIds`, `genreIds`, `filters=IsFavorite`/`IsPlayed`) and server paging and sorting, when there is no search and the server knows the sort (all keys except genre, rating and path; ties as in §6). Otherwise the node is listed in full (one request; playlists from `/Playlists/{id}/Items`, 2000 entries per request), kept for 5 minutes, and filtered with `Query::matches` and sorted with `Sort::compare`, so search behaves as in the local library |
+| `browse` | One node per shown library (or the categories directly when one is shown). Music: Artists (`/Artists/AlbumArtists`) → albums, Albums, Genres (`/MusicGenres`), Favorites, Most played. Movies: Movies, Genres (`/Genres`), Favorites, Unwatched, Recently added. TV shows: Shows → series → seasons (`/Shows/{id}/Seasons`), Next up (`/Shows/NextUp`), Unwatched, Recently added. Videos: Videos, Favorites, Unwatched, Recently added. And Playlists (audio playlists of the user, and video playlists while a video library is shown) |
+| `tracks`, `search` | `/Items` with the library's item types (`Audio`, `Movie`, `Episode` or `Video,MusicVideo`), `recursive`, the node's filter (`parentId`, `albumArtistIds`, `genreIds`, `filters=IsFavorite`/`IsPlayed`/`IsUnplayed`) and server paging and sorting, when there is no search and the server knows the sort (all keys except genre, rating and path; ties as in §6; videos sort by series, season and episode where songs sort by artist and album). Otherwise the node is listed in full (one request; playlists from `/Playlists/{id}/Items`, 2000 entries per request), kept for 5 minutes, and filtered with `Query::matches` and sorted with `Sort::compare`, so search behaves as in the local library |
 | `summary` | From a kept full listing; otherwise one counting request, with a length of 0 (the status line then shows only the count) |
 | `track` | `/Items/{id}` with media sources (bit rate, sample rate, channels, size) |
-| `resolve_playback` | `/Audio/{id}/universal`: the file as it is when its container is one the network input decodes (MP3, FLAC, Ogg Vorbis, WAV, AAC/ALAC in MP4), else an MP3 transcode at 320 kbit/s. The token goes in the `Authorization` header |
-| `artwork` | The primary image of the track, else of its album |
-| `record_play` | `POST /UserPlayedItems/{id}` (the server counts the play and sets the time); `TracksChanged` follows |
+| `resolve_playback` | `/Audio/{id}/universal`: the file as it is when its container is one the network input decodes (MP3, FLAC, Ogg Vorbis/FLAC, WAV, AIFF, AAC/ALAC in MP4, Vorbis/FLAC/AAC/MP3 in Matroska, Vorbis in WebM, ALAC/AAC in CAF), else an MP3 transcode at 320 kbit/s. The token goes in the `Authorization` header. The track opens as a finite stream, so the file or transcode is spooled and seekable (NET13) |
+| `resolve_playback` (videos) | `/Videos/{id}/stream?static=true`: the file as it is, with `PlaybackLocation::video` set. The "Media library" input opens it as a video stream: FFmpeg demuxes the stream's buffer once, for the sound and for the video window's picture (decisions NET15, V10) |
+| `artwork` | The primary image of the track or video, else of its album or series |
+| `counts_play` | Songs by `should_count_play`; videos once 90 % of their length was played |
+| `record_play` | `POST /UserPlayedItems/{id}` (the server counts the play, or marks the video watched, and sets the time); `TracksChanged` follows |
 | `set_rating`, `edit_tags`, playlists, `rescan` | Not offered |
 | `subscribe` | Only the event after a recorded play |
 
