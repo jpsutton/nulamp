@@ -191,6 +191,7 @@ fn pump(shared: &Shared, resp: &mut Response, epoch: u64, skip: u64) -> (u64, En
     let (mut audio, mut blocks) = (Vec::new(), Vec::new());
     let mut skip = skip;
     let mut total = 0u64;
+    let mut first = skip == 0;
     loop {
         let n = match resp.body.read(&mut buf) {
             Ok(0) => return (total, End::Eof),
@@ -207,6 +208,9 @@ fn pump(shared: &Shared, resp: &mut Response, epoch: u64, skip: u64) -> (u64, En
         audio.clear();
         blocks.clear();
         icy.feed(&buf[..n], &mut audio, &mut blocks);
+        if std::mem::take(&mut first) && blocks.is_empty() {
+            clear_empty_xing(&mut audio);
+        }
         // A server that ignored the Range request: drop the bytes before the offset.
         let drop = (skip as usize).min(audio.len());
         skip -= drop as u64;
@@ -228,6 +232,43 @@ fn pump(shared: &Shared, resp: &mut Response, epoch: u64, skip: u64) -> (u64, En
             return (total, End::Stopped);
         }
         total += (audio.len() - drop) as u64;
+    }
+}
+
+/// A transcoding server streams MP3 with a Xing/Info header that cannot be filled in: it
+/// claims 0 frames, and Symphonia then ends the stream before the first sample. Blanks the
+/// tag so the frame reads as silence and the real length stays unknown. `head` is the start
+/// of the stream; a header that counts frames is left alone.
+fn clear_empty_xing(head: &mut [u8]) {
+    let mut at = 0;
+    if head.starts_with(b"ID3") && head.len() >= 10 {
+        let size = head[6..10]
+            .iter()
+            .fold(0usize, |n, b| n << 7 | (*b & 0x7f) as usize);
+        at = 10 + size;
+    }
+    let Some(frame) = head.get(at..) else {
+        return;
+    };
+    if frame.len() < 4 || frame[0] != 0xff || frame[1] & 0xe0 != 0xe0 {
+        return;
+    }
+    // The tag follows the frame header and the side information (9 to 32 bytes).
+    let end = frame.len().min(4 + 32 + 8);
+    let Some(pos) = frame[4..end]
+        .windows(4)
+        .position(|w| w == b"Xing" || w == b"Info")
+    else {
+        return;
+    };
+    let tag = at + 4 + pos;
+    let flags = head.get(tag + 4..tag + 8);
+    let frames = head.get(tag + 8..tag + 12);
+    if let (Some(flags), Some(frames)) = (flags, frames)
+        && flags[3] & 1 != 0
+        && frames == [0, 0, 0, 0]
+    {
+        head[tag..tag + 4].fill(0);
     }
 }
 
@@ -421,6 +462,38 @@ pub(crate) fn run(
 
 #[cfg(test)]
 mod tests {
+    use super::clear_empty_xing;
+
+    /// An ID3v2 tag of `id3` zero bytes, then a frame with a Xing/Info tag counting `frames`.
+    fn mp3_head(id3: usize, tag: &[u8; 4], frames: u32) -> Vec<u8> {
+        let mut v = b"ID3\x03\x00\x00".to_vec();
+        v.extend([0, 0, (id3 >> 7) as u8 & 0x7f, id3 as u8 & 0x7f]);
+        v.extend(vec![0; id3]);
+        v.extend([0xff, 0xfb, 0xd4, 0x00]);
+        v.extend([0; 32]);
+        v.extend(tag);
+        v.extend([0, 0, 0, 1]);
+        v.extend(frames.to_be_bytes());
+        v
+    }
+
+    #[test]
+    fn blanks_xing_with_no_frames() {
+        let mut v = mp3_head(34, b"Xing", 0);
+        clear_empty_xing(&mut v);
+        assert!(!v.windows(4).any(|w| w == b"Xing"));
+    }
+
+    #[test]
+    fn keeps_xing_with_frames_and_other_data() {
+        let mut v = mp3_head(0, b"Info", 1000);
+        let w = v.clone();
+        clear_empty_xing(&mut v);
+        assert_eq!(v, w);
+        let mut junk = vec![1u8; 64];
+        clear_empty_xing(&mut junk);
+        assert_eq!(junk, vec![1u8; 64]);
+    }
     use super::*;
 
     #[test]
