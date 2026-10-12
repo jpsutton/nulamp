@@ -91,10 +91,10 @@ impl Speed {
 pub enum RefreshRate {
     /// Every tick ("70 fps").
     Full,
-    /// Every 2nd tick ("35 fps", default).
-    #[default]
+    /// Every 2nd tick ("35 fps").
     Half,
-    /// Every 3rd tick ("18 fps").
+    /// Every 3rd tick ("18 fps", default).
+    #[default]
     Quarter,
     /// Every 4th tick ("9 fps").
     Eighth,
@@ -129,7 +129,7 @@ pub struct VisSettings {
     pub peak_falloff: Speed,
     /// Default [`ScopeStyle::Lines`].
     pub scope: ScopeStyle,
-    /// Default [`RefreshRate::Half`].
+    /// Default [`RefreshRate::Quarter`].
     pub refresh: RefreshRate,
 }
 
@@ -143,7 +143,7 @@ impl Default for VisSettings {
             falloff: Speed::Moderate,
             peak_falloff: Speed::Slow,
             scope: ScopeStyle::Lines,
-            refresh: RefreshRate::Half,
+            refresh: RefreshRate::Quarter,
         }
     }
 }
@@ -162,7 +162,7 @@ mod tests {
         assert_eq!(s.falloff.falloff_step(), 12);
         assert_eq!(s.peak_falloff.peak_factor(), 1.1);
         assert_eq!(s.scope, ScopeStyle::Lines);
-        assert_eq!(s.refresh.divisor(), 2);
+        assert_eq!(s.refresh.divisor(), 3);
     }
 
     #[test]
