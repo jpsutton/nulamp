@@ -11,6 +11,8 @@ pub struct AppPlayer {
     pub replaygain: std::sync::Arc<std::sync::Mutex<nulamp_eq::ReplayGainSettings>>,
     /// The network stream input (shared with the decoder registry).
     pub streams: nulamp_decoders::stream::StreamFactory,
+    /// The media library's providers, for the pictures of library videos.
+    pub library: std::sync::Arc<nulamp_library::Registry>,
     /// Login requests from network threads.
     pub logins: std::sync::mpsc::Receiver<nulamp_ui::shell::CredentialRequest>,
     /// Remote-control requests from plugins, for the shell.
@@ -184,7 +186,25 @@ impl PlayerHandle for AppPlayer {
 
     fn open_video(&self, location: &str) -> Option<Box<dyn nulamp_ui::video::VideoSource>> {
         use nulamp_decoders::video;
-        if !video::available() || !video::is_video_location(location) {
+        if !video::available() {
+            return None;
+        }
+        if let Some(id) = nulamp_library::TrackId::from_location(location) {
+            // A library track: its provider tells videos apart without a request.
+            let target = self
+                .library
+                .resolve_playback(&id)
+                .ok()
+                .filter(|t| t.video)?;
+            let picture = video::VideoPlayer::open_remote(
+                location,
+                &target.location,
+                &target.headers,
+                &self.streams,
+            );
+            return Some(Box::new(VideoAdapter(picture)));
+        }
+        if !video::is_video_location(location) {
             return None;
         }
         Some(Box::new(VideoAdapter(video::VideoPlayer::open(location))))

@@ -1,10 +1,10 @@
 //! The "Jellyfin" page of the preferences dialog: signing in to a server and choosing which
-//! of its music libraries the media library shows. Server requests run on a helper thread;
+//! of its music and video libraries the media library shows. Server requests run on a helper thread;
 //! the dialog polls for the answer.
 
 use std::sync::mpsc::{self, Receiver};
 
-use nulamp_library::jellyfin::{self, Account, Library};
+use nulamp_library::jellyfin::{self, Account, Library, LibraryKind};
 use nulamp_skinui::{Form, FormEvent, Rect, Widget};
 
 const SERVER: u32 = 400;
@@ -49,11 +49,22 @@ pub struct JellyfinPage {
     pub(crate) libraries: fn(&Account) -> nulamp_library::Result<Vec<Library>>,
 }
 
-/// Indexes (into `account.libraries`) of the libraries the page lists: music only for now.
+/// Indexes (into `account.libraries`) of the libraries the page lists: the kinds the media
+/// library can show.
 fn listed(account: &Account) -> Vec<usize> {
     (0..account.libraries.len())
-        .filter(|&i| account.libraries[i].is_music())
+        .filter(|&i| account.libraries[i].kind().is_some())
         .collect()
+}
+
+fn kind_name(kind: Option<LibraryKind>) -> &'static str {
+    match kind {
+        Some(LibraryKind::Music) => "Music",
+        Some(LibraryKind::Movies) => "Movies",
+        Some(LibraryKind::Shows) => "TV shows",
+        Some(LibraryKind::Videos) => "Videos",
+        None => "Other",
+    }
 }
 
 /// The library list's rows.
@@ -64,7 +75,12 @@ fn rows(account: Option<&Account>) -> Vec<String> {
                 .into_iter()
                 .map(|i| {
                     let l = &a.libraries[i];
-                    format!("[{}] {}", if l.enabled { "x" } else { " " }, l.name)
+                    format!(
+                        "[{}] {} ({})",
+                        if l.enabled { "x" } else { " " },
+                        l.name,
+                        kind_name(l.kind())
+                    )
                 })
                 .collect()
         })
@@ -130,7 +146,7 @@ impl JellyfinPage {
         y += 30;
         out.push(Widget::Label {
             rect: Rect::new(x, y, w, 14),
-            text: "Music libraries (double-click to show or hide):".into(),
+            text: "Libraries (double-click to show or hide):".into(),
         });
         let rows = rows(account);
         let list_h = (bottom - (y + 18) - 26).max(30);
@@ -355,6 +371,7 @@ mod tests {
             libraries: vec![
                 lib("a", "music", true),
                 lib("m", "movies", false),
+                lib("p", "photos", true),
                 lib("b", "music", true),
             ],
             ..Account::default()
@@ -409,7 +426,7 @@ mod tests {
         assert!(p.password.is_empty(), "the password is not kept");
         assert_eq!(p.server, "http://jf:8096");
 
-        // Only music libraries are listed; the second row is library `b`.
+        // Music and video libraries are listed, photos are not; the third row is library `b`.
         let w = p.widgets(account.as_ref(), 134, 316, 280);
         let rows = w
             .iter()
@@ -422,11 +439,13 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(rows, ["[x] A", "[x] B"]);
-        p.event(&FormEvent::Activated(LIBRARIES, 1), &mut account);
-        assert!(!account.as_ref().unwrap().libraries[2].enabled);
+        assert_eq!(rows, ["[x] A (Music)", "[ ] M (Movies)", "[x] B (Music)"]);
+        p.event(&FormEvent::Activated(LIBRARIES, 2), &mut account);
+        assert!(!account.as_ref().unwrap().libraries[3].enabled);
         p.event(&FormEvent::Clicked(SHOW), &mut account);
-        assert!(account.as_ref().unwrap().libraries[2].enabled);
+        assert!(account.as_ref().unwrap().libraries[3].enabled);
+        p.event(&FormEvent::Activated(LIBRARIES, 1), &mut account);
+        assert!(account.as_ref().unwrap().libraries[1].enabled);
 
         // Refreshing adds new libraries and keeps the choices.
         account.as_mut().unwrap().libraries[0].enabled = false;
@@ -439,7 +458,16 @@ mod tests {
             .iter()
             .map(|l| (l.id.as_str(), l.enabled))
             .collect();
-        assert_eq!(ids, [("a", false), ("m", false), ("b", true), ("c", true)]);
+        assert_eq!(
+            ids,
+            [
+                ("a", false),
+                ("m", true),
+                ("p", true),
+                ("b", true),
+                ("c", true)
+            ]
+        );
 
         p.event(&FormEvent::Clicked(CONNECT), &mut account);
         assert!(account.is_none());
@@ -459,7 +487,7 @@ mod tests {
             "fields are locked while signed in"
         );
         wait(&mut p, &mut account);
-        assert_eq!(account.as_ref().unwrap().libraries.len(), 4);
+        assert_eq!(account.as_ref().unwrap().libraries.len(), 5);
         p.after_build(&mut form, account.as_ref());
         assert!(p.pending.is_none(), "no second refresh");
     }

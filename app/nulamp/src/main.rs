@@ -243,6 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             titles,
             replaygain,
             streams,
+            library: library.registry.clone(),
             logins: login_rx,
             requests: Vec::new(),
             plugins,
