@@ -18,6 +18,7 @@ pub mod playlist;
 pub mod plugins_dialog;
 pub mod prefs_dialog;
 pub mod prefs_jellyfin;
+pub mod prefs_skins;
 pub mod prefs_vis;
 pub mod shell;
 pub mod title;

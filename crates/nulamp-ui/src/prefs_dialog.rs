@@ -4,6 +4,7 @@ use nulamp_skinui::{Form, FormEvent, Rect, Widget};
 
 use crate::dialogs::{Dialog, DialogResult, Outcome};
 use crate::prefs_jellyfin::{Change, JellyfinPage};
+use crate::prefs_skins::SkinsPage;
 use crate::shell::UiPrefs;
 use crate::wayland_limits;
 
@@ -31,6 +32,7 @@ const PAGES: [&str; 10] = [
     "Video",
 ];
 const VIS_PAGE: usize = 4;
+const SKINS_PAGE: usize = 5;
 const LIBRARY_PAGE: usize = 7;
 const JELLYFIN_PAGE: usize = 8;
 const VIDEO_PAGE: usize = 9;
@@ -221,6 +223,7 @@ pub struct PrefsDialog {
     /// Running as a native Wayland window: options Wayland cannot support are greyed out.
     wayland_native: bool,
     jellyfin: JellyfinPage,
+    skins: SkinsPage,
 }
 
 impl PrefsDialog {
@@ -234,6 +237,7 @@ impl PrefsDialog {
             pick_folder: pick_library_folder,
             wayland_native: false,
             jellyfin: JellyfinPage::new(prefs.library.jellyfin.as_ref()),
+            skins: SkinsPage::new(prefs.skin_path.clone()),
             prefs,
         };
         d.build();
@@ -443,18 +447,20 @@ impl PrefsDialog {
                     &mut widgets,
                 );
             }
-            5 => {
+            SKINS_PAGE => {
                 widgets.push(Widget::Label {
-                    rect: Rect::new(x, 8, cw - x - 6, 14),
+                    rect: Rect::new(x, 8, 70, 14),
                     text: "Skins folder:".into(),
                 });
                 widgets.push(Widget::Edit {
-                    rect: Rect::new(x, 26, cw - x - 6, 18),
+                    rect: Rect::new(x + 74, 6, cw - x - 80, 18),
                     id: NUM,
                     text: self.prefs.skins_dir.to_string_lossy().into_owned(),
                     cursor: 0,
                     secret: false,
                 });
+                let dir = self.prefs.skins_dir.clone();
+                widgets.extend(self.skins.widgets(&dir, x, 30, cw - x - 6, ch - 32));
             }
             6 => num(
                 "Crossfade length (ms):",
@@ -559,7 +565,7 @@ impl PrefsDialog {
                     self.prefs.buffer_ms = v.clamp(200, 20_000);
                 }
             }
-            5 if !text.trim().is_empty() => {
+            SKINS_PAGE if !text.trim().is_empty() => {
                 self.prefs.skins_dir = std::path::PathBuf::from(text.trim());
             }
             6 => {
@@ -576,8 +582,11 @@ impl PrefsDialog {
         }
     }
 
-    fn result(&self) -> DialogResult {
-        DialogResult::Prefs(Box::new((self.prefs.clone(), self.pl.clone())))
+    /// The preferences, then the skin chosen on the Skins page (if any) to load.
+    fn results(&mut self) -> Vec<DialogResult> {
+        let prefs = DialogResult::Prefs(Box::new((self.prefs.clone(), self.pl.clone())));
+        let skin = self.skins.take_choice().map(DialogResult::LoadSkin);
+        std::iter::once(prefs).chain(skin).collect()
     }
 }
 
@@ -621,6 +630,9 @@ impl Dialog for PrefsDialog {
         if self.page == VIS_PAGE && crate::prefs_vis::event(&mut self.form, &ev) {
             return Outcome::Keep;
         }
+        if self.page == SKINS_PAGE && self.skins.event(&mut self.form, &ev) {
+            return Outcome::Keep;
+        }
         // Enter on the signed-out Jellyfin page signs in instead of closing the dialog.
         let ev = match ev {
             FormEvent::Submit
@@ -657,11 +669,11 @@ impl Dialog for PrefsDialog {
             }
             FormEvent::Clicked(OK) | FormEvent::Submit => {
                 self.collect();
-                Outcome::Do(vec![self.result()], true)
+                Outcome::Do(self.results(), true)
             }
             FormEvent::Clicked(APPLY) => {
                 self.collect();
-                Outcome::Do(vec![self.result()], false)
+                Outcome::Do(self.results(), false)
             }
             FormEvent::Clicked(CANCEL) | FormEvent::Cancel => Outcome::Close,
             _ => Outcome::Keep,
