@@ -13,7 +13,10 @@ use std::ffi::{CStr, CString, c_char, c_int};
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
-use crate::ffmpeg_io::{ByteSource, Io};
+use std::sync::Arc;
+
+use crate::demux::{self, Session};
+use crate::ffmpeg_io::Io;
 use crate::symphonia_decoder::local_path;
 use crate::{DecodeError, Decoder, DecoderFactory, FileTags, ReadStatus, StreamInfo};
 
@@ -48,6 +51,17 @@ mod ffi {
             err: *mut c_char,
             err_len: c_int,
         ) -> *mut Nlff;
+        pub fn nlff_open_demux(
+            d: *mut crate::demux::NlDemux,
+            pull: crate::demux::NlPull,
+            opaque: *mut c_void,
+            audio: c_int,
+            info: *mut NlffInfo,
+            err: *mut c_char,
+            err_len: c_int,
+        ) -> *mut Nlff;
+        pub fn nlff_stream(h: *const Nlff) -> c_int;
+        pub fn nlff_reset(h: *mut Nlff, target: i64);
         pub fn nlff_close(h: *mut Nlff);
         pub fn nlff_read(
             h: *mut Nlff,
@@ -110,9 +124,8 @@ pub fn license() -> String {
         .into_owned()
 }
 
-/// Owned shim handle, with the byte source it reads (none for a local file; only the shim's
-/// callbacks use it).
-struct Handle(NonNull<ffi::Nlff>, #[allow(dead_code)] Option<Io>);
+/// Owned shim handle.
+struct Handle(NonNull<ffi::Nlff>);
 
 // SAFETY: a handle is only used through `&mut self` or `&self` without shared mutation; FFmpeg
 // contexts have no thread affinity.
@@ -120,7 +133,7 @@ unsafe impl Send for Handle {}
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        // SAFETY: created by nlff_open and closed once, before its byte source is dropped.
+        // SAFETY: created by nlff_open or nlff_open_demux and closed once, before its session.
         unsafe { ffi::nlff_close(self.0.as_ptr()) };
     }
 }
@@ -132,28 +145,16 @@ impl Handle {
         if !std::path::Path::new(&path).is_file() {
             return Err(DecodeError::NotFound(location.into()));
         }
-        Self::open_with(&path, None, decode, audio)
-    }
-
-    /// Opens `path`, or reads `io` when given (`path` is then only a name).
-    fn open_with(
-        path: &str,
-        mut io: Option<Io>,
-        decode: bool,
-        audio: Option<usize>,
-    ) -> Result<(Self, StreamInfo, Option<u32>), DecodeError> {
         let audio = audio.map_or(-1, |i| i as c_int);
         let c_path = CString::new(path).map_err(|e| DecodeError::Open(e.to_string()))?;
-        let table = io.as_mut().map(Io::ffi);
         // SAFETY: plain-data struct; the shim fills it in.
         let mut info: ffi::NlffInfo = unsafe { std::mem::zeroed() };
         let mut err = [0 as c_char; 256];
-        // SAFETY: valid NUL-terminated path, callback table (or null) whose source lives in
-        // `io`, and out buffers of the given sizes.
+        // SAFETY: valid NUL-terminated path and out buffers of the given sizes.
         let h = unsafe {
             ffi::nlff_open(
                 c_path.as_ptr(),
-                table.as_ref().map_or(std::ptr::null(), |t| t as *const _),
+                std::ptr::null(),
                 decode as c_int,
                 audio,
                 &mut info,
@@ -161,6 +162,42 @@ impl Handle {
                 err.len() as c_int,
             )
         };
+        Self::finish(h, &info, &err)
+    }
+
+    /// Decodes the sound of `session`, which the decoder keeps alive.
+    fn open_demux(
+        session: &Arc<Session>,
+        audio: Option<usize>,
+    ) -> Result<(Self, StreamInfo, Option<u32>), DecodeError> {
+        let audio = audio.map_or(-1, |i| i as c_int);
+        // SAFETY: plain-data struct; the shim fills it in.
+        let mut info: ffi::NlffInfo = unsafe { std::mem::zeroed() };
+        let mut err = [0 as c_char; 256];
+        let d = session.demux();
+        // SAFETY: valid demuxer under its lock; the pull callback's session outlives the
+        // handle (the decoder holds it); out buffers of the given sizes.
+        let h = unsafe {
+            ffi::nlff_open_demux(
+                d.as_ptr(),
+                demux::pull_audio,
+                demux::opaque(session),
+                audio,
+                &mut info,
+                err.as_mut_ptr(),
+                err.len() as c_int,
+            )
+        };
+        drop(d);
+        Self::finish(h, &info, &err)
+    }
+
+    /// The handle `h` from the shim with its stream information, or the shim's error.
+    fn finish(
+        h: *mut ffi::Nlff,
+        info: &ffi::NlffInfo,
+        err: &[c_char],
+    ) -> Result<(Self, StreamInfo, Option<u32>), DecodeError> {
         let Some(h) = NonNull::new(h) else {
             // SAFETY: the shim writes a NUL-terminated message (the buffer starts zeroed).
             let msg = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy();
@@ -186,7 +223,7 @@ impl Handle {
         let kbps = u32::try_from((info.bit_rate + 500) / 1000)
             .ok()
             .filter(|k| *k > 0);
-        Ok((Self(h, io), stream, kbps))
+        Ok((Self(h), stream, kbps))
     }
 
     fn tags(&self) -> Vec<(String, String)> {
@@ -231,27 +268,55 @@ impl DecoderFactory for FfmpegFactory {
         true
     }
 
-    /// Local files with a chosen audio stream ([`set_audio_track`]) open here.
+    /// Local video files open here, whatever their extension, so their picture can share the
+    /// demuxer (decision V10); so do local files with a chosen audio stream
+    /// ([`set_audio_track`]).
     fn claims(&self, location: &str) -> bool {
-        audio_track(location).is_some() && local_path(location).is_some()
+        local_path(location).is_some()
+            && (audio_track(location).is_some() || crate::video::is_video_location(location))
     }
 
     fn open(&self, location: &str) -> Result<Box<dyn Decoder>, DecodeError> {
+        if crate::video::is_video_location(location) {
+            let path =
+                local_path(location).ok_or_else(|| DecodeError::Unsupported(location.into()))?;
+            if !std::path::Path::new(&path).is_file() {
+                return Err(DecodeError::NotFound(location.into()));
+            }
+            return Ok(Box::new(open_video(
+                location,
+                &path,
+                None,
+                audio_track(location),
+            )?));
+        }
         let (handle, info, kbps) = Handle::open(location, true)?;
-        Ok(Box::new(FfmpegDecoder::new(handle, info, kbps)))
+        Ok(Box::new(FfmpegDecoder::new(handle, info, kbps, None)))
     }
 }
 
-/// Decodes the sound of a byte source (a media server's video file). `name` is used only in
-/// messages and as a format hint; `audio` picks the audio stream as [`set_audio_track`] does.
-/// Blocks while FFmpeg reads the container's headers.
-pub(crate) fn open_source(
-    name: &str,
-    source: Box<dyn ByteSource>,
+/// Decodes the sound of a video file through a demuxer it shares with the picture
+/// ([`crate::demux`]), registered under `key` (the playlist location) for the video window.
+/// Reads `path`, or `io` when given (`path` is then only a name). `audio` picks the audio
+/// stream as [`set_audio_track`] does. Blocks while FFmpeg reads the container's headers.
+pub(crate) fn open_video(
+    key: &str,
+    path: &str,
+    io: Option<Io>,
     audio: Option<usize>,
 ) -> Result<FfmpegDecoder, DecodeError> {
-    let (handle, info, kbps) = Handle::open_with(name, Some(Io::new(source)), true, audio)?;
-    Ok(FfmpegDecoder::new(handle, info, kbps))
+    let session = Session::open(key, path, io).map_err(DecodeError::Open)?;
+    match Handle::open_demux(&session, audio) {
+        Ok((handle, info, kbps)) => {
+            // SAFETY: valid handle.
+            session.set_audio_stream(unsafe { ffi::nlff_stream(handle.0.as_ptr()) });
+            Ok(FfmpegDecoder::new(handle, info, kbps, Some(session)))
+        }
+        Err(e) => {
+            session.close();
+            Err(e)
+        }
+    }
 }
 
 /// Tags and stream information of a local file, read by FFmpeg (see [`crate::ffmpeg_tags`]).
@@ -342,7 +407,10 @@ fn map_tag(key: &str, value: &str) -> Option<(&'static str, String)> {
 
 /// An open FFmpeg stream.
 pub struct FfmpegDecoder {
+    /// Declared before `session`: the handle reads the session's demuxer.
     handle: Handle,
+    /// The demuxer shared with the picture of a video file.
+    session: Option<Arc<Session>>,
     info: StreamInfo,
     /// Container bit rate, used until packets have been read.
     file_kbps: Option<u32>,
@@ -353,13 +421,28 @@ pub struct FfmpegDecoder {
 }
 
 impl FfmpegDecoder {
-    fn new(handle: Handle, info: StreamInfo, file_kbps: Option<u32>) -> Self {
+    fn new(
+        handle: Handle,
+        info: StreamInfo,
+        file_kbps: Option<u32>,
+        session: Option<Arc<Session>>,
+    ) -> Self {
         Self {
             handle,
+            session,
             info,
             file_kbps,
             recent: VecDeque::new(),
             pos: 0,
+        }
+    }
+}
+
+impl Drop for FfmpegDecoder {
+    fn drop(&mut self) {
+        // The picture lets go of the demuxer; a reopened track gets a new one.
+        if let Some(s) = &self.session {
+            s.close();
         }
     }
 }
@@ -408,10 +491,17 @@ impl Decoder for FfmpegDecoder {
         if let Some(len) = self.info.length_ms {
             target = target.min(len * rate / 1000);
         }
-        // SAFETY: valid handle.
-        let r = unsafe { ffi::nlff_seek(self.handle.0.as_ptr(), target as i64) };
-        if r < 0 {
-            return Err(DecodeError::Seek(format!("FFmpeg error {r}")));
+        if let Some(s) = &self.session {
+            s.seek(target * 1000 / rate.max(1))
+                .map_err(|r| DecodeError::Seek(format!("FFmpeg error {r}")))?;
+            // SAFETY: valid handle.
+            unsafe { ffi::nlff_reset(self.handle.0.as_ptr(), target as i64) };
+        } else {
+            // SAFETY: valid handle.
+            let r = unsafe { ffi::nlff_seek(self.handle.0.as_ptr(), target as i64) };
+            if r < 0 {
+                return Err(DecodeError::Seek(format!("FFmpeg error {r}")));
+            }
         }
         self.pos = target;
         self.recent.clear();

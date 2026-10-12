@@ -6,6 +6,8 @@
 
 pub mod cd;
 #[cfg(nulamp_ffmpeg)]
+mod demux;
+#[cfg(nulamp_ffmpeg)]
 pub mod ffmpeg_decoder;
 mod ffmpeg_io;
 pub mod midi_decoder;

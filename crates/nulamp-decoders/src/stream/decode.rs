@@ -173,9 +173,11 @@ fn open_symphonia(
     Ok(Box::new(if spooled { dec } else { dec.with_coarse_seek() }))
 }
 
-/// Opens the sound of a video file with FFmpeg (Symphonia without FFmpeg).
+/// Opens the sound of a video file with FFmpeg, through a demuxer the video window shares
+/// under `key` (Symphonia without FFmpeg).
 fn open_video(
     source: RingSource,
+    key: &str,
     name: &str,
     audio: Option<usize>,
     hint: Option<&str>,
@@ -184,15 +186,17 @@ fn open_video(
     #[cfg(nulamp_ffmpeg)]
     {
         let _ = (hint, spooled);
-        Ok(Box::new(crate::ffmpeg_decoder::open_source(
+        let io = crate::ffmpeg_io::Io::new(Box::new(source));
+        Ok(Box::new(crate::ffmpeg_decoder::open_video(
+            key,
             name,
-            Box::new(source),
+            Some(io),
             audio,
         )?))
     }
     #[cfg(not(nulamp_ffmpeg))]
     {
-        let _ = (name, audio);
+        let _ = (key, name, audio);
         open_symphonia(source, hint, spooled)
     }
 }
@@ -210,7 +214,7 @@ pub(crate) fn run(shared: Arc<Shared>) {
             drop(st);
             return done(&shared, None);
         }
-        let video = st.video.then_some(st.audio_track);
+        let video = st.video.clone().map(|key| (key, st.audio_track));
         (
             st.hint,
             st.seekable,
@@ -225,7 +229,7 @@ pub(crate) fn run(shared: Arc<Shared>) {
         seekable,
     };
     let opened = match video {
-        Some(audio) => open_video(source, &name, audio, hint, spooled),
+        Some((key, audio)) => open_video(source, &key, &name, audio, hint, spooled),
         None => open_symphonia(source, hint, spooled),
     };
     let mut dec = match opened {

@@ -2,8 +2,8 @@
 //! `nulamp_library::TrackId::location`): the location is resolved through the library's
 //! registry each time the track opens, and the server's stream is played with the request
 //! headers the provider asks for. A server's video plays its sound through FFmpeg (with the
-//! audio stream chosen in the video window); `player::AppPlayer::open_video` shows its
-//! picture.
+//! audio stream chosen in the video window), from a demuxer the video window shares by the
+//! entry's location (`player::AppPlayer::open_video`), so the file is downloaded once.
 
 use std::sync::Arc;
 
@@ -45,7 +45,7 @@ impl DecoderFactory for LibraryInput {
             headers: target.headers,
             keep_title: true,
             finite: true,
-            video: target.video,
+            video: target.video.then(|| location.to_string()),
             audio_track: nulamp_decoders::audio_track(location).filter(|_| target.video),
         };
         Ok(Box::new(

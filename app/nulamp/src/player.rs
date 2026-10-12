@@ -189,24 +189,18 @@ impl PlayerHandle for AppPlayer {
         if !video::available() {
             return None;
         }
-        if let Some(id) = nulamp_library::TrackId::from_location(location) {
+        let is_video = match nulamp_library::TrackId::from_location(location) {
             // A library track: its provider tells videos apart without a request.
-            let target = self
+            Some(id) => self
                 .library
                 .resolve_playback(&id)
-                .ok()
-                .filter(|t| t.video)?;
-            let picture = video::VideoPlayer::open_remote(
-                location,
-                &target.location,
-                &target.headers,
-                &self.streams,
-            );
-            return Some(Box::new(VideoAdapter(picture)));
-        }
-        if !video::is_video_location(location) {
+                .is_ok_and(|target| target.video),
+            None => video::is_video_location(location),
+        };
+        if !is_video {
             return None;
         }
+        // The picture shares the demuxer the sound decoder opened for this entry.
         Some(Box::new(VideoAdapter(video::VideoPlayer::open(location))))
     }
 

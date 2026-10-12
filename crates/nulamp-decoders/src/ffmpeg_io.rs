@@ -1,7 +1,7 @@
 //! Byte sources for FFmpeg (`ffmpeg/io.c`): FFmpeg reads a [`ByteSource`] through callbacks
-//! instead of opening a file itself. Media-server files reach the FFmpeg decoder and the video
-//! window this way, over nulamp's own HTTP client, so FFmpeg's network protocols (absent from
-//! the AppImage's FFmpeg) are never used.
+//! instead of opening a file itself. A media server's video reaches the shared demuxer
+//! ([`crate::demux`]) this way, from the network stream's buffer, so FFmpeg's network protocols
+//! (absent from the AppImage's FFmpeg) are never used.
 
 #[cfg(nulamp_ffmpeg)]
 use std::ffi::{c_int, c_void};

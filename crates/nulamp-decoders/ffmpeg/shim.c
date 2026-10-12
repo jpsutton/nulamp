@@ -7,8 +7,9 @@
  * libavcodec and converts every frame to interleaved 32-bit float with libswresample, keeping
  * the source sample rate and channel count. A video file without audio plays as silence of
  * the video's length (video.c shows the picture). Input is a local file (the "file" protocol
- * only) or a byte source read through callbacks (io.h). A handle is used by one thread at a
- * time.
+ * only) or a byte source read through callbacks (io.h); the sound of a video file takes its
+ * packets from a demuxer it shares with the picture (demux.h). A handle is used by one thread
+ * at a time.
  */
 
 #include <limits.h>
@@ -27,6 +28,7 @@
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 
+#include "demux.h"
 #include "io.h"
 
 /* Must match `NlffInfo` in ffmpeg_decoder.rs. */
@@ -74,6 +76,10 @@ typedef struct Nlff {
     /* A video file without audio: silence of `silent_frames` frames. */
     int silent;
     int64_t silent_frames;
+    /* `fmt` belongs to a shared demuxer; packets come from `pull`. */
+    int borrowed;
+    NlPull pull;
+    void *pull_opaque;
 } Nlff;
 
 static void set_error(char *err, int len, const char *what, int code) {
@@ -96,7 +102,8 @@ void nlff_close(Nlff *h) {
     av_frame_free(&h->frame);
     av_packet_free(&h->pkt);
     avcodec_free_context(&h->dec);
-    nl_close_input(&h->fmt);
+    if (!h->borrowed)
+        nl_close_input(&h->fmt);
     av_free(h->buf);
     av_free(h);
 }
@@ -149,14 +156,11 @@ static int open_silent(Nlff *h, int decode, NlffInfo *info) {
  * picks the audio stream (0-based among the audio streams; -1: the best one). Returns NULL
  * and an error text on failure.
  */
+static Nlff *setup(Nlff *h, int decode, int audio, NlffInfo *info, char *err, int err_len);
+
 Nlff *nlff_open(const char *path, const NlIo *io, int decode, int audio, NlffInfo *info,
                 char *err, int err_len) {
     static int quiet = 0;
-    const AVCodec *codec = NULL;
-    const AVCodecDescriptor *desc;
-    AVCodecParameters *par;
-    AVStream *st;
-    unsigned i;
     int r;
     Nlff *h;
 
@@ -182,6 +186,40 @@ Nlff *nlff_open(const char *path, const NlIo *io, int decode, int audio, NlffInf
         nlff_close(h);
         return NULL;
     }
+    return setup(h, decode, audio, info, err, err_len);
+}
+
+/*
+ * Decodes the sound of the shared demuxer `d`, taking packets from `pull` (the caller routes
+ * the stream nlff_stream reports to it). `audio` as for nlff_open.
+ */
+Nlff *nlff_open_demux(NlDemux *d, NlPull pull, void *opaque, int audio, NlffInfo *info,
+                      char *err, int err_len) {
+    Nlff *h = av_mallocz(sizeof *h);
+    if (!h) {
+        set_error(err, err_len, "out of memory", 0);
+        return NULL;
+    }
+    h->discard_until = -1;
+    h->fmt = nld_fmt(d);
+    h->borrowed = 1;
+    h->pull = pull;
+    h->pull_opaque = opaque;
+    return setup(h, 1, audio, info, err, err_len);
+}
+
+/* The stream index the decoder reads, -1 for a video without sound. */
+int nlff_stream(const Nlff *h) { return h->silent ? -1 : h->stream; }
+
+/* Finds the audio stream and opens its decoder. Closes `h` on failure. */
+static Nlff *setup(Nlff *h, int decode, int audio, NlffInfo *info, char *err, int err_len) {
+    const AVCodec *codec = NULL;
+    const AVCodecDescriptor *desc;
+    AVCodecParameters *par;
+    AVStream *st;
+    unsigned i;
+    int r;
+
     r = av_find_best_stream(h->fmt, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
     if (audio >= 0) {
         int n = 0;
@@ -208,7 +246,7 @@ Nlff *nlff_open(const char *path, const NlIo *io, int decode, int audio, NlffInf
         return NULL;
     }
     h->stream = r;
-    for (i = 0; i < h->fmt->nb_streams; i++)
+    for (i = 0; i < h->fmt->nb_streams && !h->borrowed; i++)
         if ((int)i != h->stream)
             h->fmt->streams[i]->discard = AVDISCARD_ALL;
     st = h->fmt->streams[h->stream];
@@ -328,9 +366,14 @@ static int next_frame(Nlff *h) {
             return r;
         if (h->flushing)
             return 0;
-        r = av_read_frame(h->fmt, h->pkt);
+        if (h->pull) {
+            r = h->pull(h->pull_opaque, h->pkt);
+            r = r == 1 ? 0 : r == 0 ? AVERROR_EOF : r < 0 ? r : AVERROR(EAGAIN);
+        } else {
+            r = av_read_frame(h->fmt, h->pkt);
+        }
         if (r < 0) {
-            if (r != AVERROR_EOF && !(h->fmt->pb && avio_feof(h->fmt->pb)))
+            if (r != AVERROR_EOF && (h->pull || !(h->fmt->pb && avio_feof(h->fmt->pb))))
                 return r;
             h->flushing = 1;
             r = avcodec_send_packet(h->dec, NULL);
@@ -404,6 +447,25 @@ int nlff_read(Nlff *h, const float **data, int *channels, int64_t *bytes) {
         h->bytes = 0;
         return n - skip;
     }
+}
+
+/*
+ * After the shared demuxer moved to a key frame before sample frame `target`: drops what the
+ * decoder holds, and the samples before `target` that follow.
+ */
+void nlff_reset(Nlff *h, int64_t target) {
+    if (h->silent) {
+        h->pos = FFMIN(FFMAX(target, 0), h->silent_frames);
+        return;
+    }
+    av_frame_unref(h->frame);
+    avcodec_flush_buffers(h->dec);
+    h->have_frame = 0;
+    h->flushing = 0;
+    h->origin_known = 1;
+    h->bytes = 0;
+    h->pos = target;
+    h->discard_until = target;
 }
 
 /*

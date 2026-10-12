@@ -3,7 +3,7 @@
 //! - libopenmpt for the `openmpt` feature (tracker modules);
 //! - FFmpeg (libavformat, libavcodec, libavutil, libswresample, libswscale) for the `ffmpeg`
 //!   feature, through a small C shim (`ffmpeg/shim.c` for audio, `ffmpeg/video.c` for video,
-//!   `ffmpeg/io.c` for inputs) compiled against the installed headers;
+//!   `ffmpeg/io.c` and `ffmpeg/demux.c` for inputs) compiled against the installed headers;
 //! - libcdio for the opt-in `cdio` feature (audio CD).
 //!
 //! When a library cannot be found, its decoder is left out (with a build warning) instead of
@@ -84,6 +84,8 @@ fn ffmpeg() {
     println!("cargo:rerun-if-changed=ffmpeg/video.c");
     println!("cargo:rerun-if-changed=ffmpeg/io.c");
     println!("cargo:rerun-if-changed=ffmpeg/io.h");
+    println!("cargo:rerun-if-changed=ffmpeg/demux.c");
+    println!("cargo:rerun-if-changed=ffmpeg/demux.h");
     if std::env::var_os("CARGO_FEATURE_FFMPEG").is_none() {
         return;
     }
@@ -124,6 +126,7 @@ fn ffmpeg() {
         .file("ffmpeg/shim.c")
         .file("ffmpeg/video.c")
         .file("ffmpeg/io.c")
+        .file("ffmpeg/demux.c")
         .warnings(true);
     for dir in &includes {
         build.include(dir);
