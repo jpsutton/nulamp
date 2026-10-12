@@ -28,6 +28,10 @@ pub(super) struct MenuWin {
     pub hi: Option<usize>,
     /// Screen position (physical pixels).
     pub pos: (i32, i32),
+    /// The window the menu was opened from.
+    pub owner: WindowId,
+    /// Compound part: screen position of the window surface the part is attached to.
+    pub origin: (i32, i32),
     /// Pixel scale (2 with double size).
     pub scale: i32,
     pub opened: Instant,
@@ -102,27 +106,55 @@ impl<P: PlayerHandle> Shell<P> {
     ) {
         let items = menus::for_kind(kind, &self.menu_state());
         let p = self.screen_point(id, x, y);
-        self.open_menu(el, items, p);
+        self.open_menu(el, id, items, p);
     }
 
-    pub(super) fn open_menu(&mut self, el: &ActiveEventLoop, items: Vec<Item>, pos: (i32, i32)) {
+    /// Opens a menu at screen position `pos`, from window `owner`.
+    pub(super) fn open_menu(
+        &mut self,
+        el: &ActiveEventLoop,
+        owner: WindowId,
+        items: Vec<Item>,
+        pos: (i32, i32),
+    ) {
         self.close_menus();
-        self.push_menu(el, items, pos);
+        self.push_menu(el, owner, items, pos);
     }
 
-    fn push_menu(&mut self, el: &ActiveEventLoop, items: Vec<Item>, pos: (i32, i32)) {
+    fn push_menu(
+        &mut self,
+        el: &ActiveEventLoop,
+        owner: WindowId,
+        items: Vec<Item>,
+        pos: (i32, i32),
+    ) {
         let layout = menu::layout(&mut self.fonts, &items);
         let scale = if self.prefs.double_size { 2 } else { 1 };
         let (lw, lh) = (layout.w * scale, layout.h * scale);
         if let Some(c) = &mut self.compound {
             // Wayland cannot place a top-level menu window: draw the menu as a part of the
-            // main window, at the same place relative to it. The screen size is unknown, so
-            // the menu is not kept on screen.
-            let Some(main) = self.ids.get(&Kind::Main).map(|m| self.windows[m].rect) else {
-                return;
+            // window it was opened from, at the same place relative to it. Parts of the
+            // compound window open menus on the main window; other top-level windows (video)
+            // on themselves, as their screen position is unknown. The screen size is unknown
+            // too, so the menu is not kept on screen.
+            let top_level = self
+                .windows
+                .get(&owner)
+                .filter(|w| w.part.is_none())
+                .and_then(|w| Some((w.window.clone()?, w.actual)));
+            let (part, origin) = match top_level {
+                Some((window, actual)) => match c.add_part_on(&*window) {
+                    Some(part) => (part, actual),
+                    None => return,
+                },
+                None => {
+                    let Some(main) = self.ids.get(&Kind::Main).map(|m| self.windows[m].rect) else {
+                        return;
+                    };
+                    (c.add_part(), (main.x, main.y))
+                }
             };
-            let part = c.add_part();
-            c.set_position(part, pos.0 - main.x, pos.1 - main.y);
+            c.set_position(part, pos.0 - origin.0, pos.1 - origin.1);
             self.menus.push(MenuWin {
                 window: None,
                 surface: None,
@@ -131,6 +163,8 @@ impl<P: PlayerHandle> Shell<P> {
                 layout,
                 hi: None,
                 pos,
+                owner,
+                origin,
                 scale,
                 opened: Instant::now(),
             });
@@ -190,6 +224,8 @@ impl<P: PlayerHandle> Shell<P> {
             layout,
             hi: None,
             pos,
+            owner,
+            origin: pos,
             scale,
             opened: Instant::now(),
         });
@@ -244,12 +280,13 @@ impl<P: PlayerHandle> Shell<P> {
             return;
         };
         let items = items.clone();
+        let owner = m.owner;
         let pos = (
             m.pos.0 + (m.layout.w - 3) * m.scale,
             m.pos.1 + (m.layout.rows[index].0 - 2) * m.scale,
         );
         self.close_menus_from(level + 1);
-        self.push_menu(el, items, pos);
+        self.push_menu(el, owner, items, pos);
     }
 
     /// Events for menu windows. Returns true when the event was for a menu.
@@ -635,7 +672,7 @@ impl<P: PlayerHandle> Shell<P> {
     ) {
         let items = menus::playlist_menu(menu);
         let p = self.screen_point(id, x, y);
-        self.open_menu(el, items, p);
+        self.open_menu(el, id, items, p);
     }
 
     pub(super) fn open_items_at(
@@ -647,7 +684,7 @@ impl<P: PlayerHandle> Shell<P> {
         y: i32,
     ) {
         let p = self.screen_point(id, x, y);
-        self.open_menu(el, items, p);
+        self.open_menu(el, id, items, p);
     }
 
     pub(super) fn open_main_menu_at(&mut self, el: &ActiveEventLoop, id: WindowId, x: i32, y: i32) {

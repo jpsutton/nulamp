@@ -222,6 +222,11 @@ pub enum Widget {
         rect: Rect,
         label: String,
     },
+    /// A picture, centred in a sunken frame and cut to it. It takes no input.
+    Image {
+        rect: Rect,
+        image: Option<Frame>,
+    },
 }
 
 impl Widget {
@@ -235,7 +240,8 @@ impl Widget {
             | Widget::TextBox { rect, .. }
             | Widget::Radio { rect, .. }
             | Widget::Slider { rect, .. }
-            | Widget::Group { rect, .. } => *rect,
+            | Widget::Group { rect, .. }
+            | Widget::Image { rect, .. } => *rect,
         }
     }
 
@@ -761,6 +767,24 @@ impl Form {
                         c.window_text,
                         (x, y, x + r.w, y + lh),
                     );
+                }
+                Widget::Image { image, .. } => {
+                    frame.fill_rect(x, y, r.w, r.h, c.item_bg);
+                    if let Some(img) = image {
+                        let (iw, ih) = (img.width() as i32, img.height() as i32);
+                        let (vw, vh) = (iw.min(r.w - 2), ih.min(r.h - 2));
+                        blit(
+                            frame,
+                            img,
+                            (iw - vw) / 2,
+                            (ih - vh) / 2,
+                            vw,
+                            vh,
+                            x + (r.w - vw) / 2,
+                            y + (r.h - vh) / 2,
+                        );
+                    }
+                    frame_rect(frame, x, y, r.w, r.h, c.divider);
                 }
                 Widget::TextBox { lines, first, .. } => {
                     frame.fill_rect(x, y, r.w, r.h, c.item_bg);

@@ -50,7 +50,7 @@ Because high bars cover many bins and are summed, high frequencies read larger t
 ### 2.4 Refresh timing
 
 - The visualizer runs on a timer of about 16 ms (≈ 60 Hz). Bar falloff and peak motion advance **every** tick.
-- Pixels are redrawn only every Nth tick, set by the "refresh rate" preference: N = 1 ("70 fps"), 2 ("35 fps", default), 3 ("18 fps"), 4 ("9 fps").
+- Pixels are redrawn only every Nth tick, set by the "refresh rate" preference: N = 1 ("70 fps"), 2 ("35 fps"), 3 ("18 fps", default), 4 ("9 fps").
 - The visualizer runs only while: the mode is not "off", playback is running and not paused, the player is not minimized, the main window is visible (or the playlist mini area applies), and no external visualization plugin is running with "disable built-in visualizer while a plugin runs" on (default on).
 - On stop, draw one empty frame (background and grid only).
 
@@ -202,7 +202,7 @@ Select plugin...                  Ctrl+K
 | Analyzer falloff | Moderate (step 12) |
 | Peak falloff | Slow (factor 1.1) |
 | Oscilloscope style | Lines |
-| Refresh rate | Half (35 fps) |
+| Refresh rate | Quarter (18 fps) |
 
 ---
 

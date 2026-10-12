@@ -1069,6 +1069,14 @@ impl<P: PlayerHandle> Shell<P> {
     }
 
     fn set_visible(&mut self, kind: Kind, visible: bool) {
+        // A menu drawn on the window must go before the window (Wayland closes hidden
+        // top-level windows).
+        if !visible
+            && let Some(id) = self.ids.get(&kind)
+            && self.menus.iter().any(|m| m.owner == *id)
+        {
+            self.close_menus();
+        }
         if let Some(w) = self.ids.get(&kind).and_then(|id| self.windows.get_mut(id)) {
             w.visible = visible;
             match (w.part, &w.window, &mut self.compound) {
@@ -1282,15 +1290,20 @@ impl<P: PlayerHandle> Shell<P> {
         let Some(part) = self.capture else {
             return false;
         };
-        let main = match self.windows.get(&id) {
-            Some(w) if w.part == Some(wayland::MAIN) => w.rect,
-            _ => return false,
-        };
         if let Some(level) = self.menu_level(part) {
-            let pos = self.menus[level].pos;
+            let m = &self.menus[level];
+            // Menus on the main window take its events; menus on other windows theirs.
+            let owner = match self.windows.get(&m.owner) {
+                Some(w) if w.part.is_some_and(|p| p != wayland::MAIN) => self.ids[&Kind::Main],
+                _ => m.owner,
+            };
+            if owner != id {
+                return false;
+            }
+            let (origin, pos) = (m.origin, m.pos);
             match *event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    let (x, y) = (main.x + position.x as i32, main.y + position.y as i32);
+                    let (x, y) = (origin.0 + position.x as i32, origin.1 + position.y as i32);
                     self.menu_motion(el, level, x - pos.0, y - pos.1);
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
@@ -1305,6 +1318,10 @@ impl<P: PlayerHandle> Shell<P> {
             }
             return true;
         }
+        let main = match self.windows.get(&id) {
+            Some(w) if w.part == Some(wayland::MAIN) => w.rect,
+            _ => return false,
+        };
         match *event {
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(w) = self.windows.get_mut(&part) {
@@ -1489,10 +1506,11 @@ impl<P: PlayerHandle> Shell<P> {
             Action::ToggleLibraryWindow if self.library.is_some() => {
                 let v = !self.is_visible(Kind::Library);
                 self.set_visible(Kind::Library, v);
-                if v && let Some(&lid) = self.ids.get(&Kind::Library)
-                    && let Some(win) = &self.windows[&lid].window
-                {
-                    win.focus_window();
+                if v && let Some(&lid) = self.ids.get(&Kind::Library) {
+                    match &self.windows[&lid].window {
+                        Some(win) => win.focus_window(),
+                        None => self.set_key_target(lid),
+                    }
                 }
             }
             Action::Menu { kind, x, y } => {
@@ -2043,7 +2061,7 @@ impl<P: PlayerHandle> Shell<P> {
         };
         self.create_window(el, Kind::Main, (main.rect.x, main.rect.y), true);
         // Same order as at start-up, so the parts get the same indices and window ids.
-        for kind in [Kind::Playlist, Kind::Equalizer] {
+        for kind in [Kind::Playlist, Kind::Equalizer, Kind::Library] {
             let Some(old) = self.ids.get(&kind).and_then(|id| self.windows.remove(id)) else {
                 continue;
             };
@@ -2073,8 +2091,9 @@ impl<P: PlayerHandle> Shell<P> {
     pub(super) fn raise(&mut self) {
         for k in std::mem::take(&mut self.hidden_to_tray) {
             if self.wayland {
-                // Closed by `close_windows`; the main window brings its parts back.
-                if matches!(k, Kind::Main | Kind::Library | Kind::Video) {
+                // Closed by `close_windows`; the main window brings its parts and the
+                // library back.
+                if matches!(k, Kind::Main | Kind::Video) {
                     self.reopen.push(k);
                 }
             } else {
@@ -2162,7 +2181,8 @@ impl<P: PlayerHandle> Shell<P> {
             thumb_pressed: self.pl.thumb_pressed,
             info: pl::info_string(&engine.playlist),
             time,
-            popup: self.pl.popup,
+            // Drawn last, over the rows and the mini visualizer.
+            popup: None,
         };
         let mut f = pw::draw_playlist_frame(&self.skin, &view);
         if self.pl.shade {
@@ -2208,6 +2228,9 @@ impl<P: PlayerHandle> Shell<P> {
                     self.visualizer.draw(&colors, &mut img, 0, 0);
                 }
                 nulamp_render::blit(&mut f, &img, 0, 0, 72, 16, self.pl.w - 223, self.pl.h - 26);
+            }
+            if let Some((menu, hi)) = self.pl.popup {
+                pw::draw_popup(&mut f, &self.skin, menu, hi, self.pl.w, self.pl.h);
             }
         }
         f
@@ -3139,18 +3162,26 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         }
         self.apply_hotkeys();
         self.update_pl_font();
-        if self.library.is_some() {
+        if self.library.is_some() && !self.wayland {
             self.create_window(el, Kind::Library, p.lib_pos, p.lib_visible);
         }
         self.create_window(el, Kind::Video, p.video_pos, p.video_visible);
         if self.wayland {
-            // The main window comes first: the equalizer and playlist are its parts.
+            // The main window comes first: the equalizer, playlist and library are its parts.
             self.create_window(el, Kind::Main, p.main_pos, true);
         }
+        let library = (self.library.is_some() && self.wayland).then_some((
+            Kind::Library,
+            p.lib_pos,
+            p.lib_visible,
+        ));
         for (kind, pos, visible) in [
             (Kind::Playlist, p.pl_pos, p.pl_visible),
             (Kind::Equalizer, p.eq_pos, p.eq_visible),
-        ] {
+        ]
+        .into_iter()
+        .chain(library)
+        {
             if self.compound.is_some() {
                 self.create_part(kind, pos, visible);
             } else {

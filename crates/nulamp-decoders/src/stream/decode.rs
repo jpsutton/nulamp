@@ -12,6 +12,7 @@ use symphonia::core::meta::MetadataOptions;
 
 use super::shared::{Block, MAX_QUEUED_FRAMES, Phase, Shared, State};
 use crate::ffmpeg_io::ByteSource;
+use crate::opus_decoder::OpusDecoder;
 use crate::symphonia_decoder::SymphoniaDecoder;
 use crate::{DecodeError, Decoder, ReadStatus, StreamInfo};
 
@@ -148,6 +149,34 @@ fn done(shared: &Shared, error: Option<DecodeError>) {
     shared.cv.notify_all();
 }
 
+/// Whether the stream is Ogg Opus, which Symphonia cannot decode: its first page names the
+/// codec. Leaves the source at the start.
+fn is_opus(source: &mut RingSource) -> bool {
+    let mut head = [0u8; 128];
+    let mut n = 0;
+    while n < head.len() {
+        match source.read(&mut head[n..]) {
+            Ok(0) | Err(_) => break,
+            Ok(k) => n += k,
+        }
+    }
+    let opus = head[..n].starts_with(b"OggS") && head[..n].windows(8).any(|w| w == b"OpusHead");
+    opus && source.seek(SeekFrom::Start(0)).is_ok()
+}
+
+/// Opens an Ogg Opus stream with the Opus decoder, from the spool.
+fn open_opus(
+    source: RingSource,
+    len: u64,
+    complete: bool,
+) -> Result<Box<dyn Decoder>, DecodeError> {
+    Ok(Box::new(OpusDecoder::open_source(
+        Box::new(source),
+        len,
+        complete,
+    )?))
+}
+
 /// Probes the stream with Symphonia.
 fn open_symphonia(
     source: RingSource,
@@ -224,13 +253,19 @@ pub(crate) fn run(shared: Arc<Shared>) {
             st.fields.location.clone(),
         )
     };
-    let source = RingSource {
+    let mut source = RingSource {
         shared: shared.clone(),
         seekable,
     };
-    let opened = match video {
-        Some((key, audio)) => open_video(source, &key, &name, audio, hint, spooled),
-        None => open_symphonia(source, hint, spooled),
+    // Only a spool seeks back to the start for free, and the Opus decoder needs the length.
+    let opus_len = len.filter(|_| video.is_none() && spooled && hint == Some("ogg"));
+    let opened = match (video, opus_len) {
+        (Some((key, audio)), _) => open_video(source, &key, &name, audio, hint, spooled),
+        (None, Some(len)) if is_opus(&mut source) => {
+            let complete = shared.lock().complete();
+            open_opus(source, len, complete)
+        }
+        (None, _) => open_symphonia(source, hint, spooled),
     };
     let mut dec = match opened {
         Ok(d) => d,

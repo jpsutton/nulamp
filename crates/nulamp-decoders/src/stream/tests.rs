@@ -1324,3 +1324,54 @@ fn decodes_an_encoded_mp3() {
     assert!(run.frames.abs_diff(3 * 44_100) < 4410, "{}", run.frames);
     assert_eq!(run.titles.last().map(String::as_str), Some("A440 (Tone)"));
 }
+
+/// Two seconds of Ogg Opus from ffmpeg; `None` when ffmpeg or libopus is missing.
+fn opus_file() -> Option<Vec<u8>> {
+    let out = std::env::temp_dir().join(format!("nulamp-stream-{}.opus", std::process::id()));
+    let status = std::process::Command::new("/usr/bin/ffmpeg")
+        .args(["-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i"])
+        .arg("sine=frequency=440:sample_rate=48000:duration=2")
+        .args(["-c:a", "libopus", "-b:a", "96k"])
+        .arg(&out)
+        .status()
+        .ok()?;
+    let bytes = status.success().then(|| std::fs::read(&out).ok()).flatten();
+    let _ = std::fs::remove_file(&out);
+    bytes
+}
+
+#[test]
+fn spooled_ogg_opus_plays_and_seeks() {
+    let Some(body) = opus_file() else {
+        eprintln!("skipping: no ffmpeg with libopus");
+        return;
+    };
+    let server = serve(move |_, s, _| {
+        send(
+            s,
+            &format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\n\
+                 Content-Type: audio/ogg\r\n",
+                body.len()
+            ),
+            &body,
+        );
+    });
+    let factory = StreamFactory::new(config());
+    let options = StreamOptions {
+        finite: true,
+        ..StreamOptions::default()
+    };
+    let mut d = factory
+        .open_stream_with(&server.url("/Audio/1/universal"), &options)
+        .unwrap();
+    let run = drain(&mut d, |_, _| {});
+    assert!(run.error.is_none(), "{:?}", run.error);
+    assert_eq!(d.info().codec, "Opus");
+    // 2 s at 48 kHz, trimmed by pre-skip and the last granule position.
+    assert_eq!(run.frames, 2 * 48_000);
+    assert_eq!(d.seek(1000).unwrap(), 1000);
+    let run = drain(&mut d, |_, _| {});
+    assert!(run.error.is_none(), "{:?}", run.error);
+    assert_eq!(run.frames, 48_000);
+}

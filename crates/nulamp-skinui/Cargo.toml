@@ -7,10 +7,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-nulamp-pixelfont = { version = "0.5.0", path = "../nulamp-pixelfont" }
-nulamp-render = { version = "0.5.0", path = "../nulamp-render" }
-nulamp-skin = { version = "0.5.0", path = "../nulamp-skin" }
-nulamp-text = { version = "0.5.0", path = "../nulamp-text" }
+nulamp-pixelfont = { version = "0.6.0", path = "../nulamp-pixelfont" }
+nulamp-render = { version = "0.6.0", path = "../nulamp-render" }
+nulamp-skin = { version = "0.6.0", path = "../nulamp-skin" }
+nulamp-text = { version = "0.6.0", path = "../nulamp-text" }
 
 [lints]
 workspace = true

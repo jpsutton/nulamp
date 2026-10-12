@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(f.radio(BAND), Some(BAND + 2));
         assert_eq!(f.radio(SCOPE), Some(SCOPE + 2));
         assert!(f.checked(PEAKS));
-        assert_eq!(f.value(REFRESH), Some(2));
+        assert_eq!(f.value(REFRESH), Some(1));
         assert_eq!(f.value(FALLOFF), Some(2));
         assert_eq!(f.value(PEAK_FALLOFF), Some(1));
         let mut back = VisSettings {
