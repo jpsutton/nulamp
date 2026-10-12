@@ -1904,6 +1904,7 @@ impl<P: PlayerHandle> Shell<P> {
     fn apply_prefs(&mut self, prefs: UiPrefs, pl: crate::prefs_dialog::PlaylistOptions) {
         let aot_changed = prefs.always_on_top != self.prefs.always_on_top;
         let eq_double_changed = prefs.eq_double != self.prefs.eq_double;
+        let vis_mode_changed = prefs.vis.mode != self.prefs.vis.mode;
         // Keep window-owned state that the dialog does not edit.
         let keep = self.prefs.clone();
         self.library_prefs_changed(&keep.library, &prefs.library);
@@ -1935,6 +1936,9 @@ impl<P: PlayerHandle> Shell<P> {
         self.pl.old_school_buttons = pl.old_school_buttons;
         self.update_pl_font();
         self.visualizer.set_settings(self.prefs.vis);
+        if vis_mode_changed {
+            self.visualizer.reset();
+        }
         self.player.set_eq(&self.prefs.eq);
         self.player.set_playback_prefs(&self.prefs);
         if aot_changed {

@@ -30,6 +30,7 @@ const PAGES: [&str; 10] = [
     "Jellyfin",
     "Video",
 ];
+const VIS_PAGE: usize = 4;
 const LIBRARY_PAGE: usize = 7;
 const JELLYFIN_PAGE: usize = 8;
 const VIDEO_PAGE: usize = 9;
@@ -161,10 +162,6 @@ fn page_options(page: usize) -> Vec<CheckOpt> {
             opt!("Auto-load presets", p.eq.auto_load),
             opt!("ISO band frequencies", p.eq.iso),
             opt!("Use limiter", p.eq.limiter),
-        ],
-        4 => vec![
-            opt!("Show peaks", p.vis.peaks),
-            opt!("Thick bands", p.vis.thick_bands),
         ],
         6 => vec![
             opt!("Crossfade at the end of each track", p.crossfade),
@@ -388,6 +385,9 @@ impl PrefsDialog {
         if self.page == LIBRARY_PAGE {
             self.library_widgets(&mut widgets, x, y, cw - x - 6, ch - 32);
         }
+        if self.page == VIS_PAGE {
+            widgets.extend(crate::prefs_vis::widgets(&self.prefs.vis, x, 4, cw - x - 6));
+        }
         if self.page == JELLYFIN_PAGE {
             widgets.extend(self.jellyfin.widgets(
                 self.prefs.library.jellyfin.as_ref(),
@@ -520,6 +520,9 @@ impl PrefsDialog {
         if self.page == JELLYFIN_PAGE {
             self.jellyfin.collect(&self.form);
         }
+        if self.page == VIS_PAGE {
+            crate::prefs_vis::collect(&self.form, &mut self.prefs.vis);
+        }
         for (i, o) in page_options(self.page).iter().enumerate() {
             if self.unavailable(o).is_some() {
                 continue;
@@ -612,6 +615,9 @@ impl Dialog for PrefsDialog {
     fn handle(&mut self, ev: FormEvent) -> Outcome {
         if let Some(o) = self.library_event(&ev) {
             return o;
+        }
+        if self.page == VIS_PAGE && crate::prefs_vis::event(&mut self.form, &ev) {
+            return Outcome::Keep;
         }
         // Enter on the signed-out Jellyfin page signs in instead of closing the dialog.
         let ev = match ev {
