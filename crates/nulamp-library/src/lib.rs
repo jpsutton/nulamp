@@ -9,7 +9,7 @@
 //! server; [`MockProvider`] is an in-memory remote-style provider used by tests.
 
 mod error;
-mod facets;
+pub(crate) mod facets;
 mod model;
 mod provider;
 mod query;

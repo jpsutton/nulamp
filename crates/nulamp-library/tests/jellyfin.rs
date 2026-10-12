@@ -861,3 +861,30 @@ fn video_playback_and_watched() {
     assert_eq!(mime, "image/jpeg");
     assert_eq!(server.last("/Items/m1/Images/Primary").method, "GET");
 }
+
+#[test]
+fn artist_and_album_panes_group_the_listing() {
+    use nulamp_library::{Term, TextField};
+    let server = serve();
+    let p = JellyfinProvider::new(account(&server, &["lib1"]));
+    let root = BrowseNode::root();
+    let artists = p.artist_facets(&root, &Query::all()).unwrap();
+    let got: Vec<_> = artists
+        .iter()
+        .map(|a| (a.name.as_str(), a.albums, a.tracks))
+        .collect();
+    assert_eq!(got, [("Alpha", 1, 2), ("Beta", 1, 1)]);
+    let alpha = Query::all().and(Term::Text {
+        field: TextField::Artist,
+        value: "alpha".into(),
+        exact: true,
+    });
+    let albums = p.album_facets(&root, &alpha).unwrap();
+    assert_eq!(albums.len(), 1);
+    assert_eq!((albums[0].name.as_str(), albums[0].tracks), ("First", 2));
+    // The list follows the same filter.
+    let page = p
+        .tracks(&root, &alpha, Sort::asc(SortKey::Track), Page::all())
+        .unwrap();
+    assert_eq!(ids(&page), ["t1", "t2"]);
+}

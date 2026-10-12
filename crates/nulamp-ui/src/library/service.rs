@@ -383,25 +383,18 @@ impl Worker {
                 let Some(p) = self.provider(&spec.provider) else {
                     return;
                 };
-                // The default grouping would download the whole listing of a remote provider.
-                let result = if p.capabilities().contains(Capabilities::REMOTE) {
-                    Ok(Vec::new())
-                } else {
-                    p.artist_facets(&spec.node, &spec.query_with(false, false))
-                        .map_err(|e| e.to_string())
-                };
+                let result = p
+                    .artist_facets(&spec.node, &spec.query_with(false, false))
+                    .map_err(|e| e.to_string());
                 self.send(Response::Artists { token, result });
             }
             Request::Albums { spec, token } => {
                 let Some(p) = self.provider(&spec.provider) else {
                     return;
                 };
-                let result = if p.capabilities().contains(Capabilities::REMOTE) {
-                    Ok(Vec::new())
-                } else {
-                    p.album_facets(&spec.node, &spec.query_with(true, false))
-                        .map_err(|e| e.to_string())
-                };
+                let result = p
+                    .album_facets(&spec.node, &spec.query_with(true, false))
+                    .map_err(|e| e.to_string());
                 self.send(Response::Albums { token, result });
             }
             Request::Collect {
