@@ -13,6 +13,7 @@ use std::ffi::{CStr, CString, c_char, c_int};
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
+use crate::ffmpeg_io::{ByteSource, Io};
 use crate::symphonia_decoder::local_path;
 use crate::{DecodeError, Decoder, DecoderFactory, FileTags, ReadStatus, StreamInfo};
 
@@ -40,6 +41,7 @@ mod ffi {
     unsafe extern "C" {
         pub fn nlff_open(
             path: *const c_char,
+            io: *const crate::ffmpeg_io::NlIo,
             decode: c_int,
             audio: c_int,
             info: *mut NlffInfo,
@@ -108,8 +110,9 @@ pub fn license() -> String {
         .into_owned()
 }
 
-/// Owned shim handle.
-struct Handle(NonNull<ffi::Nlff>);
+/// Owned shim handle, with the byte source it reads (none for a local file; only the shim's
+/// callbacks use it).
+struct Handle(NonNull<ffi::Nlff>, #[allow(dead_code)] Option<Io>);
 
 // SAFETY: a handle is only used through `&mut self` or `&self` without shared mutation; FFmpeg
 // contexts have no thread affinity.
@@ -117,26 +120,40 @@ unsafe impl Send for Handle {}
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        // SAFETY: created by nlff_open and closed once.
+        // SAFETY: created by nlff_open and closed once, before its byte source is dropped.
         unsafe { ffi::nlff_close(self.0.as_ptr()) };
     }
 }
 
 impl Handle {
     fn open(location: &str, decode: bool) -> Result<(Self, StreamInfo, Option<u32>), DecodeError> {
-        let audio = audio_track(location).map_or(-1, |i| i as c_int);
+        let audio = audio_track(location);
         let path = local_path(location).ok_or_else(|| DecodeError::Unsupported(location.into()))?;
         if !std::path::Path::new(&path).is_file() {
             return Err(DecodeError::NotFound(location.into()));
         }
+        Self::open_with(&path, None, decode, audio)
+    }
+
+    /// Opens `path`, or reads `io` when given (`path` is then only a name).
+    fn open_with(
+        path: &str,
+        mut io: Option<Io>,
+        decode: bool,
+        audio: Option<usize>,
+    ) -> Result<(Self, StreamInfo, Option<u32>), DecodeError> {
+        let audio = audio.map_or(-1, |i| i as c_int);
         let c_path = CString::new(path).map_err(|e| DecodeError::Open(e.to_string()))?;
+        let table = io.as_mut().map(Io::ffi);
         // SAFETY: plain-data struct; the shim fills it in.
         let mut info: ffi::NlffInfo = unsafe { std::mem::zeroed() };
         let mut err = [0 as c_char; 256];
-        // SAFETY: valid NUL-terminated path and out buffers of the given sizes.
+        // SAFETY: valid NUL-terminated path, callback table (or null) whose source lives in
+        // `io`, and out buffers of the given sizes.
         let h = unsafe {
             ffi::nlff_open(
                 c_path.as_ptr(),
+                table.as_ref().map_or(std::ptr::null(), |t| t as *const _),
                 decode as c_int,
                 audio,
                 &mut info,
@@ -169,7 +186,7 @@ impl Handle {
         let kbps = u32::try_from((info.bit_rate + 500) / 1000)
             .ok()
             .filter(|k| *k > 0);
-        Ok((Self(h), stream, kbps))
+        Ok((Self(h, io), stream, kbps))
     }
 
     fn tags(&self) -> Vec<(String, String)> {
@@ -214,21 +231,27 @@ impl DecoderFactory for FfmpegFactory {
         true
     }
 
-    /// Files with a chosen audio stream ([`set_audio_track`]) open here.
+    /// Local files with a chosen audio stream ([`set_audio_track`]) open here.
     fn claims(&self, location: &str) -> bool {
-        audio_track(location).is_some()
+        audio_track(location).is_some() && local_path(location).is_some()
     }
 
     fn open(&self, location: &str) -> Result<Box<dyn Decoder>, DecodeError> {
         let (handle, info, kbps) = Handle::open(location, true)?;
-        Ok(Box::new(FfmpegDecoder {
-            handle,
-            info,
-            file_kbps: kbps,
-            recent: VecDeque::new(),
-            pos: 0,
-        }))
+        Ok(Box::new(FfmpegDecoder::new(handle, info, kbps)))
     }
+}
+
+/// Decodes the sound of a byte source (a media server's video file). `name` is used only in
+/// messages and as a format hint; `audio` picks the audio stream as [`set_audio_track`] does.
+/// Blocks while FFmpeg reads the container's headers.
+pub(crate) fn open_source(
+    name: &str,
+    source: Box<dyn ByteSource>,
+    audio: Option<usize>,
+) -> Result<FfmpegDecoder, DecodeError> {
+    let (handle, info, kbps) = Handle::open_with(name, Some(Io::new(source)), true, audio)?;
+    Ok(FfmpegDecoder::new(handle, info, kbps))
 }
 
 /// Tags and stream information of a local file, read by FFmpeg (see [`crate::ffmpeg_tags`]).
@@ -327,6 +350,18 @@ pub struct FfmpegDecoder {
     recent: VecDeque<(u64, u64)>,
     /// Sample frame position of the next block.
     pos: u64,
+}
+
+impl FfmpegDecoder {
+    fn new(handle: Handle, info: StreamInfo, file_kbps: Option<u32>) -> Self {
+        Self {
+            handle,
+            info,
+            file_kbps,
+            recent: VecDeque::new(),
+            pos: 0,
+        }
+    }
 }
 
 impl Decoder for FfmpegDecoder {

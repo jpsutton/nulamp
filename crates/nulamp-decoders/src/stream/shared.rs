@@ -50,6 +50,10 @@ pub(crate) struct State {
     pub finite: bool,
     /// Spool finite streams ([`super::StreamConfig::spool`]).
     pub spool_enabled: bool,
+    /// A video file: FFmpeg decodes its sound ([`super::StreamOptions::video`]).
+    pub video: bool,
+    /// The audio stream FFmpeg decodes ([`super::StreamOptions::audio_track`]).
+    pub audio_track: Option<usize>,
     /// Absolute byte offset of the decoder's next byte: the ring's first byte, or the read
     /// position in the spool.
     pub pos: u64,
@@ -99,6 +103,8 @@ impl State {
             spool: None,
             finite: false,
             spool_enabled: true,
+            video: false,
+            audio_track: None,
             pos: 0,
             phase: Phase::Connecting,
             rebuffer_percent,

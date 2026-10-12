@@ -12,6 +12,8 @@ mod decode;
 mod http;
 pub mod icy;
 mod net;
+#[cfg_attr(not(nulamp_ffmpeg), allow(dead_code, unused_imports))]
+mod remote;
 mod shared;
 mod spool;
 pub mod url;
@@ -24,6 +26,8 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 pub use http::MAX_REDIRECTS;
+#[cfg_attr(not(nulamp_ffmpeg), allow(unused_imports))]
+pub(crate) use remote::{Abort, RemoteFile};
 pub use shared::prebuffer_percent;
 pub use url::{SCHEMES, is_stream_location, location_title};
 
@@ -261,7 +265,18 @@ pub struct StreamOptions {
     /// The location is a file, not a live stream, even when the server sends no
     /// `Content-Length` (a media server's transcode): it is spooled and seekable (NET13).
     pub finite: bool,
+    /// The location is a video file (a media server's movie or episode): FFmpeg decodes its
+    /// sound, whatever the container, and a file with Range support seeks with requests rather
+    /// than being spooled, with a larger buffer (NET15). Without FFmpeg, Symphonia tries.
+    pub video: bool,
+    /// With `video`: the audio stream to decode (0-based among the file's audio streams), as
+    /// [`crate::set_audio_track`] chooses for local files; `None` for the default one.
+    pub audio_track: Option<usize>,
 }
+
+/// Smallest network buffer of a video stream (NET15): its bit rate is many times an audio
+/// stream's.
+pub const VIDEO_BUFFER: usize = 4 * 1024 * 1024;
 
 /// Station and song fields of a stream (07 §8.4, §8.5).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -388,6 +403,22 @@ impl StreamFactory {
         }
     }
 
+    /// `location` as a file read with Range requests, with this factory's settings and
+    /// credentials (the picture of a media server's video).
+    #[cfg_attr(not(nulamp_ffmpeg), allow(dead_code))]
+    pub(crate) fn remote_file(
+        &self,
+        location: &str,
+        headers: &[(String, String)],
+    ) -> Result<RemoteFile, StreamError> {
+        RemoteFile::new(
+            location,
+            headers,
+            self.config(),
+            self.inner.credentials.clone(),
+        )
+    }
+
     /// Starts connecting to `location` and returns at once.
     pub fn open_stream(&self, location: &str) -> Result<StreamDecoder, DecodeError> {
         self.open_stream_with(location, &StreamOptions::default())
@@ -400,7 +431,10 @@ impl StreamFactory {
         options: &StreamOptions,
     ) -> Result<StreamDecoder, DecodeError> {
         let config = self.config();
-        let capacity = config.buffer_bytes.max(StreamConfig::MIN_BUFFER);
+        let mut capacity = config.buffer_bytes.max(StreamConfig::MIN_BUFFER);
+        if options.video {
+            capacity = capacity.max(VIDEO_BUFFER);
+        }
         let mut state = State::new(
             location,
             capacity,
@@ -409,6 +443,8 @@ impl StreamFactory {
         );
         state.finite = options.finite;
         state.spool_enabled = config.spool;
+        state.video = options.video;
+        state.audio_track = options.audio_track;
         let shared = Arc::new(Shared::new(state));
         {
             let mut open = self.inner.open.lock().unwrap_or_else(|e| e.into_inner());

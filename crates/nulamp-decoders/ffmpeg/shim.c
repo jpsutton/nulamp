@@ -6,8 +6,9 @@
  * One handle opens a local file with libavformat, decodes its best audio stream with
  * libavcodec and converts every frame to interleaved 32-bit float with libswresample, keeping
  * the source sample rate and channel count. A video file without audio plays as silence of
- * the video's length (video.c shows the picture). Only the "file" protocol is allowed. A handle
- * is used by one thread at a time.
+ * the video's length (video.c shows the picture). Input is a local file (the "file" protocol
+ * only) or a byte source read through callbacks (io.h). A handle is used by one thread at a
+ * time.
  */
 
 #include <limits.h>
@@ -25,6 +26,8 @@
 #include <libavutil/mem.h>
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
+
+#include "io.h"
 
 /* Must match `NlffInfo` in ffmpeg_decoder.rs. */
 typedef struct NlffInfo {
@@ -93,7 +96,7 @@ void nlff_close(Nlff *h) {
     av_frame_free(&h->frame);
     av_packet_free(&h->pkt);
     avcodec_free_context(&h->dec);
-    avformat_close_input(&h->fmt);
+    nl_close_input(&h->fmt);
     av_free(h->buf);
     av_free(h);
 }
@@ -141,16 +144,16 @@ static int open_silent(Nlff *h, int decode, NlffInfo *info) {
 }
 
 /*
- * Opens `path` (UTF-8). With `decode` 0 only the container is read (tags and stream
- * information). `audio` picks the audio stream (0-based among the audio streams; -1: the best
- * one). Returns NULL and an error text on failure.
+ * Opens `path` (UTF-8), or reads through `io` when it is not NULL (`path` is then only a
+ * name). With `decode` 0 only the container is read (tags and stream information). `audio`
+ * picks the audio stream (0-based among the audio streams; -1: the best one). Returns NULL
+ * and an error text on failure.
  */
-Nlff *nlff_open(const char *path, int decode, int audio, NlffInfo *info, char *err,
-                int err_len) {
+Nlff *nlff_open(const char *path, const NlIo *io, int decode, int audio, NlffInfo *info,
+                char *err, int err_len) {
     static int quiet = 0;
     const AVCodec *codec = NULL;
     const AVCodecDescriptor *desc;
-    AVDictionary *opts = NULL;
     AVCodecParameters *par;
     AVStream *st;
     unsigned i;
@@ -167,9 +170,7 @@ Nlff *nlff_open(const char *path, int decode, int audio, NlffInfo *info, char *e
         return NULL;
     }
     h->discard_until = -1;
-    av_dict_set(&opts, "protocol_whitelist", "file", 0);
-    r = avformat_open_input(&h->fmt, path, NULL, &opts);
-    av_dict_free(&opts);
+    r = nl_open_input(&h->fmt, path, io);
     if (r < 0) {
         set_error(err, err_len, "cannot open", r);
         nlff_close(h);
@@ -425,6 +426,7 @@ int nlff_seek(Nlff *h, int64_t target) {
     margin = FFMAX(FFMAX(par->seek_preroll, par->frame_size), h->rate / 20);
     av_frame_unref(h->frame);
     h->have_frame = 0;
+    nl_clear_error(h->fmt);
     for (attempt = 0; attempt < 5; attempt++, margin *= 4) {
         int64_t start = FFMAX(target - margin, 0);
         int64_t ts = h->origin + ts_from_frames(h, start);

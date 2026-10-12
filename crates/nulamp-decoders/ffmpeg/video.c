@@ -3,8 +3,9 @@
  *
  * One handle opens a local file with libavformat, decodes one of its video streams with
  * libavcodec and converts frames to native-endian 0x00RRGGBB pixels with libswscale. Audio is
- * decoded separately (shim.c); the caller paces the frames against the audio clock. Only the
- * "file" protocol is allowed. A handle is used by one thread at a time.
+ * decoded separately (shim.c); the caller paces the frames against the audio clock. Input is a
+ * local file (the "file" protocol only) or a byte source read through callbacks (io.h). A
+ * handle is used by one thread at a time.
  *
  * Times are milliseconds from the start of the file's audio (or, without audio, its video), the
  * same zero the audio decoder counts from.
@@ -23,6 +24,8 @@
 #include <libavutil/mem.h>
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
+
+#include "io.h"
 
 /* Must match `NlfvInfo` in video.rs. */
 typedef struct NlfvInfo {
@@ -84,7 +87,7 @@ void nlfv_close(Nlfv *h) {
     sws_freeContext(h->sws);
     av_packet_free(&h->pkt);
     avcodec_free_context(&h->dec);
-    avformat_close_input(&h->fmt);
+    nl_close_input(&h->fmt);
     av_free(h->streams);
     av_free(h->audio);
     av_free(h);
@@ -157,12 +160,12 @@ static int open_stream(Nlfv *h, int which) {
 }
 
 /*
- * Opens `path` (UTF-8) and its first video stream. Returns NULL and an error text when the
- * file cannot be opened or has no video.
+ * Opens `path` (UTF-8), or reads through `io` when it is not NULL (`path` is then only a
+ * name), and its first video stream. Returns NULL and an error text when the file cannot be
+ * opened or has no video.
  */
-Nlfv *nlfv_open(const char *path, NlfvInfo *info, char *err, int err_len) {
+Nlfv *nlfv_open(const char *path, const NlIo *io, NlfvInfo *info, char *err, int err_len) {
     static int quiet = 0;
-    AVDictionary *opts = NULL;
     unsigned i;
     int r, audio;
     Nlfv *h;
@@ -176,9 +179,7 @@ Nlfv *nlfv_open(const char *path, NlfvInfo *info, char *err, int err_len) {
         set_error(err, err_len, "out of memory", 0);
         return NULL;
     }
-    av_dict_set(&opts, "protocol_whitelist", "file", 0);
-    r = avformat_open_input(&h->fmt, path, NULL, &opts);
-    av_dict_free(&opts);
+    r = nl_open_input(&h->fmt, path, io);
     if (r < 0) {
         set_error(err, err_len, "cannot open", r);
         nlfv_close(h);
@@ -287,7 +288,9 @@ int nlfv_select(Nlfv *h, int which, NlfvInfo *info) {
 /* Goes to the key frame at or before `ms`; the next frames start there. */
 int nlfv_seek(Nlfv *h, int64_t ms) {
     int64_t ts = av_rescale_q(h->zero + ms * 1000, AV_TIME_BASE_Q, h->tb);
-    int r = avformat_seek_file(h->fmt, h->stream, INT64_MIN, ts, ts, 0);
+    int r;
+    nl_clear_error(h->fmt);
+    r = avformat_seek_file(h->fmt, h->stream, INT64_MIN, ts, ts, 0);
     if (r < 0)
         r = av_seek_frame(h->fmt, h->stream, ts, AVSEEK_FLAG_BACKWARD);
     if (r < 0)

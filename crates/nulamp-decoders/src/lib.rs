@@ -7,6 +7,7 @@
 pub mod cd;
 #[cfg(nulamp_ffmpeg)]
 pub mod ffmpeg_decoder;
+mod ffmpeg_io;
 pub mod midi_decoder;
 #[cfg(nulamp_openmpt)]
 pub mod module_decoder;
@@ -140,6 +141,17 @@ pub fn set_audio_track(location: &str, index: Option<usize>) {
     ffmpeg_decoder::set_audio_track(location, index);
     #[cfg(not(nulamp_ffmpeg))]
     let _ = (location, index);
+}
+
+/// The audio stream chosen for a location with [`set_audio_track`].
+pub fn audio_track(location: &str) -> Option<usize> {
+    #[cfg(nulamp_ffmpeg)]
+    return ffmpeg_decoder::audio_track(location);
+    #[cfg(not(nulamp_ffmpeg))]
+    {
+        let _ = location;
+        None
+    }
 }
 
 /// The licence of the FFmpeg libraries in use (for example "LGPL version 2.1 or later"), or

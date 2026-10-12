@@ -8,6 +8,9 @@
 //! position, scales it and publishes it ([`VideoPlayer::frame`]). A jump of the position (a
 //! seek) makes the worker seek too. Nothing is shared with the audio engine, so audio playback
 //! never waits for the picture.
+//!
+//! A media server's video ([`VideoPlayer::open_remote`]) is read over HTTP with Range requests
+//! on a connection of its own, through nulamp's network code rather than FFmpeg's.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -109,25 +112,8 @@ struct Shared {
 }
 
 impl Shared {
-    fn lock(&self) -> MutexGuard<'_, Ctl> {
-        self.ctl.lock().unwrap_or_else(|e| e.into_inner())
-    }
-}
-
-/// The picture of one video file. Dropping it stops the worker.
-pub struct VideoPlayer {
-    shared: Arc<Shared>,
-    worker: Option<JoinHandle<()>>,
-}
-
-/// The clock is re-anchored when the reported position and the running clock differ by more
-/// than this (the engine reports the heard position in output-block steps).
-const CLOCK_SLACK_MS: u64 = 60;
-
-impl VideoPlayer {
-    /// Starts opening `location` on a worker thread. Check [`Self::state`] for the outcome.
-    pub fn open(location: &str) -> Self {
-        let shared = Arc::new(Shared {
+    fn new() -> Self {
+        Self {
             ctl: Mutex::new(Ctl {
                 quit: false,
                 clock_ms: 0,
@@ -141,9 +127,93 @@ impl VideoPlayer {
                 seq: 0,
             }),
             wake: Condvar::new(),
-        });
-        let worker = start_worker(location.to_string(), shared.clone());
-        Self { shared, worker }
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Ctl> {
+        self.ctl.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// The picture of one video file. Dropping it stops the worker.
+pub struct VideoPlayer {
+    shared: Arc<Shared>,
+    worker: Option<JoinHandle<()>>,
+    /// Ends the network wait of a remote file's worker.
+    abort: Option<Arc<crate::stream::Abort>>,
+}
+
+/// What the worker opens.
+#[cfg_attr(not(nulamp_ffmpeg), allow(dead_code))]
+enum Input {
+    File(String),
+    /// A server's file; `key` is the playlist location (for the chosen audio stream).
+    Remote {
+        key: String,
+        file: Box<crate::stream::RemoteFile>,
+    },
+}
+
+impl Input {
+    /// The location audio stream choices are kept under.
+    #[cfg_attr(not(nulamp_ffmpeg), allow(dead_code))]
+    fn key(&self) -> &str {
+        match self {
+            Input::File(l) => l,
+            Input::Remote { key, .. } => key,
+        }
+    }
+}
+
+/// The clock is re-anchored when the reported position and the running clock differ by more
+/// than this (the engine reports the heard position in output-block steps).
+const CLOCK_SLACK_MS: u64 = 60;
+
+impl VideoPlayer {
+    /// Starts opening `location` on a worker thread. Check [`Self::state`] for the outcome.
+    pub fn open(location: &str) -> Self {
+        Self::start(Input::File(location.to_string()), None)
+    }
+
+    /// Starts opening a video on a web server (a media library's movie or episode) on a worker
+    /// thread: `url` is read with Range requests, with `headers` sent only to its origin and
+    /// the network settings of `streams`. `key` is the playlist location, under which
+    /// [`crate::set_audio_track`] keeps the chosen audio stream.
+    pub fn open_remote(
+        key: &str,
+        url: &str,
+        headers: &[(String, String)],
+        streams: &crate::stream::StreamFactory,
+    ) -> Self {
+        match streams.remote_file(url, headers) {
+            Ok(file) => {
+                let abort = file.abort_handle();
+                let input = Input::Remote {
+                    key: key.to_string(),
+                    file: Box::new(file),
+                };
+                Self::start(input, Some(abort))
+            }
+            Err(e) => {
+                let shared = Arc::new(Shared::new());
+                shared.lock().state = VideoState::Failed(e.to_string());
+                Self {
+                    shared,
+                    worker: None,
+                    abort: None,
+                }
+            }
+        }
+    }
+
+    fn start(input: Input, abort: Option<Arc<crate::stream::Abort>>) -> Self {
+        let shared = Arc::new(Shared::new());
+        let worker = start_worker(input, shared.clone());
+        Self {
+            shared,
+            worker,
+            abort,
+        }
     }
 
     pub fn state(&self) -> VideoState {
@@ -194,6 +264,9 @@ impl Drop for VideoPlayer {
     fn drop(&mut self) {
         self.shared.lock().quit = true;
         self.shared.wake.notify_all();
+        if let Some(a) = &self.abort {
+            a.abort();
+        }
         if let Some(w) = self.worker.take() {
             let _ = w.join();
         }
@@ -201,17 +274,17 @@ impl Drop for VideoPlayer {
 }
 
 #[cfg(not(nulamp_ffmpeg))]
-fn start_worker(_location: String, shared: Arc<Shared>) -> Option<JoinHandle<()>> {
+fn start_worker(_input: Input, shared: Arc<Shared>) -> Option<JoinHandle<()>> {
     shared.lock().state = VideoState::Failed("nulamp was built without FFmpeg".into());
     None
 }
 
 #[cfg(nulamp_ffmpeg)]
-fn start_worker(location: String, shared: Arc<Shared>) -> Option<JoinHandle<()>> {
+fn start_worker(input: Input, shared: Arc<Shared>) -> Option<JoinHandle<()>> {
     let s = shared.clone();
     let spawned = std::thread::Builder::new()
         .name("nulamp-video".into())
-        .spawn(move || ffmpeg::run(&location, &s));
+        .spawn(move || ffmpeg::run(input, &s));
     match spawned {
         Ok(h) => Some(h),
         Err(e) => {
@@ -229,7 +302,8 @@ mod ffmpeg {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use super::{Shared, VideoFrame, VideoInfo, VideoState};
+    use super::{Input, Shared, VideoFrame, VideoInfo, VideoState};
+    use crate::ffmpeg_io::Io;
     use crate::symphonia_decoder::local_path;
 
     mod ffi {
@@ -260,6 +334,7 @@ mod ffmpeg {
         unsafe extern "C" {
             pub fn nlfv_open(
                 path: *const c_char,
+                io: *const crate::ffmpeg_io::NlIo,
                 info: *mut NlfvInfo,
                 err: *mut c_char,
                 err_len: c_int,
@@ -283,12 +358,13 @@ mod ffmpeg {
         }
     }
 
-    /// Owned shim handle.
-    struct Handle(NonNull<ffi::Nlfv>);
+    /// Owned shim handle, with the byte source it reads (none for a local file; only the
+    /// shim's callbacks use it).
+    struct Handle(NonNull<ffi::Nlfv>, #[allow(dead_code)] Option<Io>);
 
     impl Drop for Handle {
         fn drop(&mut self) {
-            // SAFETY: created by nlfv_open and closed once.
+            // SAFETY: created by nlfv_open and closed once, before its byte source is dropped.
             unsafe { ffi::nlfv_close(self.0.as_ptr()) };
         }
     }
@@ -363,16 +439,23 @@ mod ffmpeg {
         }
     }
 
-    fn open(location: &str) -> Result<(Handle, VideoInfo), String> {
-        let path = local_path(location).ok_or("not a local file")?;
+    fn open(input: Input) -> Result<(Handle, VideoInfo), String> {
+        let key = input.key().to_string();
+        let (path, mut io) = match input {
+            Input::File(location) => (local_path(&location).ok_or("not a local file")?, None),
+            Input::Remote { file, .. } => (String::new(), Some(Io::new(file))),
+        };
         let c_path = CString::new(path).map_err(|e| e.to_string())?;
+        let table = io.as_mut().map(Io::ffi);
         // SAFETY: plain-data struct; the shim fills it in.
         let mut info: ffi::NlfvInfo = unsafe { std::mem::zeroed() };
         let mut err = [0 as c_char; 256];
-        // SAFETY: valid NUL-terminated path and out buffers of the given sizes.
+        // SAFETY: valid NUL-terminated path, callback table (or null) whose source lives in
+        // `io`, and out buffers of the given sizes.
         let h = unsafe {
             ffi::nlfv_open(
                 c_path.as_ptr(),
+                table.as_ref().map_or(std::ptr::null(), |t| t as *const _),
                 &mut info,
                 err.as_mut_ptr(),
                 err.len() as c_int,
@@ -383,8 +466,8 @@ mod ffmpeg {
             let msg = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy();
             return Err(msg.into_owned());
         };
-        let h = Handle(h);
-        let info = info_of(&h, &info, location);
+        let h = Handle(h, io);
+        let info = info_of(&h, &info, &key);
         Ok((h, info))
     }
 
@@ -529,8 +612,9 @@ mod ffmpeg {
         }
     }
 
-    pub(super) fn run(location: &str, shared: &Arc<Shared>) {
-        let (h, info) = match open(location) {
+    pub(super) fn run(input: Input, shared: &Arc<Shared>) {
+        let location = input.key().to_string();
+        let (h, info) = match open(input) {
             Ok(x) => x,
             Err(e) => {
                 shared.lock().state = VideoState::Failed(e);
@@ -540,7 +624,7 @@ mod ffmpeg {
         shared.lock().state = VideoState::Ready(info.clone());
         let mut w = Worker {
             h,
-            location: location.to_string(),
+            location,
             info,
             queue: VecDeque::new(),
             current: None,
@@ -852,6 +936,168 @@ mod tests {
             assert_eq!(ready(&VideoPlayer::open(&loc)).audio_current, Some(1));
             crate::ffmpeg_decoder::set_audio_track(&loc, None);
             assert!(peak(&loc) > 0.1);
+        }
+
+        /// Requests seen by [`range_server`]: (path, Authorization, Range).
+        type Seen = Arc<std::sync::Mutex<Vec<(String, Option<String>, Option<String>)>>>;
+
+        /// Serves `body` at every path with Range support (`stall`: send the headers and
+        /// nothing else). Nothing leaves 127.0.0.1.
+        fn range_server(body: Vec<u8>, stall: bool) -> (String, Seen) {
+            use std::io::{BufRead, BufReader, Write};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+            let seen: Seen = Arc::default();
+            let (body, log) = (Arc::new(body), seen.clone());
+            std::thread::spawn(move || {
+                for s in listener.incoming() {
+                    let Ok(mut s) = s else { continue };
+                    let (body, log) = (body.clone(), log.clone());
+                    std::thread::spawn(move || {
+                        let mut r = BufReader::new(s.try_clone().unwrap());
+                        let mut line = String::new();
+                        r.read_line(&mut line).unwrap();
+                        let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                        let (mut auth, mut range) = (None, None);
+                        loop {
+                            let mut l = String::new();
+                            if r.read_line(&mut l).unwrap_or(0) == 0 || l.trim().is_empty() {
+                                break;
+                            }
+                            if let Some((k, v)) = l.split_once(':') {
+                                match k.trim().to_ascii_lowercase().as_str() {
+                                    "authorization" => auth = Some(v.trim().to_string()),
+                                    "range" => range = Some(v.trim().to_string()),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        let start = range
+                            .as_deref()
+                            .and_then(|r| {
+                                r.strip_prefix("bytes=")?.trim_end_matches('-').parse().ok()
+                            })
+                            .unwrap_or(0usize)
+                            .min(body.len());
+                        log.lock().unwrap().push((path, auth, range));
+                        let total = body.len();
+                        let head = if start > 0 {
+                            format!(
+                                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes \
+                                 {start}-{}/{total}\r\n",
+                                total - 1
+                            )
+                        } else {
+                            "HTTP/1.1 200 OK\r\n".to_string()
+                        };
+                        let _ = s.write_all(
+                            format!(
+                                "{head}Content-Length: {}\r\nAccept-Ranges: bytes\r\n\
+                                 Content-Type: video/x-matroska\r\n\r\n",
+                                total - start
+                            )
+                            .as_bytes(),
+                        );
+                        if stall {
+                            std::thread::sleep(Duration::from_secs(30));
+                        } else {
+                            let _ = s.write_all(&body[start..]);
+                        }
+                    });
+                }
+            });
+            (base, seen)
+        }
+
+        /// Every frame of a network stream, waiting while it buffers.
+        fn drain_stream(d: &mut dyn Decoder) -> Vec<f32> {
+            let mut out = Vec::new();
+            let until = Instant::now() + Duration::from_secs(20);
+            loop {
+                match d.read(&mut out).unwrap() {
+                    ReadStatus::Frames(_) => {}
+                    ReadStatus::Pending => std::thread::sleep(Duration::from_millis(2)),
+                    ReadStatus::End => return out,
+                }
+                assert!(Instant::now() < until, "timed out");
+            }
+        }
+
+        /// A media server's video: the sound through the stream input with FFmpeg, the
+        /// picture through its own connection, both with the authorization header.
+        #[test]
+        fn remote_videos_play_over_http() {
+            use crate::stream::{StreamFactory, StreamOptions};
+            // Matroska keeps its index at the end; this MP4 too (no `faststart`).
+            for name in ["remote.mkv", "remote.mp4"] {
+                let Some(f) = fixture(name, true, true) else {
+                    return;
+                };
+                let (base, seen) = range_server(std::fs::read(f.location()).unwrap(), false);
+                let url = format!("{base}/Videos/1/stream?static=true");
+                let headers = vec![(
+                    "Authorization".to_string(),
+                    "MediaBrowser Token=\"t\"".to_string(),
+                )];
+                let factory = StreamFactory::default();
+                let options = StreamOptions {
+                    headers: headers.clone(),
+                    keep_title: true,
+                    finite: true,
+                    video: true,
+                    audio_track: None,
+                };
+
+                let mut d = factory.open_stream_with(&url, &options).unwrap();
+                let all = drain_stream(&mut d);
+                let info = d.info().clone();
+                assert_eq!(info.sample_rate, 44_100, "{name}");
+                assert!(info.seekable, "{name}");
+                assert!(info.length_ms.unwrap().abs_diff(2000) < 100, "{name}");
+                let frames = all.len() / info.channels as usize;
+                assert!(frames.abs_diff(88_200) < 4410, "{name}: {frames} frames");
+                assert!(all.iter().any(|s| s.abs() > 0.1), "{name}");
+                assert_eq!(d.seek(1000).unwrap(), 1000);
+                let rest = drain_stream(&mut d).len() / info.channels as usize;
+                assert!(rest.abs_diff(44_100) < 4410, "{name}: {rest} after a seek");
+                drop(d);
+
+                let v = VideoPlayer::open_remote("library://p/1", &url, &headers, &factory);
+                let vi = ready(&v);
+                assert_eq!((vi.width, vi.height), (320, 240), "{name}");
+                v.set_output(160, 120, false);
+                assert!(is_red(picture_at(&v, 500).pixels[10 * 160 + 80]), "{name}");
+                assert!(
+                    is_green(picture_at(&v, 1500).pixels[60 * 160 + 80]),
+                    "{name}"
+                );
+                assert!(is_red(picture_at(&v, 200).pixels[10 * 160 + 80]), "{name}");
+                drop(v);
+
+                let seen = seen.lock().unwrap();
+                assert!(seen.len() >= 3, "{name}: {seen:?}");
+                assert!(
+                    seen.iter()
+                        .all(|(_, a, _)| a.as_deref() == Some("MediaBrowser Token=\"t\""))
+                );
+                assert!(
+                    seen.iter().any(|(_, _, r)| r.is_some()),
+                    "{name}: no Range request"
+                );
+            }
+        }
+
+        /// Closing the video window does not wait for a stalled server.
+        #[test]
+        fn stalled_remote_videos_close_at_once() {
+            let (base, _) = range_server(vec![0; 1 << 20], true);
+            let factory = crate::stream::StreamFactory::default();
+            let v = VideoPlayer::open_remote("k", &format!("{base}/v"), &[], &factory);
+            std::thread::sleep(Duration::from_millis(200));
+            assert_eq!(v.state(), VideoState::Opening);
+            let t = Instant::now();
+            drop(v);
+            assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
         }
 
         #[test]
