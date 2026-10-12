@@ -202,6 +202,26 @@ pub enum Widget {
         lines: Vec<String>,
         first: usize,
     },
+    /// A radio button: choosing it turns off the other radio buttons of the same `group`.
+    Radio {
+        rect: Rect,
+        id: Id,
+        group: Id,
+        label: String,
+        on: bool,
+    },
+    /// A horizontal track with a thumb at one of the steps `0..=max`.
+    Slider {
+        rect: Rect,
+        id: Id,
+        value: u32,
+        max: u32,
+    },
+    /// A labelled frame around other widgets. It takes no input.
+    Group {
+        rect: Rect,
+        label: String,
+    },
 }
 
 impl Widget {
@@ -212,7 +232,10 @@ impl Widget {
             | Widget::Edit { rect, .. }
             | Widget::List { rect, .. }
             | Widget::Check { rect, .. }
-            | Widget::TextBox { rect, .. } => *rect,
+            | Widget::TextBox { rect, .. }
+            | Widget::Radio { rect, .. }
+            | Widget::Slider { rect, .. }
+            | Widget::Group { rect, .. } => *rect,
         }
     }
 
@@ -221,7 +244,9 @@ impl Widget {
             Widget::Button { id, .. }
             | Widget::Edit { id, .. }
             | Widget::List { id, .. }
-            | Widget::Check { id, .. } => Some(*id),
+            | Widget::Check { id, .. }
+            | Widget::Radio { id, .. }
+            | Widget::Slider { id, .. } => Some(*id),
             _ => None,
         }
     }
@@ -234,9 +259,9 @@ impl Widget {
 /// What happened in a form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormEvent {
-    /// A button was clicked (or a check box toggled).
+    /// A button was clicked (or a check box toggled, or a radio button chosen).
     Clicked(Id),
-    /// An edit field's text changed.
+    /// An edit field's text or a slider's value changed.
     Changed(Id),
     /// A list selection moved.
     Selected(Id, usize),
@@ -321,8 +346,73 @@ impl Form {
         }
     }
 
+    /// Whether a check box or radio button is on.
     pub fn checked(&self, id: Id) -> bool {
-        matches!(self.find(id), Some(Widget::Check { on: true, .. }))
+        matches!(
+            self.find(id),
+            Some(Widget::Check { on: true, .. } | Widget::Radio { on: true, .. })
+        )
+    }
+
+    /// The radio button that is on in `group`.
+    pub fn radio(&self, group: Id) -> Option<Id> {
+        self.widgets.iter().find_map(|w| match w {
+            Widget::Radio {
+                id,
+                group: g,
+                on: true,
+                ..
+            } if *g == group => Some(*id),
+            _ => None,
+        })
+    }
+
+    /// A slider's value.
+    pub fn value(&self, id: Id) -> Option<u32> {
+        match self.find(id) {
+            Some(Widget::Slider { value, .. }) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// Turns radio button `id` on and the others of its group off.
+    fn choose_radio(&mut self, id: Id) {
+        let Some(Widget::Radio { group, .. }) = self.find(id) else {
+            return;
+        };
+        let group = *group;
+        for w in &mut self.widgets {
+            if let Widget::Radio {
+                id: i,
+                group: g,
+                on,
+                ..
+            } = w
+                && *g == group
+            {
+                *on = *i == id;
+            }
+        }
+    }
+
+    /// Moves slider `i` to the step under client x `px`. Returns true when the value changed.
+    fn slide_to(&mut self, i: usize, px: i32) -> bool {
+        let Widget::Slider {
+            rect, value, max, ..
+        } = &mut self.widgets[i]
+        else {
+            return false;
+        };
+        let (x0, span) = slider_track(*rect);
+        let v = if *max == 0 || span <= 0 {
+            0
+        } else {
+            let t = (px - x0).clamp(0, span);
+            ((t * *max as i32 + span / 2) / span) as u32
+        };
+        let changed = v != *value;
+        *value = v;
+        changed
     }
 
     pub fn selected(&self, id: Id) -> Option<usize> {
@@ -593,6 +683,85 @@ impl Form {
                     let ty = y + (r.h - text.line_height()) / 2;
                     text.draw(frame, label, x + 16, ty, label_fg, (x, y, x + r.w, y + r.h));
                 }
+                Widget::Radio { label, on, .. } => {
+                    let (mark, label_fg) = if enabled {
+                        (c.item_fg, c.window_text)
+                    } else {
+                        (c.divider, c.divider)
+                    };
+                    let by = y + (r.h - 11) / 2;
+                    let edge = if focused { c.window_text } else { c.divider };
+                    // An 11×11 circle outline; the inside is filled like a check box.
+                    const CIRCLE: [&str; 11] = [
+                        "....###....",
+                        "..##...##..",
+                        ".#.......#.",
+                        ".#.......#.",
+                        "#.........#",
+                        "#.........#",
+                        "#.........#",
+                        ".#.......#.",
+                        ".#.......#.",
+                        "..##...##..",
+                        "....###....",
+                    ];
+                    for (dy, row) in CIRCLE.iter().enumerate() {
+                        let yy = by + dy as i32;
+                        let l = row.find('#').unwrap_or(0) as i32;
+                        let rr = row.rfind('#').unwrap_or(0) as i32;
+                        frame.fill_rect(x + l, yy, rr - l + 1, 1, c.item_bg);
+                        for (dx, ch) in row.bytes().enumerate() {
+                            if ch == b'#' {
+                                frame.set(x + dx as i32, yy, edge);
+                            }
+                        }
+                    }
+                    if *on {
+                        frame.fill_rect(x + 4, by + 3, 3, 5, mark);
+                        frame.fill_rect(x + 3, by + 4, 5, 3, mark);
+                    }
+                    let ty = y + (r.h - text.line_height()) / 2;
+                    text.draw(frame, label, x + 16, ty, label_fg, (x, y, x + r.w, y + r.h));
+                }
+                Widget::Slider { value, max, .. } => {
+                    let fg = if enabled { c.item_fg } else { c.divider };
+                    let edge = if focused { c.window_text } else { c.divider };
+                    let (x0, span) = slider_track(r);
+                    let (x0, ty) = (ox + x0, y + (r.h - 4) / 2 - 2);
+                    frame.fill_rect(x0 - 2, ty, span + 5, 4, c.item_bg);
+                    frame_rect(frame, x0 - 2, ty, span + 5, 4, c.divider);
+                    if *max > 0 {
+                        for k in 0..=*max {
+                            let tx = x0 + span * k as i32 / *max as i32;
+                            frame.fill_rect(tx, y + r.h - 2, 1, 2, c.divider);
+                        }
+                    }
+                    let tx = x0
+                        + if *max > 0 {
+                            span * (*value).min(*max) as i32 / *max as i32
+                        } else {
+                            0
+                        };
+                    let th = r.h - 4;
+                    frame.fill_rect(tx - 3, y, 7, th, c.item_bg);
+                    frame_rect(frame, tx - 3, y, 7, th, edge);
+                    frame.fill_rect(tx, y + 2, 1, th - 4, fg);
+                }
+                Widget::Group { label, .. } => {
+                    let lh = text.line_height();
+                    let fy = y + lh / 2;
+                    frame_rect(frame, x, fy, r.w, r.h - lh / 2, c.divider);
+                    let tw = text.measure(label);
+                    frame.fill_rect(x + 6, fy, tw + 4, 1, c.window_bg);
+                    text.draw(
+                        frame,
+                        label,
+                        x + 8,
+                        y,
+                        c.window_text,
+                        (x, y, x + r.w, y + lh),
+                    );
+                }
                 Widget::TextBox { lines, first, .. } => {
                     frame.fill_rect(x, y, r.w, r.h, c.item_bg);
                     frame_rect(frame, x, y, r.w, r.h, c.divider);
@@ -636,7 +805,9 @@ impl Form {
     // ----- Input -----
 
     fn widget_at(&self, x: i32, y: i32) -> Option<usize> {
-        self.widgets.iter().position(|w| w.rect().contains(x, y))
+        self.widgets
+            .iter()
+            .position(|w| !matches!(w, Widget::Group { .. }) && w.rect().contains(x, y))
     }
 
     /// Left button pressed at client coordinates.
@@ -651,10 +822,16 @@ impl Form {
         let row_h = self.row_h;
         let vis = self.list_visible(self.widgets[i].rect());
         match &mut self.widgets[i] {
-            Widget::Button { .. } | Widget::Check { .. } => {
+            Widget::Button { .. } | Widget::Check { .. } | Widget::Radio { .. } => {
                 self.pressed = Some(i);
                 self.pressed_inside = true;
                 None
+            }
+            Widget::Slider { id, .. } => {
+                let id = *id;
+                self.pressed = Some(i);
+                self.pressed_inside = true;
+                self.slide_to(i, x).then_some(FormEvent::Changed(id))
             }
             Widget::List {
                 rect,
@@ -692,9 +869,14 @@ impl Form {
     pub fn mouse_move(&mut self, x: i32, y: i32) -> bool {
         let mut changed = false;
         if let Some(i) = self.pressed {
-            let inside = self.widgets[i].rect().contains(x, y);
-            changed = inside != self.pressed_inside;
-            self.pressed_inside = inside;
+            if matches!(self.widgets[i], Widget::Slider { .. }) {
+                // A dragged thumb follows the pointer anywhere; mouse_up reports the change.
+                changed = self.slide_to(i, x);
+            } else {
+                let inside = self.widgets[i].rect().contains(x, y);
+                changed = inside != self.pressed_inside;
+                self.pressed_inside = inside;
+            }
         }
         let hover = self.widget_at(x, y).filter(|&i| {
             self.widgets[i]
@@ -715,6 +897,11 @@ impl Form {
 
     pub fn mouse_up(&mut self, x: i32, y: i32) -> Option<FormEvent> {
         let i = self.pressed.take()?;
+        if let Widget::Slider { id, .. } = self.widgets[i] {
+            // Dragging moved the thumb without events; report where it ended.
+            self.slide_to(i, x);
+            return Some(FormEvent::Changed(id));
+        }
         if !self.widgets[i].rect().contains(x, y) || !self.widget_enabled(i) {
             return None;
         }
@@ -723,6 +910,11 @@ impl Form {
             Widget::Check { id, on, .. } => {
                 *on = !*on;
                 Some(FormEvent::Clicked(*id))
+            }
+            Widget::Radio { id, .. } => {
+                let id = *id;
+                self.choose_radio(id);
+                Some(FormEvent::Clicked(id))
             }
             _ => None,
         }
@@ -878,6 +1070,45 @@ impl Form {
                 *on = !*on;
                 Some(FormEvent::Clicked(*id))
             }
+            Widget::Radio { group, .. } => {
+                let group = *group;
+                let step: i32 = match key {
+                    Key::Enter => 0,
+                    Key::Up | Key::Left => -1,
+                    Key::Down | Key::Right => 1,
+                    _ => return None,
+                };
+                // Arrows move to the neighbouring radio button of the group and choose it.
+                let members: Vec<usize> = (0..self.widgets.len())
+                    .filter(|&k| {
+                        matches!(self.widgets[k], Widget::Radio { group: g, .. } if g == group)
+                            && self.widget_enabled(k)
+                    })
+                    .collect();
+                let at = members.iter().position(|&k| k == i).unwrap_or(0) as i32;
+                let to = members[(at + step).clamp(0, members.len() as i32 - 1) as usize];
+                if step != 0 && to == i {
+                    return None;
+                }
+                let to_id = self.widgets[to].id().expect("radio id");
+                self.focus = Some(to);
+                self.choose_radio(to_id);
+                Some(FormEvent::Clicked(to_id))
+            }
+            Widget::Slider { id, value, max, .. } => {
+                let id = *id;
+                let v = match key {
+                    Key::Left | Key::Down => value.saturating_sub(1),
+                    Key::Right | Key::Up => (*value + 1).min(*max),
+                    Key::Home => 0,
+                    Key::End => *max,
+                    Key::Enter => return Some(FormEvent::Submit),
+                    _ => return None,
+                };
+                let changed = v != *value;
+                *value = v;
+                changed.then_some(FormEvent::Changed(id))
+            }
             _ => (key == Key::Enter).then_some(FormEvent::Submit),
         }
     }
@@ -978,6 +1209,12 @@ pub fn draw_tooltip(
             clip,
         );
     }
+}
+
+/// A slider's track as (first step x, width from first to last step), in the slider's
+/// coordinates. The thumb is 7 pixels wide, so the track keeps 3 pixels clear at each end.
+fn slider_track(r: Rect) -> (i32, i32) {
+    (r.x + 3, (r.w - 7).max(0))
 }
 
 fn frame_rect(f: &mut Frame, x: i32, y: i32, w: i32, h: i32, c: u32) {
@@ -1171,6 +1408,74 @@ mod tests {
         f.mouse_down(60, 75);
         assert_eq!(f.mouse_up(60, 75), Some(FormEvent::Clicked(4)));
         assert!(f.checked(4));
+    }
+
+    fn choices() -> Form {
+        let radio = |id, x, on| Widget::Radio {
+            rect: Rect::new(x, 0, 40, 16),
+            id,
+            group: 10,
+            label: "r".into(),
+            on,
+        };
+        Form::new(vec![
+            Widget::Group {
+                rect: Rect::new(0, 0, 200, 60),
+                label: "g".into(),
+            },
+            radio(11, 0, true),
+            radio(12, 50, false),
+            radio(13, 100, false),
+            Widget::Slider {
+                rect: Rect::new(0, 30, 47, 16),
+                id: 20,
+                value: 1,
+                max: 4,
+            },
+        ])
+    }
+
+    #[test]
+    fn radio_group_has_one_choice() {
+        let mut f = choices();
+        assert_eq!(f.radio(10), Some(11));
+        // A click inside the group frame lands on the radio button, not the frame.
+        f.mouse_down(60, 8);
+        assert_eq!(f.mouse_up(60, 8), Some(FormEvent::Clicked(12)));
+        assert_eq!(f.radio(10), Some(12));
+        assert!(f.checked(12) && !f.checked(11));
+        // Arrows move along the group and choose; the ends stop.
+        assert_eq!(f.key(Key::Right), Some(FormEvent::Clicked(13)));
+        assert_eq!(f.key(Key::Right), None);
+        assert_eq!(f.radio(10), Some(13));
+        f.key(Key::Up);
+        assert_eq!(f.key(Key::Left), Some(FormEvent::Clicked(11)));
+        assert_eq!(f.radio(10), Some(11));
+        // A disabled member is skipped.
+        f.set_enabled(12, false);
+        f.focus_id(11);
+        assert_eq!(f.key(Key::Down), Some(FormEvent::Clicked(13)));
+    }
+
+    #[test]
+    fn slider_steps() {
+        let mut f = choices();
+        // Track: steps 0..=4 at x 3, 13, 23, 33, 43.
+        assert_eq!(f.mouse_down(33, 36), Some(FormEvent::Changed(20)));
+        assert_eq!(f.value(20), Some(3));
+        // Dragging follows the pointer outside the slider; release reports it.
+        assert!(f.mouse_move(-40, 90));
+        assert_eq!(f.value(20), Some(0));
+        assert_eq!(f.mouse_up(-40, 90), Some(FormEvent::Changed(20)));
+        assert_eq!(f.key(Key::Left), None);
+        assert_eq!(f.key(Key::Right), Some(FormEvent::Changed(20)));
+        assert_eq!(f.key(Key::End), Some(FormEvent::Changed(20)));
+        assert_eq!(f.value(20), Some(4));
+        assert_eq!(f.key(Key::Right), None);
+        // Nearest step: x 17 is closer to step 1 (13) than step 2 (23).
+        f.mouse_down(17, 36);
+        f.mouse_up(17, 36);
+        assert_eq!(f.value(20), Some(1));
     }
 
     #[test]
