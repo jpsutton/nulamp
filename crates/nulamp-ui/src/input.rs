@@ -62,6 +62,9 @@ pub enum Action {
     TogglePlaylistWindow,
     ToggleLibraryWindow,
     About,
+    /// The lightning bolt of the main window: the About box, or the media library when the
+    /// preferences say so.
+    Bolt,
     ToggleTimeMode,
     CycleVisMode,
     /// Undo a visualizer mode change (from the first click of a double-click).

@@ -7,9 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use nulamp_library::{
-    BrowseNode, Capabilities, LibraryEvent, LibraryProvider, LocalLibrary, Page, PlaybackLocation,
-    PlaylistInfo, Query, Registry, ScanMode, Sort, Track, TrackId, TrackPage, TrackSummary,
-    WatchFolder,
+    AlbumFacet, ArtistFacet, BrowseNode, Capabilities, LibraryEvent, LibraryProvider, LocalLibrary,
+    Page, PlaybackLocation, PlaylistInfo, Query, Registry, ScanMode, Sort, Term, TextField, Track,
+    TrackId, TrackPage, TrackSummary, WatchFolder, fold,
 };
 
 /// The library as handed to the shell by the application.
@@ -20,13 +20,55 @@ pub struct MediaLibrary {
     pub local: Option<Arc<LocalLibrary>>,
 }
 
-/// A track listing: provider, node, search text and order.
+/// A track listing: provider, node, search text, the artist and album picked in the panes
+/// and order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListSpec {
     pub provider: String,
     pub node: BrowseNode,
     pub query: String,
+    /// Only tracks of this artist (`""`: untagged); `None` for all.
+    pub artist: Option<String>,
+    /// Only tracks of this album (`""`: untagged); `None` for all.
+    pub album: Option<String>,
     pub sort: Sort,
+}
+
+impl ListSpec {
+    /// A spec for a node without pane filters.
+    pub fn new(provider: &str, node: BrowseNode, query: &str, sort: Sort) -> Self {
+        Self {
+            provider: provider.to_string(),
+            node,
+            query: query.to_string(),
+            artist: None,
+            album: None,
+            sort,
+        }
+    }
+
+    /// The search text and, as asked, the artist and album filters.
+    fn query_with(&self, artist: bool, album: bool) -> Query {
+        let mut q = Query::parse(&self.query);
+        for (on, field, value) in [
+            (artist, TextField::Artist, &self.artist),
+            (album, TextField::Album, &self.album),
+        ] {
+            if let (true, Some(v)) = (on, value) {
+                q = q.and(Term::Text {
+                    field,
+                    value: fold(v),
+                    exact: true,
+                });
+            }
+        }
+        q
+    }
+
+    /// The query of the track list.
+    fn query(&self) -> Query {
+        self.query_with(true, true)
+    }
 }
 
 /// What collected tracks are for.
@@ -34,6 +76,8 @@ pub struct ListSpec {
 pub enum Purpose {
     /// Replace the playlist and play.
     Play,
+    /// Replace the playlist with the rows and play from this one.
+    PlayFrom(usize),
     /// Append to the playlist.
     Enqueue,
     /// Append and put at the front of the play queue.
@@ -63,6 +107,17 @@ pub enum Request {
         spec: ListSpec,
         generation: u64,
     },
+    /// The artists of the node and search (not the pane filters). Answers are matched by
+    /// `token`, not dropped as stale.
+    Artists {
+        spec: ListSpec,
+        token: u64,
+    },
+    /// The albums of the node, search and artist.
+    Albums {
+        spec: ListSpec,
+        token: u64,
+    },
     /// Fetches the rows `start..end` of a listing and resolves their playback locations.
     Collect {
         spec: ListSpec,
@@ -72,6 +127,9 @@ pub enum Request {
     SetRating {
         tracks: Vec<Track>,
         stars: u8,
+        /// Also write the rating to the file's tag when the provider keeps ratings only in
+        /// its database.
+        write_file: bool,
     },
     Remove {
         ids: Vec<TrackId>,
@@ -119,6 +177,14 @@ pub enum Response {
     Summary {
         generation: u64,
         summary: TrackSummary,
+    },
+    Artists {
+        token: u64,
+        result: Result<Vec<ArtistFacet>, String>,
+    },
+    Albums {
+        token: u64,
+        result: Result<Vec<AlbumFacet>, String>,
     },
     Collected {
         purpose: Purpose,
@@ -271,7 +337,7 @@ impl Worker {
                 let Some(p) = self.provider(&spec.provider) else {
                     return;
                 };
-                let q = Query::parse(&spec.query);
+                let q = spec.query();
                 let result = p
                     .tracks(&spec.node, &q, spec.sort, page)
                     .map_err(|e| e.to_string());
@@ -288,7 +354,7 @@ impl Worker {
                 let Some(p) = self.provider(&spec.provider) else {
                     return;
                 };
-                match p.summary(&spec.node, &Query::parse(&spec.query)) {
+                match p.summary(&spec.node, &spec.query()) {
                     Ok(summary) => self.send(Response::Summary {
                         generation,
                         summary,
@@ -296,12 +362,34 @@ impl Worker {
                     Err(e) => self.error("summary", e),
                 }
             }
+            Request::Artists { spec, token } => {
+                let Some(p) = self.provider(&spec.provider) else {
+                    return;
+                };
+                let result = p
+                    .artist_facets(&spec.node, &spec.query_with(false, false))
+                    .map_err(|e| e.to_string());
+                self.send(Response::Artists { token, result });
+            }
+            Request::Albums { spec, token } => {
+                let Some(p) = self.provider(&spec.provider) else {
+                    return;
+                };
+                let result = p
+                    .album_facets(&spec.node, &spec.query_with(true, false))
+                    .map_err(|e| e.to_string());
+                self.send(Response::Albums { token, result });
+            }
             Request::Collect {
                 spec,
                 ranges,
                 purpose,
             } => self.collect(&spec, &ranges, purpose),
-            Request::SetRating { tracks, stars } => {
+            Request::SetRating {
+                tracks,
+                stars,
+                write_file,
+            } => {
                 for t in &tracks {
                     let Ok(p) = self.lib.registry.provider_for(&t.id) else {
                         continue;
@@ -311,7 +399,8 @@ impl Worker {
                         continue;
                     }
                     // Ratings kept only in the library are also written to the file's tag.
-                    if p.capabilities().contains(Capabilities::RATING_DB_ONLY)
+                    if write_file
+                        && p.capabilities().contains(Capabilities::RATING_DB_ONLY)
                         && !nulamp_core::playlist::is_url(&t.location)
                     {
                         let value = (stars > 0).then(|| stars.to_string());
@@ -433,7 +522,7 @@ impl Worker {
         let Some(p) = self.provider(&spec.provider) else {
             return;
         };
-        let q = Query::parse(&spec.query);
+        let q = spec.query();
         let mut items = Vec::new();
         for &(start, end) in ranges {
             let mut at = start;
@@ -567,12 +656,7 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        let spec = ListSpec {
-            provider: "mock".into(),
-            node: BrowseNode::root(),
-            query: String::new(),
-            sort: Sort::default(),
-        };
+        let spec = ListSpec::new("mock", BrowseNode::root(), "", Sort::default());
         s.send(Request::Tracks {
             spec: spec.clone(),
             page: Page::new(0, 2),

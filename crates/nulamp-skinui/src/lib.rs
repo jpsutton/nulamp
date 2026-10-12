@@ -14,8 +14,8 @@ pub mod tree;
 
 pub use scrollbar::{SCROLLBAR_W, ScrollBar, ScrollPart};
 pub use selection::Selection;
-pub use table::{Column, HeaderHit, Table, TableEvent};
-pub use tree::{TreeEvent, TreeRow, TreeView};
+pub use table::{Column, HeaderHit, ResizeMode, Table, TableEvent};
+pub use tree::{TreeEvent, TreeIcon, TreeRow, TreeView};
 
 /// Text measuring and drawing used by the widgets (1-bit only).
 pub trait UiText {

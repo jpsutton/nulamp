@@ -6,9 +6,10 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use nulamp_library::{
-    BrowseNode, Capabilities, LibraryEvent, Page, Sort, SortKey, Track, TrackPage, TrackSummary,
+    AlbumFacet, ArtistFacet, BrowseNode, Capabilities, LibraryEvent, NodeKind, Page, Sort, SortKey,
+    Track, TrackPage, TrackSummary,
 };
-use nulamp_skinui::TreeRow;
+use nulamp_skinui::{TreeIcon, TreeRow};
 
 use super::service::{ListSpec, Purpose, Request};
 
@@ -41,16 +42,17 @@ const fn col(title: &'static str, width: i32, right: bool, sort: SortKey) -> Col
     }
 }
 
-pub const COLUMNS: [ColumnDef; 9] = [
-    col("#", 26, true, SortKey::Track),
+pub const COLUMNS: [ColumnDef; 10] = [
     col("Artist", 100, false, SortKey::Artist),
-    col("Title", 140, false, SortKey::Title),
     col("Album", 100, false, SortKey::Album),
-    col("Length", 44, true, SortKey::Length),
-    col("Year", 36, true, SortKey::Year),
+    col("Track #", 50, true, SortKey::Track),
+    col("Title", 130, false, SortKey::Title),
+    col("Length", 46, true, SortKey::Length),
     col("Genre", 64, false, SortKey::Genre),
-    col("Rating", 50, false, SortKey::Rating),
-    col("Plays", 38, true, SortKey::PlayCount),
+    col("Rating", 52, false, SortKey::Rating),
+    col("Play Count", 66, true, SortKey::PlayCount),
+    col("Played Last", 104, false, SortKey::LastPlayed),
+    col("Year", 38, true, SortKey::Year),
 ];
 
 /// The column whose header shows a sort key.
@@ -62,15 +64,19 @@ pub fn column_for_sort(key: SortKey) -> Option<usize> {
 pub fn cell(t: &Track, column: usize) -> String {
     let opt = |v: Option<&str>| v.unwrap_or("").to_string();
     match column {
-        0 => t.track_number().map(|n| n.to_string()).unwrap_or_default(),
-        1 => opt(t.artist()),
-        2 => t.display_title(),
-        3 => opt(t.album()),
+        0 => opt(t.artist()),
+        1 => opt(t.album()),
+        2 => t.track_number().map(|n| n.to_string()).unwrap_or_default(),
+        3 => t.display_title(),
         4 if t.length_ms > 0 => crate::marquee::format_length(t.length_ms / 1000),
-        5 => t.year().map(|y| y.to_string()).unwrap_or_default(),
-        6 => opt(t.genre()),
-        7 => "★".repeat(t.rating.min(5) as usize),
-        8 => t.play_count.to_string(),
+        5 => opt(t.genre()),
+        6 => "★".repeat(t.rating.min(5) as usize),
+        7 => t.play_count.to_string(),
+        8 => t
+            .last_played
+            .map(super::clock::format_local)
+            .unwrap_or_default(),
+        9 => t.year().map(|y| y.to_string()).unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -168,6 +174,18 @@ fn merge(provider: &str, old: Option<Vec<TreeNode>>, new: Vec<BrowseNode>) -> Ve
         .collect()
 }
 
+fn icon_of(n: &TreeNode) -> TreeIcon {
+    match n.node.kind {
+        NodeKind::Root => TreeIcon::Folder,
+        NodeKind::Category | NodeKind::Other => TreeIcon::Folder,
+        NodeKind::Artist => TreeIcon::Person,
+        NodeKind::Album => TreeIcon::Disc,
+        NodeKind::Genre | NodeKind::Year => TreeIcon::Tag,
+        NodeKind::SmartList => TreeIcon::Star,
+        NodeKind::Playlist => TreeIcon::List,
+    }
+}
+
 fn flatten(nodes: &[TreeNode], depth: usize, rows: &mut Vec<TreeRow>, keys: &mut Vec<NodeKey>) {
     for n in nodes {
         rows.push(TreeRow {
@@ -175,6 +193,7 @@ fn flatten(nodes: &[TreeNode], depth: usize, rows: &mut Vec<TreeRow>, keys: &mut
             label: n.label(),
             expandable: n.node.expandable,
             expanded: n.expanded,
+            icon: icon_of(n),
         });
         keys.push(n.key());
         if n.expanded
@@ -198,6 +217,20 @@ pub struct LibraryView {
     pages: HashMap<usize, (u64, Vec<Track>)>,
     requested: HashSet<(u64, usize)>,
     pub summary: Option<TrackSummary>,
+    /// When the listing was last (re)loaded and how long its summary took to arrive.
+    list_started: Option<Instant>,
+    pub list_secs: Option<f64>,
+    /// The artist pane's rows (without the "All" row), in the pane's order.
+    pub artists: Vec<ArtistFacet>,
+    /// The album pane's rows.
+    pub albums: Vec<AlbumFacet>,
+    /// Pane sort: column and direction (descending).
+    pub artist_sort: (usize, bool),
+    pub album_sort: (usize, bool),
+    artists_token: u64,
+    albums_token: u64,
+    /// The artist and album panes changed.
+    pub panes_dirty: bool,
     /// Text of the search box (applied after [`SEARCH_DEBOUNCE`]).
     pub search: String,
     search_edited: Option<Instant>,
@@ -238,6 +271,15 @@ impl LibraryView {
             pages: HashMap::new(),
             requested: HashSet::new(),
             summary: None,
+            list_started: None,
+            list_secs: None,
+            artists: Vec::new(),
+            albums: Vec::new(),
+            artist_sort: (0, false),
+            album_sort: (0, false),
+            artists_token: 0,
+            albums_token: 0,
+            panes_dirty: true,
             search: String::new(),
             search_edited: None,
             scan: None,
@@ -334,16 +376,21 @@ impl LibraryView {
         if self.selected.as_ref() == Some(key) && self.spec.is_some() {
             return;
         }
-        let spec = ListSpec {
-            provider: n.provider.clone(),
-            node: n.node.clone(),
-            query: self.search.clone(),
-            sort: n.node.default_sort,
-        };
+        let spec = ListSpec::new(
+            &n.provider,
+            n.node.clone(),
+            &self.search,
+            n.node.default_sort,
+        );
         self.selected = Some(key.clone());
         self.spec = Some(spec);
         self.tree_dirty = true;
+        self.artists.clear();
+        self.albums.clear();
+        self.panes_dirty = true;
         self.reset_list();
+        self.request_artists();
+        self.request_albums();
     }
 
     pub fn on_children(
@@ -378,6 +425,8 @@ impl LibraryView {
         self.requested.clear();
         self.total = None;
         self.summary = None;
+        self.list_started = Some(Instant::now());
+        self.list_secs = None;
         self.list_reset = true;
         self.request_summary();
         self.want_rows(0, 1);
@@ -397,7 +446,10 @@ impl LibraryView {
     pub fn reload_list(&mut self) {
         self.generation += 1;
         self.requested.clear();
+        self.list_started = Some(Instant::now());
         self.request_summary();
+        self.request_artists();
+        self.request_albums();
     }
 
     /// Asks for the pages covering `count` rows from `first` (plus one page ahead) that are
@@ -462,7 +514,205 @@ impl LibraryView {
     pub fn on_summary(&mut self, generation: u64, summary: TrackSummary) {
         if generation == self.generation {
             self.summary = Some(summary);
+            self.list_secs = self.list_started.map(|t| t.elapsed().as_secs_f64());
         }
+    }
+
+    // ----- Artist and album panes -----
+
+    fn request_artists(&mut self) {
+        if let Some(spec) = &self.spec {
+            self.artists_token += 1;
+            self.out.push(Request::Artists {
+                spec: spec.clone(),
+                token: self.artists_token,
+            });
+        }
+    }
+
+    fn request_albums(&mut self) {
+        if let Some(spec) = &self.spec {
+            self.albums_token += 1;
+            self.out.push(Request::Albums {
+                spec: spec.clone(),
+                token: self.albums_token,
+            });
+        }
+    }
+
+    pub fn on_artists(&mut self, token: u64, result: Result<Vec<ArtistFacet>, String>) {
+        if token != self.artists_token {
+            return;
+        }
+        match result {
+            Ok(list) => self.artists = list,
+            Err(e) => {
+                self.artists.clear();
+                self.message = Some(e);
+            }
+        }
+        sort_artists(&mut self.artists, self.artist_sort);
+        self.panes_dirty = true;
+        // The picked artist is gone (a new search or a changed library): show everything.
+        let gone = self
+            .spec
+            .as_ref()
+            .and_then(|s| s.artist.as_deref())
+            .is_some_and(|a| !self.artists.iter().any(|f| same_name(&f.name, a)));
+        if gone {
+            self.select_artist(None);
+        }
+    }
+
+    pub fn on_albums(&mut self, token: u64, result: Result<Vec<AlbumFacet>, String>) {
+        if token != self.albums_token {
+            return;
+        }
+        match result {
+            Ok(list) => self.albums = list,
+            Err(e) => {
+                self.albums.clear();
+                self.message = Some(e);
+            }
+        }
+        sort_albums(&mut self.albums, self.album_sort);
+        self.panes_dirty = true;
+        let gone = self
+            .spec
+            .as_ref()
+            .and_then(|s| s.album.as_deref())
+            .is_some_and(|a| !self.albums.iter().any(|f| same_name(&f.name, a)));
+        if gone {
+            self.select_album(None);
+        }
+    }
+
+    /// Picks an artist (`None`: all). The albums and the track list follow.
+    pub fn select_artist(&mut self, artist: Option<String>) {
+        let Some(spec) = &mut self.spec else { return };
+        if spec.artist == artist && spec.album.is_none() {
+            return;
+        }
+        let changed = spec.artist != artist;
+        spec.artist = artist;
+        spec.album = None;
+        self.panes_dirty = true;
+        self.reset_list();
+        if changed {
+            self.albums.clear();
+            self.request_albums();
+        }
+    }
+
+    /// Picks an album (`None`: all of the artist's). The track list follows.
+    pub fn select_album(&mut self, album: Option<String>) {
+        let Some(spec) = &mut self.spec else { return };
+        if spec.album == album {
+            return;
+        }
+        spec.album = album;
+        self.panes_dirty = true;
+        self.reset_list();
+    }
+
+    /// Orders the artist pane by a column (0 name, 1 albums, 2 tracks).
+    pub fn set_artist_sort(&mut self, column: usize, descending: bool) {
+        self.artist_sort = (column, descending);
+        sort_artists(&mut self.artists, self.artist_sort);
+        self.panes_dirty = true;
+    }
+
+    /// Orders the album pane by a column (0 name, 1 year, 2 tracks).
+    pub fn set_album_sort(&mut self, column: usize, descending: bool) {
+        self.album_sort = (column, descending);
+        sort_albums(&mut self.albums, self.album_sort);
+        self.panes_dirty = true;
+    }
+
+    /// Row of the picked artist in the artist pane (row 0 is "All").
+    pub fn artist_row(&self) -> usize {
+        match self.spec.as_ref().and_then(|s| s.artist.as_deref()) {
+            Some(a) => self
+                .artists
+                .iter()
+                .position(|f| same_name(&f.name, a))
+                .map_or(0, |i| i + 1),
+            None => 0,
+        }
+    }
+
+    pub fn album_row(&self) -> usize {
+        match self.spec.as_ref().and_then(|s| s.album.as_deref()) {
+            Some(a) => self
+                .albums
+                .iter()
+                .position(|f| same_name(&f.name, a))
+                .map_or(0, |i| i + 1),
+            None => 0,
+        }
+    }
+
+    /// Text of an artist-pane cell (row 0 is "All").
+    pub fn artist_cell(&self, row: usize, col: usize) -> Option<String> {
+        if row == 0 {
+            let n = self.artists.len();
+            return Some(match col {
+                0 => format!("All ({n} {})", if n == 1 { "artist" } else { "artists" }),
+                1 => self
+                    .artists
+                    .iter()
+                    .map(|a| a.albums)
+                    .sum::<u64>()
+                    .to_string(),
+                _ => self
+                    .artists
+                    .iter()
+                    .map(|a| a.tracks)
+                    .sum::<u64>()
+                    .to_string(),
+            });
+        }
+        let f = self.artists.get(row - 1)?;
+        Some(match col {
+            0 if f.name.is_empty() => UNKNOWN_ARTIST.to_string(),
+            0 => f.name.clone(),
+            1 => f.albums.to_string(),
+            _ => f.tracks.to_string(),
+        })
+    }
+
+    pub fn album_cell(&self, row: usize, col: usize) -> Option<String> {
+        if row == 0 {
+            let n = self.albums.len();
+            return Some(match col {
+                0 => format!("All ({n} {})", if n == 1 { "album" } else { "albums" }),
+                1 => String::new(),
+                _ => self
+                    .albums
+                    .iter()
+                    .map(|a| a.tracks)
+                    .sum::<u64>()
+                    .to_string(),
+            });
+        }
+        let f = self.albums.get(row - 1)?;
+        Some(match col {
+            0 if f.name.is_empty() => UNKNOWN_ALBUM.to_string(),
+            0 => f.name.clone(),
+            1 => f.year.map(|y| y.to_string()).unwrap_or_default(),
+            _ => f.tracks.to_string(),
+        })
+    }
+
+    /// The artist an artist-pane row stands for (`None` for "All").
+    pub fn artist_at(&self, row: usize) -> Option<String> {
+        self.artists
+            .get(row.checked_sub(1)?)
+            .map(|f| f.name.clone())
+    }
+
+    pub fn album_at(&self, row: usize) -> Option<String> {
+        self.albums.get(row.checked_sub(1)?).map(|f| f.name.clone())
     }
 
     /// The track at a row, when its page is loaded.
@@ -527,6 +777,8 @@ impl LibraryView {
             Some(spec) if spec.query != self.search => {
                 spec.query = self.search.clone();
                 self.reset_list();
+                self.request_artists();
+                self.request_albums();
                 true
             }
             _ => false,
@@ -638,20 +890,74 @@ impl LibraryView {
             .summary
             .map(|s| s.count)
             .or(self.total.map(|t| t as u64));
-        let mut s = match (count, self.summary) {
-            (None, _) => "Loading…".to_string(),
-            (Some(n), Some(sum)) => format!(
-                "{n} {}, {}",
-                if n == 1 { "track" } else { "tracks" },
-                crate::playlist::format_total(sum.length_ms / 1000)
-            ),
-            (Some(n), None) => format!("{n} {}", if n == 1 { "track" } else { "tracks" }),
+        let mut s = match count {
+            None => "Loading…".to_string(),
+            Some(n) => {
+                let items = format!("{n} {}", if n == 1 { "item" } else { "items" });
+                let length = self
+                    .summary
+                    .filter(|s| s.length_ms >= 1000)
+                    .map(|s| format!(" [{}]", crate::playlist::format_total(s.length_ms / 1000)))
+                    .unwrap_or_default();
+                let took = self
+                    .list_secs
+                    .map(|t| format!(" in {t:.3} sec."))
+                    .unwrap_or_default();
+                format!("{items}{length}{took}")
+            }
         };
         if let Some(m) = &self.message {
             s.push_str("  ·  ");
             s.push_str(m);
         }
         s
+    }
+}
+
+const UNKNOWN_ARTIST: &str = "Unknown artist";
+const UNKNOWN_ALBUM: &str = "Unknown album";
+
+/// Pane names compare without case, like the providers group them.
+fn same_name(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
+}
+
+/// Orders a pane by name; untagged entries stay last whatever the direction.
+fn sort_artists(list: &mut [ArtistFacet], (column, desc): (usize, bool)) {
+    list.sort_by(|a, b| {
+        let by = match column {
+            1 => a.albums.cmp(&b.albums),
+            2 => a.tracks.cmp(&b.tracks),
+            _ => nulamp_core::playlist::natural_cmp(&a.name, &b.name),
+        };
+        untagged_last(&a.name, &b.name, if desc { by.reverse() } else { by })
+    });
+}
+
+fn sort_albums(list: &mut [AlbumFacet], (column, desc): (usize, bool)) {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    list.sort_by(|a, b| {
+        let by = match column {
+            1 => match (a.year, b.year) {
+                // An unknown year is last in both directions.
+                (None, Some(_)) => return Greater,
+                (Some(_), None) => return Less,
+                (Some(x), Some(y)) => x.cmp(&y),
+                (None, None) => Equal,
+            },
+            2 => a.tracks.cmp(&b.tracks),
+            _ => nulamp_core::playlist::natural_cmp(&a.name, &b.name),
+        };
+        untagged_last(&a.name, &b.name, if desc { by.reverse() } else { by })
+    });
+}
+
+fn untagged_last(a: &str, b: &str, by: std::cmp::Ordering) -> std::cmp::Ordering {
+    use std::cmp::Ordering::{Greater, Less};
+    match (a.is_empty(), b.is_empty()) {
+        (true, false) => Greater,
+        (false, true) => Less,
+        _ => by,
     }
 }
 
@@ -738,7 +1044,8 @@ mod tests {
                 length_ms: 3_725_000,
             },
         );
-        assert_eq!(v.status_text(), "1000 tracks, 1:02:05");
+        v.list_secs = Some(0.0123);
+        assert_eq!(v.status_text(), "1000 items [1:02:05] in 0.012 sec.");
     }
 
     #[test]
@@ -873,7 +1180,7 @@ mod tests {
         assert!(
             matches!(&reqs[0], Request::Summary { spec, .. } if spec.sort == Sort::desc(SortKey::Year))
         );
-        assert_eq!(column_for_sort(SortKey::Year), Some(5));
+        assert_eq!(column_for_sort(SortKey::Year), Some(9));
         assert_eq!(column_for_sort(SortKey::DateAdded), None);
         v.collect(&[(0, 2), (5, 6)], Purpose::Play);
         match &v.take_requests()[..] {
@@ -890,9 +1197,216 @@ mod tests {
         let mut t = track(1);
         t.tags.insert("track".into(), "3/12".into());
         t.rating = 4;
-        assert_eq!(cell(&t, 0), "3");
-        assert_eq!(cell(&t, 2), "1.mp3");
+        t.play_count = 7;
+        t.last_played = Some(1_760_227_200);
+        assert_eq!(cell(&t, 2), "3");
+        assert_eq!(cell(&t, 3), "1.mp3");
         assert_eq!(cell(&t, 4), "1:01");
-        assert_eq!(cell(&t, 7), "★★★★");
+        assert_eq!(cell(&t, 6), "★★★★");
+        assert_eq!(cell(&t, 7), "7");
+        assert!(cell(&t, 8).starts_with("2025-10-1"), "{}", cell(&t, 8));
+        assert_eq!(cell(&track(2), 8), "", "never played");
+    }
+
+    fn artist(name: &str, albums: u64, tracks: u64) -> ArtistFacet {
+        ArtistFacet {
+            name: name.into(),
+            albums,
+            tracks,
+        }
+    }
+
+    fn album(name: &str, year: Option<i32>, tracks: u64) -> AlbumFacet {
+        AlbumFacet {
+            name: name.into(),
+            year,
+            tracks,
+        }
+    }
+
+    /// Tokens of the facet requests in `reqs`.
+    fn facet_tokens(reqs: &[Request]) -> (Option<u64>, Option<u64>) {
+        let mut out = (None, None);
+        for r in reqs {
+            match r {
+                Request::Artists { token, .. } => out.0 = Some(*token),
+                Request::Albums { token, .. } => out.1 = Some(*token),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn panes_load_with_the_node_and_filter_the_list() {
+        let mut v = view();
+        let (a, b) = facet_tokens(&v.take_requests());
+        let (a, b) = (a.unwrap(), b.unwrap());
+        // Answers to older requests are dropped.
+        v.on_artists(a + 5, Ok(vec![artist("Stale", 1, 1)]));
+        assert!(v.artists.is_empty());
+        v.on_artists(
+            a,
+            Ok(vec![
+                artist("The Band", 2, 9),
+                artist("", 1, 1),
+                artist("Abba", 1, 3),
+            ]),
+        );
+        v.on_albums(
+            b,
+            Ok(vec![album("One", Some(1999), 4), album("Two", None, 1)]),
+        );
+        let names: Vec<_> = v.artists.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Abba", "The Band", ""],
+            "natural order, untagged last"
+        );
+        assert_eq!(v.artist_cell(0, 0).unwrap(), "All (3 artists)");
+        assert_eq!(v.artist_cell(0, 1).unwrap(), "4");
+        assert_eq!(v.artist_cell(0, 2).unwrap(), "13");
+        assert_eq!(v.artist_cell(3, 0).unwrap(), "Unknown artist");
+        assert_eq!(v.album_cell(0, 0).unwrap(), "All (2 albums)");
+        assert_eq!(v.album_cell(1, 1).unwrap(), "1999");
+        assert_eq!(v.album_cell(2, 1).unwrap(), "");
+        assert!(v.artist_cell(4, 0).is_none());
+        assert_eq!((v.artist_row(), v.album_row()), (0, 0));
+        // Picking an artist reloads the albums and the list, not the artists.
+        v.select_artist(Some("The Band".into()));
+        let reqs = v.take_requests();
+        let (a2, b2) = facet_tokens(&reqs);
+        assert!(a2.is_none());
+        assert!(matches!(
+            reqs.iter().find(|r| matches!(r, Request::Albums { .. })),
+            Some(Request::Albums { spec, .. }) if spec.artist.as_deref() == Some("The Band")
+        ));
+        assert_eq!(tracks_requests(&reqs), [(v.generation, 0)]);
+        assert_eq!(v.artist_row(), 2);
+        assert!(
+            v.albums.is_empty(),
+            "the old albums are not shown for the new artist"
+        );
+        // The old album answer is stale now.
+        v.on_albums(b, Ok(vec![album("Old", None, 1)]));
+        assert!(v.albums.is_empty());
+        v.on_albums(b2.unwrap(), Ok(vec![album("One", Some(1999), 4)]));
+        v.select_album(Some("one".into()));
+        assert_eq!(v.album_row(), 1, "names match without regard to case");
+        let spec = v.spec.as_ref().unwrap();
+        assert_eq!(spec.album.as_deref(), Some("one"));
+        // Changing the artist forgets the album; the same pick again does nothing.
+        v.take_requests();
+        v.select_artist(Some("Abba".into()));
+        assert_eq!(v.spec.as_ref().unwrap().album, None);
+        v.take_requests();
+        v.select_artist(Some("Abba".into()));
+        assert!(v.take_requests().is_empty());
+        // "All" shows everything again.
+        v.select_artist(None);
+        assert_eq!(v.spec.as_ref().unwrap().artist, None);
+        assert_eq!(v.artist_row(), 0);
+    }
+
+    #[test]
+    fn a_vanished_pick_falls_back_to_all() {
+        let mut v = view();
+        let (a, b) = facet_tokens(&v.take_requests());
+        v.on_artists(
+            a.unwrap(),
+            Ok(vec![artist("Abba", 1, 3), artist("Cher", 1, 2)]),
+        );
+        v.on_albums(b.unwrap(), Ok(vec![album("One", None, 5)]));
+        v.select_artist(Some("Cher".into()));
+        let (_, b) = facet_tokens(&v.take_requests());
+        v.on_albums(b.unwrap(), Ok(vec![album("Believe", Some(1998), 2)]));
+        v.select_album(Some("Believe".into()));
+        v.take_requests();
+        // A search removes Cher: the pick is dropped and the list reloads.
+        v.set_search("abba", Instant::now());
+        v.apply_search();
+        let (a, _) = facet_tokens(&v.take_requests());
+        let g = v.generation;
+        v.on_artists(a.unwrap(), Ok(vec![artist("Abba", 1, 3)]));
+        let spec = v.spec.as_ref().unwrap();
+        assert_eq!(
+            (spec.artist.as_deref(), spec.album.as_deref()),
+            (None, None)
+        );
+        assert_eq!(v.generation, g + 1);
+        assert_eq!(v.artist_row(), 0);
+        // A refresh keeps a pick that still exists.
+        v.select_artist(Some("Abba".into()));
+        v.refresh(Instant::now());
+        let (a, _) = facet_tokens(&v.take_requests());
+        v.on_artists(a.unwrap(), Ok(vec![artist("Abba", 1, 4)]));
+        assert_eq!(v.spec.as_ref().unwrap().artist.as_deref(), Some("Abba"));
+    }
+
+    #[test]
+    fn panes_sort_by_their_columns() {
+        let mut v = view();
+        let (a, b) = facet_tokens(&v.take_requests());
+        v.on_artists(
+            a.unwrap(),
+            Ok(vec![artist("B", 1, 2), artist("", 1, 9), artist("A", 3, 1)]),
+        );
+        v.on_albums(
+            b.unwrap(),
+            Ok(vec![
+                album("x", None, 1),
+                album("y", Some(2000), 5),
+                album("z", Some(1990), 2),
+            ]),
+        );
+        v.set_artist_sort(1, true);
+        let names: Vec<_> = v.artists.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["A", "B", ""],
+            "most albums first, untagged still last"
+        );
+        v.set_artist_sort(2, false);
+        let names: Vec<_> = v.artists.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["A", "B", ""]);
+        v.set_album_sort(1, false);
+        let names: Vec<_> = v.albums.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["z", "y", "x"], "unknown years last");
+        v.set_album_sort(1, true);
+        let names: Vec<_> = v.albums.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["y", "z", "x"]);
+        v.set_album_sort(2, true);
+        assert_eq!(v.albums[0].name, "y");
+        assert!(v.panes_dirty);
+    }
+
+    #[test]
+    fn status_shows_items_length_and_time() {
+        let mut v = view();
+        assert_eq!(v.status_text(), "Loading…");
+        v.on_page(1, 0, Ok(page(0, 1, 1)));
+        assert_eq!(v.status_text(), "1 item");
+        v.on_summary(
+            1,
+            TrackSummary {
+                count: 1,
+                length_ms: 500,
+            },
+        );
+        v.list_secs = Some(0.0);
+        assert_eq!(
+            v.status_text(),
+            "1 item in 0.000 sec.",
+            "under a second: no length"
+        );
+        v.on_summary(
+            1,
+            TrackSummary {
+                count: 2,
+                length_ms: 125_000,
+            },
+        );
+        v.list_secs = Some(1.5);
+        assert_eq!(v.status_text(), "2 items [2:05] in 1.500 sec.");
     }
 }

@@ -1,6 +1,7 @@
 //! The media-library window: a resizable generic skinned window (05 §1) holding a search
-//! box, the provider tree, the track list, Play/Enqueue buttons and a status line. Input is
-//! turned into changes of the [`LibraryView`] and into [`LibAction`]s for the shell.
+//! box, the provider tree, an artist and an album pane above the track list, Play/Enqueue
+//! buttons and a status line. Input is turned into changes of the [`LibraryView`] and into
+//! [`LibAction`]s for the shell.
 
 use std::time::Instant;
 
@@ -18,29 +19,49 @@ use winit::keyboard::KeyCode;
 use super::service::Purpose;
 use super::view::{self, COLUMNS, LibraryView, NodeKey};
 use crate::input::Mods;
+use crate::shell::{ActivateAction, LibraryPrefs};
 
 pub const TITLE: &str = "Media Library";
-/// Default size: 525×348 sits beside the default main/equalizer/playlist stack.
-pub const DEFAULT_SIZE: (i32, i32) = (525, 348);
+/// Default size: 625×406 (the 25×29 steps of the generic window).
+pub const DEFAULT_SIZE: (i32, i32) = (625, 406);
 pub const DEFAULT_TREE_W: i32 = 130;
 pub const MIN_TREE_W: i32 = 60;
+pub const DEFAULT_PANE_H: i32 = 96;
+const MIN_PANE_H: i32 = 40;
+const MIN_PANE_W: i32 = 60;
+/// Least height of the track list below the panes.
+const MIN_TABLE_H: i32 = 40;
 /// Client-area origin inside the generic frame (05 §1.1).
 const CLIENT_X: i32 = 11;
 const CLIENT_Y: i32 = 20;
 const SPLIT: i32 = 5;
 const SEARCH: u32 = 1;
-const PLAY: u32 = 2;
-const ENQUEUE: u32 = 3;
+const CLEAR: u32 = 2;
+const PLAY: u32 = 3;
+const ENQUEUE: u32 = 4;
+const DROP: u32 = 5;
 /// Index of the search field in the form.
 const EDIT_INDEX: usize = 1;
+/// Width of the "Clear Search" button.
+const CLEAR_W: i32 = 76;
 
 /// Which part of the window has the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Zone {
     Search,
     Tree,
+    Artists,
+    Albums,
     List,
 }
+
+const ZONES: [Zone; 5] = [
+    Zone::Search,
+    Zone::Tree,
+    Zone::Artists,
+    Zone::Albums,
+    Zone::List,
+];
 
 /// What the window asks the shell to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +81,8 @@ pub enum LibAction {
     Selection(Purpose),
     /// Act on every row of the listing.
     All(Purpose),
+    /// Replace the playlist with every row of the listing and play from this row.
+    PlayAllFrom(usize),
     /// Track-list menu at a window point.
     ContextMenu {
         x: i32,
@@ -67,6 +90,11 @@ pub enum LibAction {
     },
     /// Tree menu at a window point.
     TreeMenu {
+        x: i32,
+        y: i32,
+    },
+    /// The menu of the Play button's arrow, below this window point.
+    PlayMenu {
         x: i32,
         y: i32,
     },
@@ -78,16 +106,44 @@ pub enum LibAction {
     Redraw,
 }
 
+/// Sizes the user sets by dragging splitters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Geometry {
+    pub tree_w: i32,
+    pub pane_h: i32,
+    /// Width of the artist pane; 0 splits the right side in half.
+    pub artist_w: i32,
+}
+
+impl Default for Geometry {
+    fn default() -> Self {
+        Self {
+            tree_w: DEFAULT_TREE_W,
+            pane_h: DEFAULT_PANE_H,
+            artist_w: 0,
+        }
+    }
+}
+
 /// Client-area rectangles of the window's parts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
     pub label: Rect,
     pub search: Rect,
+    pub clear: Rect,
     pub tree: Rect,
+    /// Between the tree and everything right of it.
     pub splitter: Rect,
+    pub artists: Rect,
+    /// Between the artist and the album pane.
+    pub pane_split: Rect,
+    pub albums: Rect,
+    /// Between the panes and the track list.
+    pub hsplit: Rect,
     pub table: Rect,
     pub play: Rect,
-    pub enqueue: Rect,
+    /// The Play button's arrow (grouped buttons) or the Enqueue button.
+    pub extra: Rect,
     pub status: Rect,
 }
 
@@ -95,31 +151,71 @@ fn clamp_tree_w(tree_w: i32, cw: i32) -> i32 {
     tree_w.clamp(MIN_TREE_W, (cw - 120).max(MIN_TREE_W))
 }
 
-/// Lays out a window of `w`×`h` with a tree `tree_w` wide.
-pub fn layout(w: i32, h: i32, tree_w: i32) -> Layout {
+/// Lays out a window of `w`×`h`.
+pub fn layout(w: i32, h: i32, g: Geometry, grouped: bool) -> Layout {
     let (cw, ch) = (w - 19, h - 34);
-    let tree_w = clamp_tree_w(tree_w, cw);
+    let tree_w = clamp_tree_w(g.tree_w, cw);
     let top = 24;
     let body_h = (ch - 24 - top).max(20);
+    let (rx, rw) = (4 + tree_w + SPLIT, cw - 8 - tree_w - SPLIT);
+    let max_pane = (body_h - SPLIT - MIN_TABLE_H.min(body_h / 2)).max(0);
+    let pane_h = g.pane_h.clamp(MIN_PANE_H.min(max_pane), max_pane);
+    let aw = if g.artist_w > 0 {
+        g.artist_w
+    } else {
+        (rw - SPLIT) / 2
+    };
+    let aw = aw.clamp(
+        MIN_PANE_W.min(rw / 2),
+        (rw - SPLIT - MIN_PANE_W).max(MIN_PANE_W.min(rw / 2)),
+    );
+    let table_y = top + pane_h + SPLIT;
+    let (play_w, extra) = if grouped {
+        (44, Rect::new(48, ch - 21, 16, 18))
+    } else {
+        (48, Rect::new(56, ch - 21, 60, 18))
+    };
+    let status_x = extra.x + extra.w + 6;
     Layout {
         label: Rect::new(4, 5, 42, 14),
-        search: Rect::new(48, 2, cw - 52, 18),
+        search: Rect::new(48, 2, cw - 52 - CLEAR_W - 4, 18),
+        clear: Rect::new(cw - 4 - CLEAR_W, 2, CLEAR_W, 18),
         tree: Rect::new(4, top, tree_w, body_h),
         splitter: Rect::new(4 + tree_w, top, SPLIT, body_h),
-        table: Rect::new(4 + tree_w + SPLIT, top, cw - 8 - tree_w - SPLIT, body_h),
-        play: Rect::new(4, ch - 21, 48, 18),
-        enqueue: Rect::new(56, ch - 21, 60, 18),
-        status: Rect::new(122, ch - 18, cw - 126, 14),
+        artists: Rect::new(rx, top, aw, pane_h),
+        pane_split: Rect::new(rx + aw, top, SPLIT, pane_h),
+        albums: Rect::new(rx + aw + SPLIT, top, rw - aw - SPLIT, pane_h),
+        hsplit: Rect::new(rx, top + pane_h, rw, SPLIT),
+        table: Rect::new(rx, table_y, rw, body_h - pane_h - SPLIT),
+        play: Rect::new(4, ch - 21, play_w, 18),
+        extra,
+        status: Rect::new(status_x, ch - 18, cw - status_x - 4, 14),
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Drag {
-    Resize { grab_x: i32, grab_y: i32 },
-    Splitter { grab: i32 },
+    Resize {
+        grab_x: i32,
+        grab_y: i32,
+    },
+    /// Tree | right side.
+    Splitter {
+        grab: i32,
+    },
+    /// Panes / track list.
+    PaneH {
+        grab: i32,
+    },
+    /// Artist | album pane.
+    PaneV {
+        grab: i32,
+    },
     Close,
     Button,
     Tree,
+    Artists,
+    Albums,
     Table,
 }
 
@@ -161,50 +257,78 @@ fn nav_key(code: KeyCode) -> Option<Key> {
     })
 }
 
+fn build_form(l: &Layout, grouped: bool, search: &str) -> Form {
+    let button = |rect, id, label: &str| Widget::Button {
+        rect,
+        id,
+        label: label.into(),
+        default: false,
+    };
+    let mut widgets = vec![
+        Widget::Label {
+            rect: l.label,
+            text: "Search:".into(),
+        },
+        Widget::Edit {
+            rect: l.search,
+            id: SEARCH,
+            text: search.to_string(),
+            cursor: search.chars().count(),
+            secret: false,
+        },
+        button(l.clear, CLEAR, "Clear Search"),
+        button(l.play, PLAY, "Play"),
+    ];
+    widgets.push(if grouped {
+        button(l.extra, DROP, "")
+    } else {
+        button(l.extra, ENQUEUE, "Enqueue")
+    });
+    Form::new(widgets)
+}
+
+/// Fits the first column of a pane to the width left by the other two.
+fn fit_pane(t: &mut Table) {
+    let others: i32 = t.columns.iter().skip(1).map(|c| c.width).sum();
+    let avail = t.rect.w - 2 - nulamp_skinui::SCROLLBAR_W;
+    t.columns[0].width = (avail - others).max(nulamp_skinui::table::MIN_COL_W);
+}
+
+fn pane(title: &str, cols: [(&str, i32, bool); 3], rect: Rect) -> Table {
+    let _ = title;
+    let mut t = Table::new(
+        rect,
+        cols.iter()
+            .map(|&(name, w, right)| Column::new(name, w, right))
+            .collect(),
+    );
+    fit_pane(&mut t);
+    t
+}
+
 pub struct LibraryWindow {
     pub w: i32,
     pub h: i32,
-    pub tree_w: i32,
+    pub geometry: Geometry,
     pub focus: Zone,
     pub form: Form,
     pub tree: TreeView,
+    pub artists: Table,
+    pub albums: Table,
     pub table: Table,
     tree_keys: Vec<NodeKey>,
     drag: Option<Drag>,
     pub close_pressed: bool,
+    pub prefs: LibraryPrefs,
 }
 
 impl LibraryWindow {
-    /// A window of the given size (snapped), tree width and column widths (defaults for a
-    /// missing or mismatched list).
-    pub fn new(size: (i32, i32), tree_w: i32, widths: &[i32]) -> Self {
+    /// A window of the given size (snapped), splitter positions and track-list column
+    /// widths (defaults for a missing or mismatched list).
+    pub fn new(size: (i32, i32), geometry: Geometry, widths: &[i32]) -> Self {
         let (w, h) = gen_window::snap_size(size.0, size.1);
-        let l = layout(w, h, tree_w);
-        let form = Form::new(vec![
-            Widget::Label {
-                rect: l.label,
-                text: "Search:".into(),
-            },
-            Widget::Edit {
-                rect: l.search,
-                id: SEARCH,
-                text: String::new(),
-                cursor: 0,
-                secret: false,
-            },
-            Widget::Button {
-                rect: l.play,
-                id: PLAY,
-                label: "Play".into(),
-                default: false,
-            },
-            Widget::Button {
-                rect: l.enqueue,
-                id: ENQUEUE,
-                label: "Enqueue".into(),
-                default: false,
-            },
-        ]);
+        let prefs = LibraryPrefs::default();
+        let l = layout(w, h, geometry, prefs.group_buttons);
         let columns = COLUMNS
             .iter()
             .enumerate()
@@ -221,21 +345,58 @@ impl LibraryWindow {
         let mut win = Self {
             w,
             h,
-            tree_w,
+            geometry,
             focus: Zone::List,
-            form,
+            form: build_form(&l, prefs.group_buttons, ""),
             tree: TreeView::new(l.tree),
+            artists: pane(
+                "Artist",
+                [
+                    ("Artist", 100, false),
+                    ("Albums", 48, true),
+                    ("Tracks", 48, true),
+                ],
+                l.artists,
+            ),
+            albums: pane(
+                "Album",
+                [
+                    ("Album", 100, false),
+                    ("Year", 40, true),
+                    ("Tracks", 48, true),
+                ],
+                l.albums,
+            ),
             table: Table::new(l.table, columns),
             tree_keys: Vec::new(),
             drag: None,
             close_pressed: false,
+            prefs,
         };
-        win.relayout();
+        win.apply_prefs(&LibraryPrefs::default());
         win
     }
 
+    /// Takes over the options of the preferences dialog.
+    pub fn apply_prefs(&mut self, p: &LibraryPrefs) {
+        let regroup = self.prefs.group_buttons != p.group_buttons;
+        self.prefs = p.clone();
+        for t in [&mut self.artists, &mut self.albums, &mut self.table] {
+            t.alt_rows = p.alt_rows;
+            t.resize_mode = p.resize_mode;
+        }
+        self.tree.icons = p.tree_icons;
+        self.tree.full_row = p.tree_full_row;
+        self.tree.item_height = p.tree_item_height;
+        if regroup {
+            let text = self.search_text();
+            self.form = build_form(&self.layout(), p.group_buttons, &text);
+        }
+        self.relayout();
+    }
+
     pub fn layout(&self) -> Layout {
-        layout(self.w, self.h, self.tree_w)
+        layout(self.w, self.h, self.geometry, self.prefs.group_buttons)
     }
 
     /// Applies a new size (snapped to 25×29 steps, 05 §1.4). Returns whether it changed.
@@ -252,16 +413,29 @@ impl LibraryWindow {
 
     fn relayout(&mut self) {
         let l = self.layout();
-        self.tree_w = l.tree.w;
+        self.geometry.tree_w = l.tree.w;
+        self.geometry.pane_h = l.artists.h;
+        if self.geometry.artist_w > 0 {
+            self.geometry.artist_w = l.artists.w;
+        }
+        let third = if self.prefs.group_buttons {
+            l.extra
+        } else {
+            l.extra
+        };
         for (widget, r) in self
             .form
             .widgets
             .iter_mut()
-            .zip([l.label, l.search, l.play, l.enqueue])
+            .zip([l.label, l.search, l.clear, l.play, third])
         {
             set_rect(widget, r);
         }
         self.tree.set_rect(l.tree);
+        self.artists.set_rect(l.artists);
+        self.albums.set_rect(l.albums);
+        fit_pane(&mut self.artists);
+        fit_pane(&mut self.albums);
         self.table.set_rect(l.table);
     }
 
@@ -299,6 +473,15 @@ impl LibraryWindow {
             }
             self.tree_keys = keys;
             view.tree_dirty = false;
+        }
+        if view.panes_dirty {
+            self.artists.set_rows(view.artists.len() + 1);
+            self.artists.sel.set_only(view.artist_row());
+            self.artists.sort = Some(view.artist_sort);
+            self.albums.set_rows(view.albums.len() + 1);
+            self.albums.sel.set_only(view.album_row());
+            self.albums.sort = Some(view.album_sort);
+            view.panes_dirty = false;
         }
         if view.list_reset {
             self.table.sel.clear();
@@ -342,6 +525,44 @@ impl LibraryWindow {
         self.sync(view);
     }
 
+    /// What double-click or Enter does with a listing: `row` is the activated row.
+    fn activate(&self, row: usize, shift: bool, view: &LibraryView) -> Vec<LibAction> {
+        let playlist = view
+            .spec
+            .as_ref()
+            .is_some_and(|s| s.node.kind == nulamp_library::NodeKind::Playlist);
+        let all = if playlist {
+            self.prefs.play_all_playlists
+        } else {
+            self.prefs.play_all_media
+        };
+        vec![match (self.prefs.activate, shift) {
+            (_, true) | (ActivateAction::Enqueue, _) => LibAction::Selection(Purpose::Enqueue),
+            (ActivateAction::PlayNext, _) => LibAction::Selection(Purpose::PlayNext),
+            (ActivateAction::Play, _) if all => LibAction::PlayAllFrom(row),
+            (ActivateAction::Play, _) => LibAction::Selection(Purpose::Play),
+        }]
+    }
+
+    /// The Play/Enqueue buttons act on the selection, or on everything without one.
+    fn auto(&self, p: Purpose) -> LibAction {
+        if self.table.sel.is_empty() {
+            LibAction::All(p)
+        } else {
+            LibAction::Selection(p)
+        }
+    }
+
+    /// What a pane's double-click or Enter does: act on the listing it filters.
+    fn pane_activate(&self, shift: bool) -> Vec<LibAction> {
+        let p = match (self.prefs.activate, shift) {
+            (_, true) | (ActivateAction::Enqueue, _) => Purpose::Enqueue,
+            (ActivateAction::PlayNext, _) => Purpose::PlayNext,
+            (ActivateAction::Play, _) => Purpose::Play,
+        };
+        vec![LibAction::All(p)]
+    }
+
     fn table_event(
         &mut self,
         ev: TableEvent,
@@ -358,15 +579,51 @@ impl LibraryWindow {
                 });
                 vec![]
             }
-            TableEvent::Activated(_) => vec![LibAction::Selection(if shift {
-                Purpose::Enqueue
-            } else {
-                Purpose::Play
-            })],
+            TableEvent::Activated(row) => self.activate(row, shift, view),
             TableEvent::Dropped => vec![LibAction::DropTracks { x, y }],
             TableEvent::ContextMenu(_) => vec![LibAction::ContextMenu { x, y }],
             _ => vec![],
         };
+        self.sync(view);
+        out
+    }
+
+    /// An event of the artist (`artists`) or album pane.
+    fn pane_event(
+        &mut self,
+        artists: bool,
+        ev: TableEvent,
+        view: &mut LibraryView,
+        shift: bool,
+    ) -> Vec<LibAction> {
+        let t = if artists {
+            &mut self.artists
+        } else {
+            &mut self.albums
+        };
+        let mut out = vec![];
+        match ev {
+            TableEvent::SelectionChanged | TableEvent::ContextMenu(_) => {
+                if let Some(row) = t.sel.first() {
+                    if artists {
+                        view.select_artist(view.artist_at(row));
+                    } else {
+                        view.select_album(view.album_at(row));
+                    }
+                }
+            }
+            TableEvent::Sort { column, descending } => {
+                if artists {
+                    view.set_artist_sort(column, descending);
+                } else {
+                    view.set_album_sort(column, descending);
+                }
+            }
+            TableEvent::Activated(_) => out = self.pane_activate(shift),
+            _ => {}
+        }
+        // A click below the rows must not leave the pane without a selection.
+        view.panes_dirty = true;
         self.sync(view);
         out
     }
@@ -403,7 +660,19 @@ impl LibraryWindow {
         let l = self.layout();
         if l.splitter.contains(cx, cy) {
             self.drag = Some(Drag::Splitter {
-                grab: cx - self.tree_w,
+                grab: cx - self.geometry.tree_w,
+            });
+            return vec![];
+        }
+        if l.hsplit.contains(cx, cy) {
+            self.drag = Some(Drag::PaneH {
+                grab: cy - l.artists.h - l.artists.y,
+            });
+            return vec![];
+        }
+        if l.pane_split.contains(cx, cy) {
+            self.drag = Some(Drag::PaneV {
+                grab: cx - l.artists.x - l.artists.w,
             });
             return vec![];
         }
@@ -413,7 +682,10 @@ impl LibraryWindow {
             self.form.mouse_down(cx, cy);
             return vec![LibAction::Redraw];
         }
-        if l.play.contains(cx, cy) || l.enqueue.contains(cx, cy) {
+        if [l.clear, l.play, l.extra]
+            .iter()
+            .any(|r| r.contains(cx, cy))
+        {
             self.form.mouse_down(cx, cy);
             self.drag = Some(Drag::Button);
             return vec![LibAction::Redraw];
@@ -425,6 +697,25 @@ impl LibraryWindow {
                 self.tree_event(ev, view);
             }
             return vec![LibAction::Redraw];
+        }
+        for (artists, rect) in [(true, l.artists), (false, l.albums)] {
+            if !rect.contains(cx, cy) {
+                continue;
+            }
+            self.focus = if artists { Zone::Artists } else { Zone::Albums };
+            self.drag = Some(if artists { Drag::Artists } else { Drag::Albums });
+            let t = if artists {
+                &mut self.artists
+            } else {
+                &mut self.albums
+            };
+            let ev = t.mouse_down(cx, cy, false, false, now);
+            let mut out = match ev {
+                Some(ev) => self.pane_event(artists, ev, view, mods.shift),
+                None => vec![],
+            };
+            out.push(LibAction::Redraw);
+            return out;
         }
         if l.table.contains(cx, cy) {
             self.focus = Zone::List;
@@ -448,11 +739,32 @@ impl LibraryWindow {
                 h: y + grab_y,
             }],
             Some(Drag::Splitter { grab }) => {
-                let before = self.tree_w;
-                self.tree_w = cx - grab;
+                let before = self.geometry.tree_w;
+                self.geometry.tree_w = cx - grab;
                 self.relayout();
-                if self.tree_w != before {
+                if self.geometry.tree_w != before {
                     self.sync(view);
+                    vec![LibAction::Redraw]
+                } else {
+                    vec![]
+                }
+            }
+            Some(Drag::PaneH { grab }) => {
+                let before = self.geometry.pane_h;
+                self.geometry.pane_h = cy - grab - self.artists.rect.y;
+                self.relayout();
+                if self.geometry.pane_h != before {
+                    self.sync(view);
+                    vec![LibAction::Redraw]
+                } else {
+                    vec![]
+                }
+            }
+            Some(Drag::PaneV { grab }) => {
+                let before = self.geometry.artist_w;
+                self.geometry.artist_w = (cx - grab - self.artists.rect.x).max(1);
+                self.relayout();
+                if self.geometry.artist_w != before {
                     vec![LibAction::Redraw]
                 } else {
                     vec![]
@@ -476,6 +788,22 @@ impl LibraryWindow {
                     vec![LibAction::Redraw]
                 } else {
                     vec![]
+                }
+            }
+            Some(d @ (Drag::Artists | Drag::Albums)) => {
+                let artists = d == Drag::Artists;
+                let t = if artists {
+                    &mut self.artists
+                } else {
+                    &mut self.albums
+                };
+                match t.mouse_move(cx, cy) {
+                    Some(ev) => {
+                        let mut out = self.pane_event(artists, ev, view, false);
+                        out.push(LibAction::Redraw);
+                        out
+                    }
+                    None => vec![],
                 }
             }
             Some(Drag::Table) => match self.table.mouse_move(cx, cy) {
@@ -509,24 +837,39 @@ impl LibraryWindow {
                 }
             }
             Some(Drag::Button) => {
-                let purpose = match self.form.mouse_up(cx, cy) {
-                    Some(FormEvent::Clicked(PLAY)) => Some(Purpose::Play),
-                    Some(FormEvent::Clicked(ENQUEUE)) => Some(Purpose::Enqueue),
-                    _ => None,
-                };
                 let mut out = vec![LibAction::Redraw];
-                if let Some(p) = purpose {
-                    out.push(if self.table.sel.is_empty() {
-                        LibAction::All(p)
-                    } else {
-                        LibAction::Selection(p)
-                    });
+                match self.form.mouse_up(cx, cy) {
+                    Some(FormEvent::Clicked(PLAY)) => out.push(self.auto(Purpose::Play)),
+                    Some(FormEvent::Clicked(ENQUEUE)) => out.push(self.auto(Purpose::Enqueue)),
+                    Some(FormEvent::Clicked(DROP)) => {
+                        let l = self.layout();
+                        out.push(LibAction::PlayMenu {
+                            x: CLIENT_X + l.play.x,
+                            y: CLIENT_Y + l.play.y,
+                        });
+                    }
+                    Some(FormEvent::Clicked(CLEAR)) => self.clear_search(view),
+                    _ => {}
                 }
                 out
             }
             Some(Drag::Tree) => {
                 self.tree.mouse_up();
                 vec![]
+            }
+            Some(d @ (Drag::Artists | Drag::Albums)) => {
+                let artists = d == Drag::Artists;
+                let t = if artists {
+                    &mut self.artists
+                } else {
+                    &mut self.albums
+                };
+                let mut out = match t.mouse_up(cx, cy) {
+                    Some(ev) => self.pane_event(artists, ev, view, mods.shift),
+                    None => vec![],
+                };
+                out.push(LibAction::Redraw);
+                out
             }
             Some(Drag::Table) => {
                 let mut out = match self.table.mouse_up(cx, cy) {
@@ -536,9 +879,24 @@ impl LibraryWindow {
                 out.push(LibAction::Redraw);
                 out
             }
-            Some(Drag::Resize { .. } | Drag::Splitter { .. }) => vec![LibAction::Redraw],
+            Some(
+                Drag::Resize { .. }
+                | Drag::Splitter { .. }
+                | Drag::PaneH { .. }
+                | Drag::PaneV { .. },
+            ) => {
+                vec![LibAction::Redraw]
+            }
             None => vec![],
         }
+    }
+
+    /// Empties the search box and shows everything again at once.
+    fn clear_search(&mut self, view: &mut LibraryView) {
+        self.form.set_text(SEARCH, "");
+        view.set_search("", Instant::now());
+        view.apply_search();
+        self.sync(view);
     }
 
     /// Right button pressed at a window point.
@@ -555,6 +913,20 @@ impl LibraryWindow {
                 }
                 None => vec![],
             };
+        }
+        for (artists, rect) in [(true, l.artists), (false, l.albums)] {
+            if rect.contains(cx, cy) {
+                self.focus = if artists { Zone::Artists } else { Zone::Albums };
+                let t = if artists {
+                    &mut self.artists
+                } else {
+                    &mut self.albums
+                };
+                if let Some(ev) = t.right_click(cx, cy) {
+                    self.pane_event(artists, ev, view, false);
+                }
+                return vec![LibAction::Redraw];
+            }
         }
         if l.tree.contains(cx, cy) {
             self.focus = Zone::Tree;
@@ -583,6 +955,15 @@ impl LibraryWindow {
         let l = self.layout();
         if l.tree.contains(cx, cy) {
             return self.tree.wheel(notches);
+        }
+        for (rect, t) in [(l.artists, &mut self.artists), (l.albums, &mut self.albums)] {
+            if rect.contains(cx, cy) {
+                return if shift {
+                    t.hwheel(notches).is_some()
+                } else {
+                    t.wheel(notches).is_some()
+                };
+            }
         }
         if shift {
             return self.table.hwheel(notches).is_some();
@@ -620,9 +1001,13 @@ impl LibraryWindow {
             return Some(vec![LibAction::Close]);
         }
         if code == Tab && plain {
-            let order = [Zone::Search, Zone::Tree, Zone::List];
-            let i = order.iter().position(|z| *z == self.focus).unwrap_or(0);
-            self.focus = order[if mods.shift { (i + 2) % 3 } else { (i + 1) % 3 }];
+            let n = ZONES.len();
+            let i = ZONES.iter().position(|z| *z == self.focus).unwrap_or(0);
+            self.focus = ZONES[if mods.shift {
+                (i + n - 1) % n
+            } else {
+                (i + 1) % n
+            }];
             return Some(vec![LibAction::Redraw]);
         }
         let redraw = Some(vec![LibAction::Redraw]);
@@ -648,10 +1033,7 @@ impl LibraryWindow {
                         redraw
                     }
                     Escape => {
-                        self.form.set_text(SEARCH, "");
-                        view.set_search("", now);
-                        view.apply_search();
-                        self.sync(view);
+                        self.clear_search(view);
                         redraw
                     }
                     _ => {
@@ -676,7 +1058,7 @@ impl LibraryWindow {
                     let t = self.tree.rect;
                     return Some(vec![LibAction::TreeMenu {
                         x: CLIENT_X + t.x + 20,
-                        y: CLIENT_Y + t.y + (k + 1) * 14,
+                        y: CLIENT_Y + t.y + (k + 1) * self.tree.row_height(),
                     }]);
                 }
                 if !plain {
@@ -688,6 +1070,23 @@ impl LibraryWindow {
                 }
                 redraw
             }
+            Zone::Artists | Zone::Albums => {
+                if !(plain || (mods.shift && !mods.ctrl && !mods.alt)) {
+                    return None;
+                }
+                let artists = self.focus == Zone::Artists;
+                let k = nav_key(code)?;
+                let t = if artists {
+                    &mut self.artists
+                } else {
+                    &mut self.albums
+                };
+                let mut out = vec![LibAction::Redraw];
+                if let Some(ev) = t.key(k, false) {
+                    out.extend(self.pane_event(artists, ev, view, mods.shift));
+                }
+                Some(out)
+            }
             Zone::List => {
                 let (c, a, s) = (mods.ctrl, mods.alt, mods.shift);
                 let act = |p| Some(vec![LibAction::Selection(p)]);
@@ -697,7 +1096,8 @@ impl LibraryWindow {
                         redraw
                     }
                     (Enter | NumpadEnter, false, false, s) => {
-                        act(if s { Purpose::Enqueue } else { Purpose::Play })
+                        let row = self.table.sel.cursor.or(self.table.sel.first())?;
+                        Some(self.activate(row, s, view))
                     }
                     (KeyQ, false, false, false) => act(Purpose::PlayNext),
                     (Delete, false, false, false) => act(Purpose::Remove),
@@ -744,6 +1144,14 @@ impl LibraryWindow {
         let mut text = PixelText { fonts, bold: false };
         self.form.focus = (active && self.focus == Zone::Search).then_some(EDIT_INDEX);
         self.form.draw(&mut f, cx, cy, skin, &mut text);
+        if self.prefs.group_buttons {
+            // The arrow of the split Play button.
+            let r = self.layout().extra;
+            let (ax, ay) = (cx + r.x + r.w / 2 - 2, cy + r.y + r.h / 2 - 1);
+            for i in 0..3 {
+                f.fill_rect(ax + i, ay + i, 5 - 2 * i, 1, skin.genex.window_text);
+            }
+        }
         self.tree.draw(
             &mut f,
             cx,
@@ -751,6 +1159,26 @@ impl LibraryWindow {
             skin,
             &mut text,
             active && self.focus == Zone::Tree,
+        );
+        let mut artist_cell = |row: usize, col: usize| view.artist_cell(row, col);
+        self.artists.draw(
+            &mut f,
+            cx,
+            cy,
+            skin,
+            &mut text,
+            active && self.focus == Zone::Artists,
+            &mut artist_cell,
+        );
+        let mut album_cell = |row: usize, col: usize| view.album_cell(row, col);
+        self.albums.draw(
+            &mut f,
+            cx,
+            cy,
+            skin,
+            &mut text,
+            active && self.focus == Zone::Albums,
+            &mut album_cell,
         );
         let mut cell = |row: usize, col: usize| view.track(row).map(|t| view::cell(t, col));
         self.table.draw(
@@ -780,13 +1208,25 @@ impl LibraryWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nulamp_library::{Capabilities, SortKey, Track, TrackId, TrackPage, TrackSummary};
+    use crate::library::service::Request;
+    use nulamp_library::{
+        AlbumFacet, ArtistFacet, Capabilities, SortKey, Track, TrackId, TrackPage, TrackSummary,
+    };
     use std::time::Duration;
 
     fn view_with_rows(n: usize) -> LibraryView {
         let mut v =
             LibraryView::new(&[("local".into(), "Local library".into(), Capabilities::SCAN)]);
-        v.take_requests();
+        let reqs = v.take_requests();
+        let token = |want_artists: bool| {
+            reqs.iter()
+                .find_map(|r| match r {
+                    Request::Artists { token, .. } if want_artists => Some(*token),
+                    Request::Albums { token, .. } if !want_artists => Some(*token),
+                    _ => None,
+                })
+                .unwrap()
+        };
         let tracks = (0..n.min(view::PAGE_ROWS))
             .map(|i| {
                 let mut t = Track {
@@ -795,6 +1235,7 @@ mod tests {
                     length_ms: 125_000,
                     rating: (i % 6) as u8,
                     play_count: i as u64,
+                    last_played: Some(1_760_227_200 + i as i64 * 60),
                     ..Track::default()
                 };
                 for (k, val) in [
@@ -826,6 +1267,36 @@ mod tests {
                 length_ms: n as u64 * 125_000,
             },
         );
+        v.on_artists(
+            token(true),
+            Ok(vec![
+                ArtistFacet {
+                    name: "Other".into(),
+                    albums: 1,
+                    tracks: 2,
+                },
+                ArtistFacet {
+                    name: "The Band".into(),
+                    albums: 2,
+                    tracks: n as u64,
+                },
+            ]),
+        );
+        v.on_albums(
+            token(false),
+            Ok(vec![
+                AlbumFacet {
+                    name: "First Album".into(),
+                    year: Some(1999),
+                    tracks: n as u64,
+                },
+                AlbumFacet {
+                    name: "Second".into(),
+                    year: None,
+                    tracks: 1,
+                },
+            ]),
+        );
         v.on_children(
             "local",
             "",
@@ -840,7 +1311,7 @@ mod tests {
     }
 
     fn window(v: &mut LibraryView) -> LibraryWindow {
-        let mut w = LibraryWindow::new(DEFAULT_SIZE, DEFAULT_TREE_W, &[]);
+        let mut w = LibraryWindow::new(DEFAULT_SIZE, Geometry::default(), &[]);
         w.sync(v);
         v.take_requests();
         w
@@ -849,6 +1320,12 @@ mod tests {
     /// Window point of a list row's first column.
     fn row_point(w: &LibraryWindow, row: usize) -> (i32, i32) {
         let b = w.table.body_rect();
+        (CLIENT_X + b.x + 10, CLIENT_Y + b.y + row as i32 * 14 + 4)
+    }
+
+    /// Window point of a pane row's first column.
+    fn pane_point(t: &Table, row: usize) -> (i32, i32) {
+        let b = t.body_rect();
         (CLIENT_X + b.x + 10, CLIENT_Y + b.y + row as i32 * 14 + 4)
     }
 
@@ -911,7 +1388,24 @@ mod tests {
             c.empty_header_bg,
         ];
         assert!(only_colors(&f, header, &head, c.header_text, "header") > 100);
-        // Tree (not focused: inactive selection colours).
+        // Panes: "All" row, facets and the picked row (inactive selection colours).
+        for (pane, what) in [(&w.artists, "artists"), (&w.albums, "albums")] {
+            let b = pane.body_rect();
+            let area = Rect::new(b.x, b.y, b.w, 3 * 14);
+            let pc = [
+                c.item_bg,
+                c.item_fg,
+                c.alt_row_bg,
+                c.alt_row_fg,
+                c.selbar_bg_inactive,
+                c.selbar_text_inactive,
+                c.divider,
+            ];
+            let n = only_colors(&f, area, &pc, c.item_fg, what)
+                + only_colors(&f, area, &pc, c.selbar_text_inactive, what);
+            assert!(n > 30, "{what} text");
+        }
+        // Tree (not focused: inactive selection colours), with its icons.
         let tr = w.tree.rect;
         let tree = Rect::new(tr.x + 1, tr.y + 1, tr.w - 2, tr.h - 2);
         let tc = [
@@ -933,21 +1427,43 @@ mod tests {
 
     #[test]
     fn layout_fits_minimum_and_default_sizes() {
-        for (w, h) in [(275, 116), DEFAULT_SIZE, (1000, 725)] {
-            let l = layout(w, h, DEFAULT_TREE_W);
-            let (cw, ch) = (w - 19, h - 34);
-            for r in [l.search, l.tree, l.table, l.play, l.status] {
-                assert!(r.x >= 0 && r.y >= 0, "{w}x{h} {r:?}");
-                assert!(r.x + r.w <= cw && r.y + r.h <= ch, "{w}x{h} {r:?}");
+        for grouped in [true, false] {
+            for (w, h) in [(275, 116), (275, 232), DEFAULT_SIZE, (1000, 725)] {
+                let l = layout(w, h, Geometry::default(), grouped);
+                let (cw, ch) = (w - 19, h - 34);
+                for r in [
+                    l.search, l.clear, l.tree, l.artists, l.albums, l.table, l.play, l.extra,
+                    l.status,
+                ] {
+                    assert!(r.x >= 0 && r.y >= 0, "{w}x{h} {r:?}");
+                    assert!(r.x + r.w <= cw && r.y + r.h <= ch, "{w}x{h} {r:?}");
+                }
+                assert!(l.tree.x + l.tree.w <= l.artists.x);
+                assert!(l.artists.x + l.artists.w <= l.albums.x);
+                assert!(l.artists.y + l.artists.h <= l.table.y);
+                assert!(l.search.x + l.search.w <= l.clear.x, "{w}x{h}");
+                assert!(l.play.x + l.play.w <= l.extra.x);
             }
-            assert!(l.tree.x + l.tree.w <= l.table.x);
         }
-        assert_eq!(layout(275, 116, 500).tree.w, 256 - 120);
-        assert_eq!(layout(275, 116, 10).tree.w, MIN_TREE_W);
+        let g = |tree_w| Geometry {
+            tree_w,
+            ..Geometry::default()
+        };
+        assert_eq!(layout(275, 116, g(500), true).tree.w, 256 - 120);
+        assert_eq!(layout(275, 116, g(10), true).tree.w, MIN_TREE_W);
+        // The panes fill the right side and the list keeps a minimum height.
+        let l = layout(DEFAULT_SIZE.0, DEFAULT_SIZE.1, Geometry::default(), true);
+        assert_eq!(l.artists.y, l.albums.y);
+        assert_eq!(l.albums.x + l.albums.w, l.table.x + l.table.w);
+        let tall = Geometry {
+            pane_h: 5000,
+            ..Geometry::default()
+        };
+        assert!(layout(DEFAULT_SIZE.0, DEFAULT_SIZE.1, tall, true).table.h >= MIN_TABLE_H);
     }
 
     #[test]
-    fn resize_snaps_and_splitter_moves() {
+    fn resize_snaps_and_splitters_move() {
         let mut v = view_with_rows(3);
         let mut w = window(&mut v);
         assert!(w.in_grip(w.w - 3, w.h - 3));
@@ -967,14 +1483,38 @@ mod tests {
         assert!(w.set_size(DEFAULT_SIZE.0 + 30, DEFAULT_SIZE.1 + 10));
         assert_eq!((w.w, w.h), (DEFAULT_SIZE.0 + 50, DEFAULT_SIZE.1 + 29));
         w.mouse_up(gx + 30, gy + 10, Mods::NONE, &mut v);
-        // Splitter.
+        let now = Instant::now();
+        // Tree splitter.
         let s = w.layout().splitter;
         let (sx, sy) = (CLIENT_X + s.x + 2, CLIENT_Y + s.y + 10);
-        w.mouse_down(sx, sy, Mods::NONE, &mut v, Instant::now());
+        w.mouse_down(sx, sy, Mods::NONE, &mut v, now);
         w.mouse_move(sx + 40, sy, &mut v);
         w.mouse_up(sx + 40, sy, Mods::NONE, &mut v);
-        assert_eq!(w.tree_w, DEFAULT_TREE_W + 40);
-        assert_eq!(w.table.rect.x, 4 + w.tree_w + SPLIT);
+        assert_eq!(w.geometry.tree_w, DEFAULT_TREE_W + 40);
+        assert_eq!(w.artists.rect.x, 4 + w.geometry.tree_w + SPLIT);
+        // Splitter between the panes and the list.
+        let h = w.layout().hsplit;
+        let (hx, hy) = (CLIENT_X + h.x + 20, CLIENT_Y + h.y + 2);
+        let before = (w.artists.rect.h, w.table.rect.h);
+        w.mouse_down(hx, hy, Mods::NONE, &mut v, now);
+        w.mouse_move(hx, hy + 20, &mut v);
+        w.mouse_up(hx, hy + 20, Mods::NONE, &mut v);
+        assert_eq!(w.artists.rect.h, before.0 + 20);
+        assert_eq!(w.table.rect.h, before.1 - 20);
+        assert_eq!(w.geometry.pane_h, before.0 + 20);
+        // Splitter between the artist and the album pane.
+        let p = w.layout().pane_split;
+        let (px, py) = (CLIENT_X + p.x + 2, CLIENT_Y + p.y + 20);
+        let aw = w.artists.rect.w;
+        w.mouse_down(px, py, Mods::NONE, &mut v, now);
+        w.mouse_move(px - 30, py, &mut v);
+        w.mouse_up(px - 30, py, Mods::NONE, &mut v);
+        assert_eq!(w.artists.rect.w, aw - 30);
+        assert_eq!(w.geometry.artist_w, aw - 30);
+        assert_eq!(w.albums.rect.x, w.artists.rect.x + w.artists.rect.w + SPLIT);
+        // The first pane column follows the pane's width.
+        let cols: i32 = w.artists.columns.iter().map(|c| c.width).sum();
+        assert_eq!(cols, w.artists.rect.w - 2 - nulamp_skinui::SCROLLBAR_W);
     }
 
     #[test]
@@ -1014,29 +1554,79 @@ mod tests {
         w.mouse_down(x5, y5, Mods::SHIFT, &mut v, now + Duration::from_secs(1));
         w.mouse_up(x5, y5, Mods::SHIFT, &mut v);
         assert_eq!(w.table.sel.ranges(), [(2, 6)]);
-        // Double-click plays the selection; with Shift it enqueues.
+        // Double-click plays the whole list from that row; with Shift it enqueues the
+        // selection.
         let t = now + Duration::from_secs(2);
         w.mouse_down(x5, y5, Mods::NONE, &mut v, t);
         w.mouse_up(x5, y5, Mods::NONE, &mut v);
         let acts = w.mouse_down(x5, y5, Mods::NONE, &mut v, t + Duration::from_millis(50));
-        assert!(acts.contains(&LibAction::Selection(Purpose::Play)));
+        assert!(acts.contains(&LibAction::PlayAllFrom(5)), "{acts:?}");
+        w.table.sel.set_only(5);
         let acts = w.key(KeyCode::Enter, Mods::SHIFT, None, &mut v, t).unwrap();
         assert_eq!(acts, [LibAction::Selection(Purpose::Enqueue)]);
         // The listing starts in the node's order (artist), shown in the header.
-        assert_eq!(w.table.sort, Some((1, false)));
+        assert_eq!(w.table.sort, Some((0, false)));
         // A header click sorts by that column; a second click reverses.
         let b = w.table.body_rect();
-        let hx = CLIENT_X + b.x + COLUMNS[0].width + COLUMNS[1].width + 30;
+        let hx = CLIENT_X + b.x + COLUMNS[0].width + COLUMNS[1].width + COLUMNS[2].width + 30;
         let hy = CLIENT_Y + w.table.rect.y + 5;
         w.mouse_down(hx, hy, Mods::NONE, &mut v, t);
         w.mouse_up(hx, hy, Mods::NONE, &mut v);
         assert_eq!(v.sort(), Some(Sort::asc(SortKey::Title)));
-        assert_eq!(w.table.sort, Some((2, false)));
+        assert_eq!(w.table.sort, Some((3, false)));
         assert!(w.table.sel.is_empty(), "a new order clears the selection");
         w.mouse_down(hx, hy, Mods::NONE, &mut v, t);
         w.mouse_up(hx, hy, Mods::NONE, &mut v);
         assert_eq!(v.sort(), Some(Sort::desc(SortKey::Title)));
-        assert_eq!(w.table.sort, Some((2, true)));
+        assert_eq!(w.table.sort, Some((3, true)));
+    }
+
+    #[test]
+    fn activation_follows_the_options() {
+        let mut v = view_with_rows(20);
+        let mut w = window(&mut v);
+        let now = Instant::now();
+        let mut p = LibraryPrefs::default();
+        let enter = |w: &mut LibraryWindow, v: &mut LibraryView, shift| {
+            w.table.sel.set_only(7);
+            let mods = Mods {
+                shift,
+                ..Mods::NONE
+            };
+            w.key(KeyCode::Enter, mods, None, v, now).unwrap()
+        };
+        assert_eq!(enter(&mut w, &mut v, false), [LibAction::PlayAllFrom(7)]);
+        p.play_all_media = false;
+        w.apply_prefs(&p);
+        assert_eq!(
+            enter(&mut w, &mut v, false),
+            [LibAction::Selection(Purpose::Play)]
+        );
+        p.activate = ActivateAction::Enqueue;
+        w.apply_prefs(&p);
+        assert_eq!(
+            enter(&mut w, &mut v, false),
+            [LibAction::Selection(Purpose::Enqueue)]
+        );
+        p.activate = ActivateAction::PlayNext;
+        w.apply_prefs(&p);
+        assert_eq!(
+            enter(&mut w, &mut v, false),
+            [LibAction::Selection(Purpose::PlayNext)]
+        );
+        // Shift always enqueues.
+        assert_eq!(
+            enter(&mut w, &mut v, true),
+            [LibAction::Selection(Purpose::Enqueue)]
+        );
+        // Play-all has its own switch for stored playlists.
+        p = LibraryPrefs {
+            play_all_media: false,
+            ..LibraryPrefs::default()
+        };
+        w.apply_prefs(&p);
+        v.spec.as_mut().unwrap().node.kind = nulamp_library::NodeKind::Playlist;
+        assert_eq!(enter(&mut w, &mut v, false), [LibAction::PlayAllFrom(7)]);
     }
 
     #[test]
@@ -1049,11 +1639,32 @@ mod tests {
         let acts = w.mouse_up(px, py, Mods::NONE, &mut v);
         assert!(acts.contains(&LibAction::All(Purpose::Play)));
         w.table.sel.set_only(1);
-        let e = w.layout().enqueue;
+        w.mouse_down(px, py, Mods::NONE, &mut v, Instant::now());
+        let acts = w.mouse_up(px, py, Mods::NONE, &mut v);
+        assert!(acts.contains(&LibAction::Selection(Purpose::Play)));
+        // Grouped buttons: the arrow opens the menu next to the Play button.
+        let a = w.layout().extra;
+        let (ax, ay) = (CLIENT_X + a.x + 5, CLIENT_Y + a.y + 5);
+        w.mouse_down(ax, ay, Mods::NONE, &mut v, Instant::now());
+        let acts = w.mouse_up(ax, ay, Mods::NONE, &mut v);
+        assert!(
+            acts.contains(&LibAction::PlayMenu {
+                x: CLIENT_X + p.x,
+                y: CLIENT_Y + p.y
+            }),
+            "{acts:?}"
+        );
+        // Separate buttons.
+        w.apply_prefs(&LibraryPrefs {
+            group_buttons: false,
+            ..LibraryPrefs::default()
+        });
+        let e = w.layout().extra;
         let (ex, ey) = (CLIENT_X + e.x + 5, CLIENT_Y + e.y + 5);
         w.mouse_down(ex, ey, Mods::NONE, &mut v, Instant::now());
         let acts = w.mouse_up(ex, ey, Mods::NONE, &mut v);
         assert!(acts.contains(&LibAction::Selection(Purpose::Enqueue)));
+        assert!(e.w >= 50, "room for the label");
     }
 
     #[test]
@@ -1082,6 +1693,10 @@ mod tests {
         assert!(!v.tick(now + Duration::from_millis(100)));
         assert!(v.tick(now + Duration::from_millis(300)));
         assert_eq!(v.spec.as_ref().unwrap().query, "abb");
+        // The panes are reloaded for the search.
+        let reqs = v.take_requests();
+        assert!(reqs.iter().any(|r| matches!(r, Request::Artists { .. })));
+        assert!(reqs.iter().any(|r| matches!(r, Request::Albums { .. })));
         // Escape clears the search at once; F-keys are left to the shell.
         w.key(KeyCode::Escape, Mods::NONE, None, &mut v, now);
         assert_eq!(v.spec.as_ref().unwrap().query, "");
@@ -1099,6 +1714,151 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn clear_search_button() {
+        let mut v = view_with_rows(5);
+        let mut w = window(&mut v);
+        let now = Instant::now();
+        w.form.set_text(SEARCH, "beat");
+        v.set_search("beat", now);
+        v.apply_search();
+        assert_eq!(v.spec.as_ref().unwrap().query, "beat");
+        let c = w.layout().clear;
+        let (x, y) = (CLIENT_X + c.x + 5, CLIENT_Y + c.y + 5);
+        w.mouse_down(x, y, Mods::NONE, &mut v, now);
+        w.mouse_up(x, y, Mods::NONE, &mut v);
+        assert_eq!(w.search_text(), "");
+        assert_eq!(v.spec.as_ref().unwrap().query, "");
+    }
+
+    #[test]
+    fn panes_filter_the_list() {
+        let mut v = view_with_rows(30);
+        let mut w = window(&mut v);
+        // "All", then the two artists; the "All" row is picked.
+        assert_eq!(w.artists.rows, 3);
+        assert_eq!(w.albums.rows, 3);
+        assert_eq!(w.artists.sel.ranges(), [(0, 1)]);
+        let now = Instant::now();
+        // Clicking an artist filters the list and the albums.
+        let (x, y) = pane_point(&w.artists, 2);
+        w.mouse_down(x, y, Mods::NONE, &mut v, now);
+        w.mouse_up(x, y, Mods::NONE, &mut v);
+        assert_eq!(w.focus, Zone::Artists);
+        let spec = v.spec.as_ref().unwrap();
+        assert_eq!(spec.artist.as_deref(), Some("The Band"));
+        assert_eq!(spec.album, None);
+        let reqs = v.take_requests();
+        assert!(reqs.iter().any(|r| matches!(
+            r,
+            Request::Albums { spec, .. } if spec.artist.as_deref() == Some("The Band")
+        )));
+        assert!(reqs.iter().any(|r| matches!(r, Request::Tracks { .. })));
+        assert_eq!(w.artists.sel.ranges(), [(2, 3)]);
+        assert!(w.table.sel.is_empty());
+        // The albums of the artist arrive.
+        let token = reqs
+            .iter()
+            .find_map(|r| match r {
+                Request::Albums { token, .. } => Some(*token),
+                _ => None,
+            })
+            .unwrap();
+        v.on_albums(
+            token,
+            Ok(vec![AlbumFacet {
+                name: "First Album".into(),
+                year: Some(1999),
+                tracks: 30,
+            }]),
+        );
+        w.sync(&mut v);
+        // An album narrows the list further without reloading the albums.
+        let (x, y) = pane_point(&w.albums, 1);
+        w.mouse_down(x, y, Mods::NONE, &mut v, now + Duration::from_secs(1));
+        w.mouse_up(x, y, Mods::NONE, &mut v);
+        assert_eq!(
+            v.spec.as_ref().unwrap().album.as_deref(),
+            Some("First Album")
+        );
+        let reqs = v.take_requests();
+        assert!(!reqs.iter().any(|r| matches!(r, Request::Albums { .. })));
+        // Clicking "All" removes the filter; clicking below the rows keeps the pick.
+        let (x, y) = pane_point(&w.albums, 0);
+        w.mouse_down(x, y, Mods::NONE, &mut v, now + Duration::from_secs(2));
+        w.mouse_up(x, y, Mods::NONE, &mut v);
+        assert_eq!(v.spec.as_ref().unwrap().album, None);
+        let (x, y) = pane_point(&w.artists, 10);
+        w.mouse_down(x, y, Mods::NONE, &mut v, now + Duration::from_secs(3));
+        w.mouse_up(x, y, Mods::NONE, &mut v);
+        assert_eq!(w.artists.sel.ranges(), [(2, 3)]);
+        // Keys move through the pane; Enter plays everything the pane shows.
+        w.focus = Zone::Artists;
+        w.key(KeyCode::ArrowUp, Mods::NONE, None, &mut v, now);
+        assert_eq!(v.spec.as_ref().unwrap().artist.as_deref(), Some("Other"));
+        let acts = w
+            .key(KeyCode::Enter, Mods::NONE, None, &mut v, now)
+            .unwrap();
+        assert!(acts.contains(&LibAction::All(Purpose::Play)));
+        // A double-click does the same.
+        let t = now + Duration::from_secs(10);
+        let (x, y) = pane_point(&w.artists, 1);
+        w.mouse_down(x, y, Mods::NONE, &mut v, t);
+        w.mouse_up(x, y, Mods::NONE, &mut v);
+        let acts = w.mouse_down(x, y, Mods::NONE, &mut v, t + Duration::from_millis(50));
+        assert!(acts.contains(&LibAction::All(Purpose::Play)), "{acts:?}");
+    }
+
+    #[test]
+    fn pane_headers_sort_the_panes() {
+        let mut v = view_with_rows(30);
+        let mut w = window(&mut v);
+        let now = Instant::now();
+        // The Tracks column header of the artist pane: most tracks first after two clicks.
+        let b = w.artists.body_rect();
+        let tracks_x =
+            CLIENT_X + b.x + w.artists.columns[0].width + w.artists.columns[1].width + 10;
+        let hy = CLIENT_Y + w.artists.rect.y + 5;
+        for _ in 0..2 {
+            w.mouse_down(tracks_x, hy, Mods::NONE, &mut v, now);
+            w.mouse_up(tracks_x, hy, Mods::NONE, &mut v);
+        }
+        assert_eq!(v.artist_sort, (2, true));
+        assert_eq!(v.artists[0].name, "The Band");
+        assert_eq!(w.artists.sort, Some((2, true)));
+        // The picked artist stays picked when the order changes.
+        v.select_artist(Some("Other".into()));
+        w.sync(&mut v);
+        assert_eq!(w.artists.sel.ranges(), [(2, 3)]);
+    }
+
+    #[test]
+    fn options_reach_the_widgets() {
+        let mut v = view_with_rows(3);
+        let mut w = window(&mut v);
+        assert!(w.table.alt_rows && w.artists.alt_rows && w.albums.alt_rows);
+        assert!(w.tree.icons && w.tree.full_row);
+        w.apply_prefs(&LibraryPrefs {
+            alt_rows: false,
+            tree_icons: false,
+            tree_full_row: false,
+            tree_item_height: 24,
+            resize_mode: nulamp_skinui::ResizeMode::WithNext,
+            ..LibraryPrefs::default()
+        });
+        assert!(!w.table.alt_rows && !w.artists.alt_rows && !w.albums.alt_rows);
+        assert!(!w.tree.icons && !w.tree.full_row);
+        assert_eq!(w.tree.item_height, 24);
+        assert_eq!(w.table.resize_mode, nulamp_skinui::ResizeMode::WithNext);
+        // The search text survives the buttons being regrouped.
+        w.form.set_text(SEARCH, "kept");
+        w.apply_prefs(&LibraryPrefs {
+            group_buttons: false,
+            ..LibraryPrefs::default()
+        });
+        assert_eq!(w.search_text(), "kept");
     }
 
     #[test]
@@ -1126,11 +1886,20 @@ mod tests {
             w.key(KeyCode::KeyX, Mods::NONE, Some("x"), &mut v, now)
                 .is_none()
         );
-        // Tab moves through search, tree and list.
-        w.key(KeyCode::Tab, Mods::NONE, None, &mut v, now);
-        assert_eq!(w.focus, Zone::Search);
-        w.key(KeyCode::Tab, Mods::NONE, None, &mut v, now);
-        assert_eq!(w.focus, Zone::Tree);
+        // Tab moves through search, tree, artists, albums and list.
+        for zone in [
+            Zone::Search,
+            Zone::Tree,
+            Zone::Artists,
+            Zone::Albums,
+            Zone::List,
+        ] {
+            w.key(KeyCode::Tab, Mods::NONE, None, &mut v, now);
+            assert_eq!(w.focus, zone);
+        }
+        w.key(KeyCode::Tab, Mods::SHIFT, None, &mut v, now);
+        assert_eq!(w.focus, Zone::Albums);
+        w.focus = Zone::Tree;
         // Down selects "Artists" and lists it.
         w.key(KeyCode::ArrowDown, Mods::NONE, None, &mut v, now);
         assert_eq!(v.spec.as_ref().unwrap().node.id, "artists");
@@ -1163,7 +1932,7 @@ mod tests {
         assert_eq!(w.table.sel.ranges(), [(7, 8)]);
         // Right-click in the tree selects the node and opens the tree menu.
         let t = w.tree.rect;
-        let (tx, ty) = (CLIENT_X + t.x + 40, CLIENT_Y + t.y + 1 + 14 + 4);
+        let (tx, ty) = (CLIENT_X + t.x + 40, CLIENT_Y + t.y + 1 + 18 + 4);
         let acts = w.right_click(tx, ty, &mut v);
         assert!(acts.contains(&LibAction::TreeMenu { x: tx, y: ty }));
         assert_eq!(v.spec.as_ref().unwrap().node.id, "artists");

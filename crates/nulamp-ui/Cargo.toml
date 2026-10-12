@@ -33,6 +33,9 @@ winit = "0.30"
 [lints]
 workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 x11rb = { version = "0.13", features = ["shape", "allow-unsafe-code"] }
 memmap2 = "0.9"
