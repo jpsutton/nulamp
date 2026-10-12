@@ -484,7 +484,7 @@ impl Worker {
                     if remote {
                         let loc = PlaybackLocation {
                             location: t.id.location(),
-                            headers: Vec::new(),
+                            ..PlaybackLocation::default()
                         };
                         items.push((t, loc));
                         continue;

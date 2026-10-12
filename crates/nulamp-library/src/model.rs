@@ -285,6 +285,10 @@ pub enum NodeKind {
     Album,
     Genre,
     Year,
+    /// A television series.
+    Series,
+    /// A season of a series.
+    Season,
     /// A computed list such as "Most played".
     SmartList,
     Playlist,
@@ -401,6 +405,10 @@ pub struct TrackSummary {
 pub struct PlaybackLocation {
     pub location: String,
     pub headers: Vec<(String, String)>,
+    /// The location is a video file (a server's movie or episode): the app decodes its sound
+    /// with FFmpeg and shows its picture. Local files leave it false; the app recognises
+    /// their videos by extension.
+    pub video: bool,
 }
 
 /// A playlist stored by a provider.
