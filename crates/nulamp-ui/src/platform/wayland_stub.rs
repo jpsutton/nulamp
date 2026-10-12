@@ -45,6 +45,10 @@ impl Compound {
         match *self {}
     }
 
+    pub fn add_part_on(&mut self, _: &impl HasWindowHandle) -> Option<usize> {
+        match *self {}
+    }
+
     pub fn remove_part(&mut self, _: usize) {
         match *self {}
     }
