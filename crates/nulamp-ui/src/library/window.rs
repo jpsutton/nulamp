@@ -226,7 +226,11 @@ fn set_rect(w: &mut Widget, r: Rect) {
         | Widget::Edit { rect, .. }
         | Widget::List { rect, .. }
         | Widget::Check { rect, .. }
-        | Widget::TextBox { rect, .. } => *rect = r,
+        | Widget::TextBox { rect, .. }
+        | Widget::Radio { rect, .. }
+        | Widget::Slider { rect, .. }
+        | Widget::Group { rect, .. }
+        | Widget::Image { rect, .. } => *rect = r,
     }
 }
 
@@ -975,6 +979,14 @@ impl LibraryWindow {
             CLIENT_X + b.x + 20,
             CLIENT_Y + b.y + (k + 1) * self.table.row_height(),
         )
+    }
+
+    /// Pasted text for the search box.
+    pub fn paste(&mut self, text: &str, view: &mut LibraryView, now: Instant) {
+        self.form.focus_id(SEARCH);
+        if self.form.text_input(text) == Some(FormEvent::Changed(SEARCH)) {
+            view.set_search(&self.search_text(), now);
+        }
     }
 
     /// A key press. `None` when the window does not use the key (the shell then applies

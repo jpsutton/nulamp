@@ -1,6 +1,6 @@
 //! The network thread: connects, resolves playlist URLs, strips in-band metadata into the
-//! stream fields and fills the ring buffer. Reconnects live streams (07 §8.7) and serves
-//! Range requests for seeks.
+//! stream fields and fills the ring buffer or the spool. Reconnects live streams (07 §8.7),
+//! resumes dropped files and serves Range requests for seeks.
 
 use std::io::Read;
 use std::net::TcpStream;
@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 
 use nulamp_playlist::{Format, Resolver, is_hls};
 
-use super::http::{Client, Response, io_error};
+use super::http::{Client, OriginHeaders, Response, io_error};
 use super::icy::{IcyParser, parse_metadata};
 use super::shared::{Phase, Shared, State, prebuffer_percent};
+use super::spool::{self, Spool};
 use super::url::{Url, is_stream_location};
 use super::{CredentialStore, StreamConfig, StreamError};
 
@@ -83,6 +84,10 @@ pub(crate) fn hint_for(content_type: &str) -> Option<&'static str> {
         "audio/flac" | "audio/x-flac" => "flac",
         "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
         "audio/mp4" | "audio/x-m4a" => "m4a",
+        "audio/aiff" | "audio/x-aiff" => "aiff",
+        "audio/x-matroska" | "audio/matroska" => "mkv",
+        "audio/webm" => "webm",
+        "audio/x-caf" => "caf",
         _ => return None,
     })
 }
@@ -148,10 +153,26 @@ fn apply_headers(st: &mut State, resp: &Response, url: &Url, first: bool) {
             "aac" | "aacp" => Some("aac"),
             "ogg" | "oga" | "opus" => Some("ogg"),
             "flac" => Some("flac"),
+            "aiff" | "aif" => Some("aiff"),
+            "mka" | "mkv" => Some("mkv"),
+            "webm" => Some("webm"),
+            "caf" => Some("caf"),
             _ => None,
         });
     st.total_len = resp.total_length();
-    st.seekable = st.total_len.is_some() && resp.accepts_ranges() && st.fields.metaint == 0;
+    let live = st.fields.metaint > 0;
+    let ranged = st.total_len.is_some() && resp.accepts_ranges() && !live;
+    let finite = !live && (st.total_len.is_some() || st.finite);
+    // Very large files with Range support seek with requests rather than fill the disk, and so
+    // do video files: FFmpeg reads their index at the end before playing (NET15).
+    let too_big =
+        ranged && (st.video.is_some() || st.total_len.is_some_and(|t| t > spool::MAX_RANGED));
+    if finite && st.spool_enabled && !too_big {
+        st.spool = Spool::new()
+            .inspect_err(|e| log::warn!("stream: no spool file: {e}"))
+            .ok();
+    }
+    st.seekable = ranged || st.spool.is_some();
     st.headers_ready = true;
 }
 
@@ -170,6 +191,7 @@ fn pump(shared: &Shared, resp: &mut Response, epoch: u64, skip: u64) -> (u64, En
     let (mut audio, mut blocks) = (Vec::new(), Vec::new());
     let mut skip = skip;
     let mut total = 0u64;
+    let mut first = skip == 0;
     loop {
         let n = match resp.body.read(&mut buf) {
             Ok(0) => return (total, End::Eof),
@@ -186,6 +208,9 @@ fn pump(shared: &Shared, resp: &mut Response, epoch: u64, skip: u64) -> (u64, En
         audio.clear();
         blocks.clear();
         icy.feed(&buf[..n], &mut audio, &mut blocks);
+        if std::mem::take(&mut first) && blocks.is_empty() {
+            clear_empty_xing(&mut audio);
+        }
         // A server that ignored the Range request: drop the bytes before the offset.
         let drop = (skip as usize).min(audio.len());
         skip -= drop as u64;
@@ -199,7 +224,7 @@ fn pump(shared: &Shared, resp: &mut Response, epoch: u64, skip: u64) -> (u64, En
             let mut st = shared.lock();
             if st.epoch == epoch {
                 // Takes effect when the decoder reaches this byte.
-                let offset = st.pos + st.ring.len() as u64;
+                let offset = st.received();
                 st.pending_meta.push_back((offset, parse_metadata(block)));
             }
         }
@@ -207,6 +232,43 @@ fn pump(shared: &Shared, resp: &mut Response, epoch: u64, skip: u64) -> (u64, En
             return (total, End::Stopped);
         }
         total += (audio.len() - drop) as u64;
+    }
+}
+
+/// A transcoding server streams MP3 with a Xing/Info header that cannot be filled in: it
+/// claims 0 frames, and Symphonia then ends the stream before the first sample. Blanks the
+/// tag so the frame reads as silence and the real length stays unknown. `head` is the start
+/// of the stream; a header that counts frames is left alone.
+fn clear_empty_xing(head: &mut [u8]) {
+    let mut at = 0;
+    if head.starts_with(b"ID3") && head.len() >= 10 {
+        let size = head[6..10]
+            .iter()
+            .fold(0usize, |n, b| n << 7 | (*b & 0x7f) as usize);
+        at = 10 + size;
+    }
+    let Some(frame) = head.get(at..) else {
+        return;
+    };
+    if frame.len() < 4 || frame[0] != 0xff || frame[1] & 0xe0 != 0xe0 {
+        return;
+    }
+    // The tag follows the frame header and the side information (9 to 32 bytes).
+    let end = frame.len().min(4 + 32 + 8);
+    let Some(pos) = frame[4..end]
+        .windows(4)
+        .position(|w| w == b"Xing" || w == b"Info")
+    else {
+        return;
+    };
+    let tag = at + 4 + pos;
+    let flags = head.get(tag + 4..tag + 8);
+    let frames = head.get(tag + 8..tag + 12);
+    if let (Some(flags), Some(frames)) = (flags, frames)
+        && flags[3] & 1 != 0
+        && frames == [0, 0, 0, 0]
+    {
+        head[tag..tag + 4].fill(0);
     }
 }
 
@@ -249,7 +311,7 @@ fn reconnect(
         *tries += 1;
         {
             let mut st = shared.lock();
-            if st.ring.is_empty() {
+            if st.ahead() == 0 {
                 st.phase = Phase::Connecting;
                 shared.cv.notify_all();
             }
@@ -289,7 +351,12 @@ pub(crate) fn run(
     config: StreamConfig,
     credentials: Arc<CredentialStore>,
     location: String,
+    headers: Vec<(String, String)>,
 ) {
+    // Bound to the location as given: playlist entries and redirects elsewhere do not get them.
+    let origin = Url::parse(&location)
+        .ok()
+        .and_then(|u| OriginHeaders::new(&u, &headers));
     let on_connect = |s: &TcpStream| {
         if let Ok(c) = s.try_clone() {
             let mut st = shared.lock();
@@ -303,6 +370,7 @@ pub(crate) fn run(
         config: &config,
         credentials: &credentials,
         on_connect: &on_connect,
+        headers: origin.as_ref(),
     };
     let (url, first) = match open_media(&client, &location) {
         Ok(r) => r,
@@ -331,10 +399,14 @@ pub(crate) fn run(
             }
             if !matches!(end, End::Stopped) {
                 let mut st = shared.lock();
-                let received = st.pos + st.ring.len() as u64;
+                let received = st.received();
                 if st.seekable {
-                    if st.total_len.is_some_and(|t| received < t) && tries < config.reconnect_tries
-                    {
+                    // A spooled file of unknown length is cut short when its connection failed.
+                    let short = match st.total_len {
+                        Some(t) => received < t,
+                        None => matches!(end, End::Error(_)),
+                    };
+                    if short && tries < config.reconnect_tries {
                         // Dropped in the middle of a file: continue where it stopped.
                         tries += 1;
                         st.restart.get_or_insert(received);
@@ -390,6 +462,38 @@ pub(crate) fn run(
 
 #[cfg(test)]
 mod tests {
+    use super::clear_empty_xing;
+
+    /// An ID3v2 tag of `id3` zero bytes, then a frame with a Xing/Info tag counting `frames`.
+    fn mp3_head(id3: usize, tag: &[u8; 4], frames: u32) -> Vec<u8> {
+        let mut v = b"ID3\x03\x00\x00".to_vec();
+        v.extend([0, 0, (id3 >> 7) as u8 & 0x7f, id3 as u8 & 0x7f]);
+        v.extend(vec![0; id3]);
+        v.extend([0xff, 0xfb, 0xd4, 0x00]);
+        v.extend([0; 32]);
+        v.extend(tag);
+        v.extend([0, 0, 0, 1]);
+        v.extend(frames.to_be_bytes());
+        v
+    }
+
+    #[test]
+    fn blanks_xing_with_no_frames() {
+        let mut v = mp3_head(34, b"Xing", 0);
+        clear_empty_xing(&mut v);
+        assert!(!v.windows(4).any(|w| w == b"Xing"));
+    }
+
+    #[test]
+    fn keeps_xing_with_frames_and_other_data() {
+        let mut v = mp3_head(0, b"Info", 1000);
+        let w = v.clone();
+        clear_empty_xing(&mut v);
+        assert_eq!(v, w);
+        let mut junk = vec![1u8; 64];
+        clear_empty_xing(&mut junk);
+        assert_eq!(junk, vec![1u8; 64]);
+    }
     use super::*;
 
     #[test]
@@ -407,6 +511,8 @@ mod tests {
         );
         assert_eq!(hint_for("audio/aacp"), Some("aac"));
         assert_eq!(hint_for("application/ogg"), Some("ogg"));
+        assert_eq!(hint_for("audio/x-aiff"), Some("aiff"));
+        assert_eq!(hint_for("audio/x-matroska"), Some("mkv"));
         assert_eq!(hint_for("text/html"), None);
     }
 }

@@ -197,6 +197,12 @@ pub struct EngineStatus {
     pub position_ms: u64,
     pub kbps: Option<u32>,
     pub in_sync: bool,
+    /// The heard track's decoder, as it is now: a network stream learns these once it
+    /// connects, after [`Event::Started`].
+    pub seekable: bool,
+    pub length_ms: Option<u64>,
+    /// See [`Decoder::buffered_ms`].
+    pub buffered_ms: Option<(u64, u64)>,
     pub paused: bool,
     /// Output frames heard so far (visualizer clock).
     pub frames_played: u64,
@@ -214,12 +220,16 @@ struct Track {
     crossfade: bool,
 }
 
+/// A network stream (not a local file or a CD track).
+fn is_network(location: &str) -> bool {
+    nulamp_core::playlist::is_url(location)
+        && !location.starts_with("file://")
+        && !location.starts_with("cda://")
+}
+
 impl Track {
     fn new(token: Token, location: &str, decoder: Box<dyn Decoder>, gain: f32) -> Self {
-        let network = nulamp_core::playlist::is_url(location)
-            && !location.starts_with("file://")
-            && !location.starts_with("cda://");
-        let xf_ok = !network && decoder.info().length_ms.is_some();
+        let xf_ok = !is_network(location) && decoder.info().length_ms.is_some();
         Self {
             token,
             decoder,
@@ -730,7 +740,8 @@ impl Worker {
             return;
         }
         let mut pos = 0;
-        if start_ms > 0 && info.seekable {
+        // A stream that is still connecting cannot tell yet; its decoder seeks once it can.
+        if start_ms > 0 && (info.seekable || is_network(location)) {
             pos = decoder.seek(start_ms).unwrap_or(0);
         }
         self.paused = false;
@@ -1359,8 +1370,16 @@ impl Worker {
                 let heard_is_current = self.current.as_ref().is_some_and(|c| c.token == m.token);
                 if heard_is_current {
                     let c = self.current.as_ref().expect("current");
+                    let info = c.decoder.info();
                     s.kbps = c.decoder.kbps();
                     s.in_sync = c.decoder.in_sync();
+                    s.seekable = info.seekable;
+                    s.length_ms = info.length_ms;
+                    s.buffered_ms = c.decoder.buffered_ms();
+                } else {
+                    s.seekable = m.info.seekable;
+                    s.length_ms = m.info.length_ms;
+                    s.buffered_ms = None;
                 }
             }
             None => {
@@ -1369,6 +1388,9 @@ impl Worker {
                     s.position_ms = 0;
                     s.kbps = None;
                     s.in_sync = false;
+                    s.seekable = false;
+                    s.length_ms = None;
+                    s.buffered_ms = None;
                 }
             }
         }

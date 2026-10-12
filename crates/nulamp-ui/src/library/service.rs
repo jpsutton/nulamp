@@ -9,15 +9,32 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use nulamp_library::{
     AlbumFacet, ArtistFacet, BrowseNode, Capabilities, LibraryEvent, LibraryProvider, LocalLibrary,
     Page, PlaybackLocation, PlaylistInfo, Query, Registry, ScanMode, Sort, Term, TextField, Track,
-    TrackId, TrackPage, TrackSummary, WatchFolder, fold,
+    TrackId, TrackPage, TrackSummary, WatchFolder, fold, jellyfin,
 };
 
 /// The library as handed to the shell by the application.
 #[derive(Clone)]
 pub struct MediaLibrary {
+    /// Shared with the player, which resolves `library://` locations through it.
     pub registry: Arc<Registry>,
     /// The local provider, for watch folders, scans and mapping files to tracks.
     pub local: Option<Arc<LocalLibrary>>,
+}
+
+impl MediaLibrary {
+    /// Replaces the Jellyfin provider with one for `account` (none for `None`, or when the
+    /// account shows no library).
+    pub fn set_jellyfin(&self, account: Option<&jellyfin::Account>) {
+        for p in self.registry.providers() {
+            if p.id().starts_with(jellyfin::PROVIDER_PREFIX) {
+                self.registry.unregister(p.id());
+            }
+        }
+        if let Some(a) = account.filter(|a| a.shown_libraries().next().is_some()) {
+            self.registry
+                .register(Arc::new(nulamp_library::JellyfinProvider::new(a.clone())));
+        }
+    }
 }
 
 /// A track listing: provider, node, search text, the artist and album picked in the panes
@@ -366,18 +383,25 @@ impl Worker {
                 let Some(p) = self.provider(&spec.provider) else {
                     return;
                 };
-                let result = p
-                    .artist_facets(&spec.node, &spec.query_with(false, false))
-                    .map_err(|e| e.to_string());
+                // The default grouping would download the whole listing of a remote provider.
+                let result = if p.capabilities().contains(Capabilities::REMOTE) {
+                    Ok(Vec::new())
+                } else {
+                    p.artist_facets(&spec.node, &spec.query_with(false, false))
+                        .map_err(|e| e.to_string())
+                };
                 self.send(Response::Artists { token, result });
             }
             Request::Albums { spec, token } => {
                 let Some(p) = self.provider(&spec.provider) else {
                     return;
                 };
-                let result = p
-                    .album_facets(&spec.node, &spec.query_with(true, false))
-                    .map_err(|e| e.to_string());
+                let result = if p.capabilities().contains(Capabilities::REMOTE) {
+                    Ok(Vec::new())
+                } else {
+                    p.album_facets(&spec.node, &spec.query_with(true, false))
+                        .map_err(|e| e.to_string())
+                };
                 self.send(Response::Albums { token, result });
             }
             Request::Collect {
@@ -465,17 +489,26 @@ impl Worker {
                 played_ms,
                 length_ms,
             } => {
-                let Some(local) = &self.lib.local else {
-                    return;
-                };
-                let Ok(Some(id)) = local.track_id_for_path(&location) else {
-                    return;
+                // A remote track by its library location, else a local file.
+                let id = match TrackId::from_location(&location) {
+                    Some(id) => id,
+                    None => {
+                        let Some(local) = &self.lib.local else {
+                            return;
+                        };
+                        let Ok(Some(id)) = local.track_id_for_path(&location) else {
+                            return;
+                        };
+                        id
+                    }
                 };
                 let length = match length_ms {
-                    0 => local
-                        .track(&id)
+                    0 => self
+                        .lib
+                        .registry
+                        .provider_for(&id)
                         .ok()
-                        .flatten()
+                        .and_then(|p| p.track(&id).ok().flatten())
                         .map(|t| t.length_ms)
                         .unwrap_or(0),
                     l => l,
@@ -523,6 +556,7 @@ impl Worker {
             return;
         };
         let q = spec.query();
+        let remote = p.capabilities().contains(Capabilities::REMOTE);
         let mut items = Vec::new();
         for &(start, end) in ranges {
             let mut at = start;
@@ -541,6 +575,16 @@ impl Worker {
                 }
                 at += tracks.len();
                 for t in tracks {
+                    // Remote tracks go into the playlist by their library location, resolved
+                    // when they play.
+                    if remote {
+                        let loc = PlaybackLocation {
+                            location: t.id.location(),
+                            ..PlaybackLocation::default()
+                        };
+                        items.push((t, loc));
+                        continue;
+                    }
                     match p.resolve_playback(&t.id) {
                         Ok(loc) => items.push((t, loc)),
                         Err(e) => log::warn!("cannot resolve {}: {e}", t.location),
@@ -627,7 +671,7 @@ mod tests {
     use std::time::Duration;
 
     fn service() -> LibraryService {
-        let mut registry = Registry::new();
+        let registry = Registry::new();
         registry.register(Arc::new(MockProvider::sample()));
         LibraryService::start(MediaLibrary {
             registry: Arc::new(registry),
@@ -710,10 +754,79 @@ mod tests {
             Response::Collected { purpose, items } => {
                 assert_eq!(purpose, Purpose::Enqueue);
                 assert_eq!(items.len(), 2);
-                assert!(items[0].1.location.starts_with("http://mock/stream/"));
-                assert!(!items[0].1.headers.is_empty());
+                // Remote tracks are queued by library location, resolved when they play.
+                assert_eq!(items[0].1.location, items[0].0.id.location());
+                assert!(items[0].1.location.starts_with("library://mock/"));
+                assert!(items[0].1.headers.is_empty());
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn plays_of_library_locations_are_recorded() {
+        let mock = Arc::new(MockProvider::sample());
+        let registry = Registry::new();
+        registry.register(mock.clone());
+        let s = LibraryService::start(MediaLibrary {
+            registry: Arc::new(registry),
+            local: None,
+        });
+        let id = TrackId::new("mock", "2");
+        s.send(Request::FinishPlay {
+            location: id.location(),
+            played_ms: 1000,
+            length_ms: 0,
+        });
+        s.send(Request::FinishPlay {
+            location: id.location(),
+            played_ms: 120_000,
+            length_ms: 0,
+        });
+        // Wait for the worker: the mock announces the recorded play.
+        match next(&s) {
+            Response::Event { event, .. } => assert_eq!(event, LibraryEvent::TracksChanged),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(mock.track(&id).unwrap().unwrap().play_count, 1);
+    }
+
+    #[test]
+    fn jellyfin_provider_follows_the_account() {
+        let lib = MediaLibrary {
+            registry: Arc::new(Registry::new()),
+            local: None,
+        };
+        let mut account = jellyfin::Account {
+            server_url: "http://127.0.0.1:9".into(),
+            user_id: "u1".into(),
+            token: "t".into(),
+            libraries: vec![jellyfin::Library {
+                id: "l".into(),
+                name: "Music".into(),
+                collection_type: jellyfin::MUSIC.into(),
+                enabled: true,
+            }],
+            ..Default::default()
+        };
+        lib.set_jellyfin(Some(&account));
+        let ids = |l: &MediaLibrary| {
+            l.registry
+                .providers()
+                .iter()
+                .map(|p| p.id().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&lib), ["jellyfin-u1"]);
+        account.user_id = "u2".into();
+        lib.set_jellyfin(Some(&account));
+        assert_eq!(ids(&lib), ["jellyfin-u2"], "replaced, not added");
+        account.libraries[0].enabled = false;
+        lib.set_jellyfin(Some(&account));
+        assert!(ids(&lib).is_empty(), "no library shown");
+        account.libraries[0].enabled = true;
+        lib.set_jellyfin(Some(&account));
+        lib.set_jellyfin(None);
+        assert!(ids(&lib).is_empty());
     }
 }

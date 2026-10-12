@@ -6,13 +6,17 @@
 
 pub mod cd;
 #[cfg(nulamp_ffmpeg)]
+mod demux;
+#[cfg(nulamp_ffmpeg)]
 pub mod ffmpeg_decoder;
+mod ffmpeg_io;
 pub mod midi_decoder;
 #[cfg(nulamp_openmpt)]
 pub mod module_decoder;
 pub mod opus_decoder;
 pub mod stream;
 pub mod symphonia_decoder;
+pub mod video;
 
 use std::fmt;
 
@@ -87,6 +91,12 @@ pub trait Decoder: Send {
     /// Current bit rate in kbps (changes for VBR).
     fn kbps(&self) -> Option<u32>;
 
+    /// The time span whose data is at hand without waiting for the network, as `(start, end)`
+    /// in ms; `end` is `u64::MAX` when everything is. `None` for local files and live streams.
+    fn buffered_ms(&self) -> Option<(u64, u64)> {
+        None
+    }
+
     /// "In sync" state for the status light (02 §4). Network decoders clear it while buffering.
     fn in_sync(&self) -> bool {
         true
@@ -119,6 +129,26 @@ pub struct FileTags {
 pub fn ffmpeg_tags(location: &str) -> Option<FileTags> {
     #[cfg(nulamp_ffmpeg)]
     return ffmpeg_decoder::read_tags(location);
+    #[cfg(not(nulamp_ffmpeg))]
+    {
+        let _ = location;
+        None
+    }
+}
+
+/// Chooses the audio stream (0-based) of a file with several, or `None` for its default one.
+/// The file then opens through FFmpeg the next time it is played. Does nothing without FFmpeg.
+pub fn set_audio_track(location: &str, index: Option<usize>) {
+    #[cfg(nulamp_ffmpeg)]
+    ffmpeg_decoder::set_audio_track(location, index);
+    #[cfg(not(nulamp_ffmpeg))]
+    let _ = (location, index);
+}
+
+/// The audio stream chosen for a location with [`set_audio_track`].
+pub fn audio_track(location: &str) -> Option<usize> {
+    #[cfg(nulamp_ffmpeg)]
+    return ffmpeg_decoder::audio_track(location);
     #[cfg(not(nulamp_ffmpeg))]
     {
         let _ = location;

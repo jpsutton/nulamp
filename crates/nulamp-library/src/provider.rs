@@ -1,7 +1,7 @@
 //! The provider trait and the registry of providers.
 
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::error::{Error, Result};
 use crate::model::{
@@ -85,9 +85,16 @@ pub trait LibraryProvider: Send + Sync {
         Err(Error::Unsupported)
     }
 
+    /// Whether playing `played_ms` of a track `length_ms` long counts as a play
+    /// ([`Registry::finish_play`]). The default is [`crate::should_count_play`]; a provider
+    /// with videos asks for more of a film than of a song.
+    fn counts_play(&self, _id: &TrackId, played_ms: u64, length_ms: u64) -> bool {
+        crate::should_count_play(played_ms, length_ms)
+    }
+
     /// Records one finished play ([`Capabilities::RECORD_PLAY`]). The caller decides whether
-    /// a play counts, normally with [`crate::should_count_play`]; `played_ms` is passed on to
-    /// providers that report listening time.
+    /// a play counts, normally with [`LibraryProvider::counts_play`]; `played_ms` is passed on
+    /// to providers that report listening time.
     fn record_play(&self, _id: &TrackId, _played_ms: u64) -> Result<()> {
         Err(Error::Unsupported)
     }
@@ -155,10 +162,11 @@ impl Subscribers {
     }
 }
 
-/// The providers known to the app, in registration order.
+/// The providers known to the app, in registration order. Providers can be added and removed
+/// while the registry is shared (for example when the user connects a server).
 #[derive(Default)]
 pub struct Registry {
-    providers: Vec<Arc<dyn LibraryProvider>>,
+    providers: RwLock<Vec<Arc<dyn LibraryProvider>>>,
 }
 
 impl Registry {
@@ -166,24 +174,35 @@ impl Registry {
         Self::default()
     }
 
+    fn read(&self) -> RwLockReadGuard<'_, Vec<Arc<dyn LibraryProvider>>> {
+        self.providers.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, Vec<Arc<dyn LibraryProvider>>> {
+        self.providers.write().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Adds a provider, replacing one with the same id.
-    pub fn register(&mut self, provider: Arc<dyn LibraryProvider>) {
-        self.providers.retain(|p| p.id() != provider.id());
-        self.providers.push(provider);
+    pub fn register(&self, provider: Arc<dyn LibraryProvider>) {
+        let mut providers = self.write();
+        providers.retain(|p| p.id() != provider.id());
+        providers.push(provider);
     }
 
     /// Removes and returns the provider with `id`.
-    pub fn unregister(&mut self, id: &str) -> Option<Arc<dyn LibraryProvider>> {
-        let i = self.providers.iter().position(|p| p.id() == id)?;
-        Some(self.providers.remove(i))
+    pub fn unregister(&self, id: &str) -> Option<Arc<dyn LibraryProvider>> {
+        let mut providers = self.write();
+        let i = providers.iter().position(|p| p.id() == id)?;
+        Some(providers.remove(i))
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<dyn LibraryProvider>> {
-        self.providers.iter().find(|p| p.id() == id).cloned()
+        self.read().iter().find(|p| p.id() == id).cloned()
     }
 
-    pub fn providers(&self) -> &[Arc<dyn LibraryProvider>] {
-        &self.providers
+    /// The registered providers, in registration order.
+    pub fn providers(&self) -> Vec<Arc<dyn LibraryProvider>> {
+        self.read().clone()
     }
 
     /// The provider that owns `track`.
@@ -197,14 +216,13 @@ impl Registry {
         self.provider_for(track)?.resolve_playback(track)
     }
 
-    /// Records a play through the track's provider when [`crate::should_count_play`] says
-    /// it counts. Returns whether a play was recorded.
+    /// Records a play through the track's provider when [`LibraryProvider::counts_play`]
+    /// says it counts. Returns whether a play was recorded.
     pub fn finish_play(&self, track: &TrackId, played_ms: u64, length_ms: u64) -> Result<bool> {
-        if !crate::should_count_play(played_ms, length_ms) {
-            return Ok(false);
-        }
         let provider = self.provider_for(track)?;
-        if !provider.capabilities().contains(Capabilities::RECORD_PLAY) {
+        if !provider.capabilities().contains(Capabilities::RECORD_PLAY)
+            || !provider.counts_play(track, played_ms, length_ms)
+        {
             return Ok(false);
         }
         provider.record_play(track, played_ms)?;

@@ -94,6 +94,9 @@ struct Part {
     surface: wl_surface::WlSurface,
     /// `None` for the main window.
     subsurface: Option<wl_subsurface::WlSubsurface>,
+    /// The surface the subsurface is attached to: the main window's, or another top-level
+    /// window's for a part added with [`Compound::add_part_on`]. `None` for the main window.
+    parent: Option<wl_surface::WlSurface>,
     viewport: Option<wp_viewport::WpViewport>,
     buffers: Vec<Buffer>,
     /// Logical size last given to the viewport.
@@ -153,6 +156,7 @@ impl Compound {
             parts: vec![Some(Part {
                 surface: main_surface,
                 subsurface: None,
+                parent: None,
                 viewport: None,
                 buffers: Vec::new(),
                 dest: (0, 0),
@@ -173,6 +177,34 @@ impl Compound {
     /// Adds a hidden subsurface part above the main window and the other parts, and returns
     /// its number.
     pub fn add_part(&mut self) -> usize {
+        let Some(main) = &self.state.parts[MAIN] else {
+            unreachable!("the main part is never removed");
+        };
+        let parent = main.surface.clone();
+        self.add_part_to(parent)
+    }
+
+    /// Adds a hidden part on another top-level window of winit's connection (a popup menu over
+    /// it). Its position is relative to that window. `None` when the window is not a Wayland
+    /// window.
+    pub fn add_part_on(&mut self, window: &impl HasWindowHandle) -> Option<usize> {
+        let RawWindowHandle::Wayland(w) = window.window_handle().ok()?.as_raw() else {
+            return None;
+        };
+        // SAFETY: the pointer is winit's live `wl_surface` for that window. The part must be
+        // removed before the window is dropped.
+        let id = unsafe {
+            ObjectId::from_ptr(
+                wl_surface::WlSurface::interface(),
+                w.surface.as_ptr().cast(),
+            )
+        }
+        .ok()?;
+        let parent = wl_surface::WlSurface::from_id(&self.conn, id).ok()?;
+        Some(self.add_part_to(parent))
+    }
+
+    fn add_part_to(&mut self, parent: wl_surface::WlSurface) -> usize {
         let s = &mut self.state;
         let index = s
             .parts
@@ -180,11 +212,7 @@ impl Compound {
             .position(Option::is_none)
             .unwrap_or(s.parts.len());
         let surface = s.compositor.create_surface(&s.qh, index);
-        let Some(main) = &s.parts[MAIN] else {
-            unreachable!("the main part is never removed");
-        };
-        let parent = &main.surface;
-        let subsurface = s.subcompositor.get_subsurface(&surface, parent, &s.qh, ());
+        let subsurface = s.subcompositor.get_subsurface(&surface, &parent, &s.qh, ());
         // Parts redraw on their own; only position changes wait for a main-window commit.
         subsurface.set_desync();
         let viewport = s
@@ -194,6 +222,7 @@ impl Compound {
         let part = Part {
             surface,
             subsurface: Some(subsurface),
+            parent: Some(parent),
             viewport,
             buffers: Vec::new(),
             dest: (0, 0),
@@ -233,18 +262,18 @@ impl Compound {
         }
     }
 
-    /// Places a part at a physical offset from the main window. An [`Event::Moved`] follows
-    /// once the compositor has applied it.
+    /// Places a part at a physical offset from its parent window (the main window, unless
+    /// added with [`Compound::add_part_on`]). An [`Event::Moved`] follows once the compositor
+    /// has applied it.
     pub fn set_position(&mut self, part: usize, x: i32, y: i32) {
         let s = &mut self.state;
-        let Some(sub) = s.part(part).and_then(|p| p.subsurface.as_ref()) else {
+        let Some((Some(sub), Some(parent))) = s.part(part).map(|p| (&p.subsurface, &p.parent))
+        else {
             return;
         };
         sub.set_position(logical(x, s.scale), logical(y, s.scale));
         // Subsurface positions are applied with the parent's next commit.
-        if let Some(main) = s.part(MAIN) {
-            main.surface.commit();
-        }
+        parent.commit();
         self.conn.display().sync(&s.qh, (part, x, y));
         let _ = self.conn.flush();
     }

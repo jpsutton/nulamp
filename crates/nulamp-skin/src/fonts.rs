@@ -65,32 +65,48 @@ fn fold(c: char) -> Option<char> {
         'ÿ' => 'y',
         'ƒ' => 'f',
         'Ñ' | 'ñ' => 'n',
+        // Typographic ("smart") punctuation: the plain ASCII mark it stands for.
+        '‘' | '’' | '‚' | '‛' | '′' | '´' => '\'',
+        '“' | '”' | '„' | '‟' | '″' | '«' | '»' => '"',
+        '‹' => '<',
+        '›' => '>',
+        '‐' | '‑' | '‒' | '–' | '—' | '―' | '−' => '-',
+        '•' | '·' => '.',
+        '×' => 'x',
+        '\u{A0}' | '\u{2000}'..='\u{200A}' | '\u{202F}' => ' ',
         _ => return None,
     })
 }
 
-/// The `text.bmp` cell for a character, after accent folding.
-pub fn text_cell(c: char) -> Cell {
-    if let Some(cell) = direct_cell(c) {
-        return cell;
-    }
-    if let Some(cell) = fold(c).and_then(direct_cell) {
-        return cell;
+/// The `text.bmp` cell for a character after accent and punctuation folding, if it has one.
+fn mapped_cell(c: char) -> Option<Cell> {
+    if let Some(cell) = direct_cell(c).or_else(|| fold(c).and_then(direct_cell)) {
+        return Some(cell);
     }
     // Other Latin accented letters: canonical decomposition, keep the base letter.
-    if let Some(base) = c
-        .nfd()
+    c.nfd()
         .next()
         .filter(|b| *b != c && b.is_ascii_alphabetic())
-    {
-        return direct_cell(base).unwrap_or(SPACE_CELL);
-    }
-    SPACE_CELL
+        .and_then(direct_cell)
+}
+
+/// The `text.bmp` cell for a character, after accent folding.
+pub fn text_cell(c: char) -> Cell {
+    mapped_cell(c).unwrap_or(SPACE_CELL)
 }
 
 /// Whether `text.bmp` can draw a character (directly or after accent folding).
 pub fn text_can_draw(c: char) -> bool {
-    c == ' ' || text_cell(c) != SPACE_CELL
+    mapped_cell(c).is_some()
+}
+
+/// Text prepared for `text.bmp`: composed (NFC), zero-width characters dropped, and every
+/// character the font cannot draw replaced with `?`, so a missing glyph stays visible.
+pub fn text_bmp_string(s: &str) -> String {
+    s.nfc()
+        .filter(|c| !matches!(c, '\u{200B}'..='\u{200F}' | '\u{2060}' | '\u{FEFF}'))
+        .map(|c| if text_can_draw(c) { c } else { '?' })
+        .collect()
 }
 
 /// Colours for system-font text on the main window, from `text.bmp` (01 §6.2).
@@ -253,6 +269,13 @@ mod tests {
         assert_eq!(text_cell('ö'), (1, 2));
         assert_eq!(text_cell('é'), (4, 0));
         assert_eq!(text_cell('°'), (0, 1));
+        assert_eq!(text_cell('’'), text_cell('\''));
+        assert_eq!(text_cell('“'), text_cell('"'));
+        assert_eq!(text_cell('—'), text_cell('-'));
+        assert!(text_can_draw('\u{A0}'));
+        assert!("I Don’t Wanna Know – “Live”".chars().all(text_can_draw));
+        assert!(!text_can_draw('Ж'));
+        assert_eq!(text_bmp_string("Ж-e\u{301}\u{200B}!"), "?-é!");
         assert_eq!(text_cell('Ł'), SPACE_CELL); // no decomposition
         assert_eq!(text_cell('Ś'), (18, 0)); // decomposes to S
         assert_eq!(text_cell('€'), SPACE_CELL);

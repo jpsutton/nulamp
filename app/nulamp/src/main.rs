@@ -1,6 +1,7 @@
 //! nulamp: a cross-platform player for classic skins.
 
 mod import;
+mod library_input;
 mod player;
 mod plugins;
 mod settings;
@@ -37,26 +38,30 @@ fn absolutize(p: &str) -> String {
         .unwrap_or_else(|_| p.to_string())
 }
 
-/// Opens the local media library (`<config>/library.sqlite`); scans index the files some
-/// decoder plays.
-fn open_library(config: &std::path::Path, decoders: &Arc<Registry>) -> Option<MediaLibrary> {
+/// Opens the local media library (`<config>/library.sqlite`; scans index the files some
+/// decoder plays) and adds the signed-in Jellyfin account, all in `registry`.
+fn open_library(
+    config: &std::path::Path,
+    decoders: &Arc<Registry>,
+    registry: Arc<nulamp_library::Registry>,
+    jellyfin: Option<&nulamp_library::jellyfin::Account>,
+) -> MediaLibrary {
     let decoders = decoders.clone();
     let filter = move |ext: &str| !ext.is_empty() && decoders.is_supported_extension(ext);
-    match nulamp_library::LocalLibrary::open(config.join("library.sqlite"), filter) {
+    let local = match nulamp_library::LocalLibrary::open(config.join("library.sqlite"), filter) {
         Ok(local) => {
             let local = Arc::new(local);
-            let mut registry = nulamp_library::Registry::new();
             registry.register(local.clone());
-            Some(MediaLibrary {
-                registry: Arc::new(registry),
-                local: Some(local),
-            })
+            Some(local)
         }
         Err(e) => {
             log::error!("cannot open the media library: {e}");
             None
         }
-    }
+    };
+    let library = MediaLibrary { registry, local };
+    library.set_jellyfin(jellyfin);
+    library
 }
 
 /// Copies a skin archive into the skins folder and returns its new path (01 §1.4).
@@ -167,8 +172,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ))));
     let plugins = plugins::PluginRuntime::load(&config, inv.safe);
     let mut registry = Registry::with_stream(streams.clone());
+    let library_registry = Arc::new(nulamp_library::Registry::new());
+    registry.add(Box::new(library_input::LibraryInput {
+        registry: library_registry.clone(),
+        streams: streams.clone(),
+    }));
     plugins.plugins.register_decoders(&mut registry);
     let registry = Arc::new(registry);
+    // Before anything plays: saved and command-line entries may name library tracks.
+    let library = open_library(
+        &config,
+        &registry,
+        library_registry,
+        prefs.library.jellyfin.as_ref(),
+    );
     let mut player = Player::new(Engine::default(), registry.clone());
     let replaygain = std::sync::Arc::new(std::sync::Mutex::new(prefs.replaygain));
     let rg = replaygain.clone();
@@ -226,6 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             titles,
             replaygain,
             streams,
+            library: library.registry.clone(),
             logins: login_rx,
             requests: Vec::new(),
             plugins,
@@ -233,9 +251,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         prefs,
         skin,
     );
-    if let Some(library) = open_library(&config, &registry) {
-        shell = shell.with_library(library);
-    }
+    shell = shell.with_library(library);
     if let Some(server) = server {
         // Commands given on the first launch run once the windows exist.
         let sender = server.sender();

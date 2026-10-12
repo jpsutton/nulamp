@@ -177,6 +177,29 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
             p.library.tree_item_height.to_string(),
         ),
         ("library_alt_rows", b(p.library.alt_rows)),
+        // Video window keys as named in 11 §1.3.
+        ("video_wx", p.video_pos.0.to_string()),
+        ("video_wy", p.video_pos.1.to_string()),
+        ("video_width", p.video_size.0.to_string()),
+        ("video_height", p.video_size.1.to_string()),
+        ("video_open", b(p.video_visible)),
+        ("video_enabled", b(p.video.enabled)),
+        ("video_open_on_start", b(p.video.open_on_start)),
+        ("video_close_on_end", b(p.video.close_on_end)),
+        ("video_stop_on_close", b(p.video.stop_on_close)),
+        ("video_resize", b(p.video.resize_to_video)),
+        ("video_fullscreen_on_start", b(p.video.fullscreen_on_start)),
+        (
+            "video_leave_fullscreen",
+            b(p.video.leave_fullscreen_on_stop),
+        ),
+        ("video_lock_aspect", b(p.video.lock_aspect)),
+        (
+            "video_aspect",
+            nulamp_ui::video::format_aspect(p.video.aspect),
+        ),
+        ("video_logo", b(p.video.logo_when_idle)),
+        ("video_no_screensaver", b(p.video.inhibit_screensaver)),
         ("volume", st.volume.to_string()),
         ("balance", st.balance.to_string()),
         ("shuffle", b(st.shuffle)),
@@ -186,6 +209,9 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
     ];
     let mut rows: Vec<(String, String)> =
         rows.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+    if let Some(a) = &p.library.jellyfin {
+        rows.extend(jellyfin_rows(a));
+    }
     rows.push(("hotkeys_enabled".into(), b(p.hotkeys.enabled)));
     for (i, hk) in p.hotkeys.bindings.iter().enumerate() {
         rows.push((
@@ -198,6 +224,78 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
         out.push_str(&format!("{k}={}\n", v.replace(['\n', '\r'], " ")));
     }
     out
+}
+
+/// A value of a tab- and `|`-separated list.
+fn list_value(s: &str) -> String {
+    s.replace(['\t', '|', '\n', '\r'], " ")
+}
+
+/// The signed-in Jellyfin account (`jellyfin_*`). The password is never stored, only the
+/// access token.
+fn jellyfin_rows(a: &nulamp_library::jellyfin::Account) -> Vec<(String, String)> {
+    // Each library is `<0|1>|<collection type>|<id>|<name>` (shown, type, id, name);
+    // libraries are separated by tabs.
+    let libraries = a
+        .libraries
+        .iter()
+        .map(|l| {
+            format!(
+                "{}|{}|{}|{}",
+                b(l.enabled),
+                list_value(&l.collection_type),
+                list_value(&l.id),
+                list_value(&l.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\t");
+    [
+        ("jellyfin_server", a.server_url.clone()),
+        ("jellyfin_server_id", a.server_id.clone()),
+        ("jellyfin_server_name", a.server_name.clone()),
+        ("jellyfin_user", a.user_name.clone()),
+        ("jellyfin_user_id", a.user_id.clone()),
+        ("jellyfin_token", a.token.clone()),
+        ("jellyfin_device_id", a.device_id.clone()),
+        ("jellyfin_libraries", libraries),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect()
+}
+
+/// The Jellyfin account of the settings file, when one is signed in.
+fn jellyfin_account(
+    get: &dyn Fn(&str) -> Option<String>,
+) -> Option<nulamp_library::jellyfin::Account> {
+    let server_url = get("jellyfin_server").filter(|v| !v.trim().is_empty())?;
+    let user_id = get("jellyfin_user_id").filter(|v| !v.trim().is_empty())?;
+    let token = get("jellyfin_token").filter(|v| !v.trim().is_empty())?;
+    let libraries = get("jellyfin_libraries")
+        .unwrap_or_default()
+        .split('\t')
+        .filter_map(|item| {
+            let mut f = item.splitn(4, '|');
+            let (on, kind, id, name) = (f.next()?, f.next()?, f.next()?, f.next()?);
+            (!id.is_empty()).then(|| nulamp_library::jellyfin::Library {
+                id: id.to_string(),
+                name: name.to_string(),
+                collection_type: kind.to_string(),
+                enabled: on.trim() == "1",
+            })
+        })
+        .collect();
+    Some(nulamp_library::jellyfin::Account {
+        server_url: server_url.trim().to_string(),
+        server_id: get("jellyfin_server_id").unwrap_or_default(),
+        server_name: get("jellyfin_server_name").unwrap_or_default(),
+        user_name: get("jellyfin_user").unwrap_or_default(),
+        user_id: user_id.trim().to_string(),
+        token: token.trim().to_string(),
+        device_id: get("jellyfin_device_id").unwrap_or_default(),
+        libraries,
+    })
 }
 
 /// Parses the settings file over the defaults.
@@ -383,6 +481,30 @@ pub fn from_ini(text: &str) -> (UiPrefs, PlayerState) {
         p.library.tree_item_height = n.clamp(0, 40) as i32;
     }
     p.library.alt_rows = flag("library_alt_rows", p.library.alt_rows);
+    p.library.jellyfin = jellyfin_account(&get);
+    set_i!(p.video_pos.0, "video_wx", i32);
+    set_i!(p.video_pos.1, "video_wy", i32);
+    if let Some(n) = num("video_width") {
+        p.video_size.0 = n.clamp(275, 10_000) as i32;
+    }
+    if let Some(n) = num("video_height") {
+        p.video_size.1 = n.clamp(116, 10_000) as i32;
+    }
+    p.video_visible = flag("video_open", p.video_visible);
+    let v = &mut p.video;
+    v.enabled = flag("video_enabled", v.enabled);
+    v.open_on_start = flag("video_open_on_start", v.open_on_start);
+    v.close_on_end = flag("video_close_on_end", v.close_on_end);
+    v.stop_on_close = flag("video_stop_on_close", v.stop_on_close);
+    v.resize_to_video = flag("video_resize", v.resize_to_video);
+    v.fullscreen_on_start = flag("video_fullscreen_on_start", v.fullscreen_on_start);
+    v.leave_fullscreen_on_stop = flag("video_leave_fullscreen", v.leave_fullscreen_on_stop);
+    v.lock_aspect = flag("video_lock_aspect", v.lock_aspect);
+    if let Some(a) = get("video_aspect").and_then(|t| nulamp_ui::video::parse_aspect(&t)) {
+        v.aspect = a;
+    }
+    v.logo_when_idle = flag("video_logo", v.logo_when_idle);
+    v.inhibit_screensaver = flag("video_no_screensaver", v.inhibit_screensaver);
     p.hotkeys.enabled = flag("hotkeys_enabled", p.hotkeys.enabled);
     if get("hotkey_0").is_some() {
         p.hotkeys.bindings = (0..)
@@ -433,7 +555,13 @@ pub fn save(dir: &Path, p: &UiPrefs, st: &PlayerState) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let path = settings_path(dir);
     let tmp = path.with_extension("ini.tmp");
-    std::fs::write(&tmp, to_ini(p, st))?;
+    let _ = std::fs::remove_file(&tmp);
+    let mut file = std::fs::OpenOptions::new();
+    file.write(true).create_new(true);
+    // Only the user may read it: it can hold a server access token.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut file, 0o600);
+    std::io::Write::write_all(&mut file.open(&tmp)?, to_ini(p, st).as_bytes())?;
     std::fs::rename(tmp, path)
 }
 
@@ -525,8 +653,65 @@ mod tests {
         assert_eq!(p2.lib_columns, [30, 120, 160, 1]);
         assert_eq!(p2.library, p.library);
         // An empty folder list stays empty.
+        p.library.jellyfin = Some(nulamp_library::jellyfin::Account {
+            server_url: "https://jf.example:8920".into(),
+            server_id: "srv".into(),
+            server_name: "Home".into(),
+            user_name: "me".into(),
+            user_id: "u1".into(),
+            token: "tok".into(),
+            device_id: "dev".into(),
+            libraries: vec![
+                nulamp_library::jellyfin::Library {
+                    id: "l1".into(),
+                    name: "Music | Lossless\tA".into(),
+                    collection_type: "music".into(),
+                    enabled: true,
+                },
+                nulamp_library::jellyfin::Library {
+                    id: "l2".into(),
+                    name: "Films".into(),
+                    collection_type: "movies".into(),
+                    enabled: false,
+                },
+            ],
+        });
+        let (p2, _) = from_ini(&to_ini(&p, &PlayerState::default()));
+        let a = p2.library.jellyfin.unwrap();
+        assert_eq!(a.libraries[0].name, "Music   Lossless A");
+        let mut expected = p.library.jellyfin.clone().unwrap();
+        expected.libraries[0].name = a.libraries[0].name.clone();
+        assert_eq!(a, expected);
+        p.library.jellyfin = None;
         p.library.folders.clear();
         let (p3, _) = from_ini(&to_ini(&p, &PlayerState::default()));
         assert!(p3.library.folders.is_empty());
+    }
+
+    #[test]
+    fn video_round_trip() {
+        let (d, _) = from_ini("");
+        assert_eq!(d.video, nulamp_ui::video::VideoPrefs::default());
+        assert!(!d.video_visible);
+        let mut p = UiPrefs {
+            video_pos: (500, 40),
+            video_size: (400, 319),
+            video_visible: true,
+            ..UiPrefs::default()
+        };
+        p.video.enabled = false;
+        p.video.stop_on_close = true;
+        p.video.lock_aspect = false;
+        p.video.aspect = Some(16.0 / 9.0);
+        p.video.inhibit_screensaver = false;
+        let ini = to_ini(&p, &PlayerState::default());
+        assert!(
+            ini.contains("video_wx=500") && ini.contains("video_open=1"),
+            "{ini}"
+        );
+        let (p2, _) = from_ini(&ini);
+        assert_eq!((p2.video_pos, p2.video_size), ((500, 40), (400, 319)));
+        assert!(p2.video_visible);
+        assert_eq!(p2.video, p.video);
     }
 }

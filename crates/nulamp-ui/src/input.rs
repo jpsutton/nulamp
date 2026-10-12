@@ -104,3 +104,27 @@ pub enum Action {
     },
     TitleDragEnd,
 }
+
+/// Ctrl+V or Shift+Insert: paste into the focused text field.
+pub fn is_paste(code: winit::keyboard::KeyCode, mods: Mods) -> bool {
+    use winit::keyboard::KeyCode;
+    !mods.alt
+        && ((code == KeyCode::KeyV && mods.ctrl && !mods.shift)
+            || (code == KeyCode::Insert && mods.shift && !mods.ctrl))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paste_keys() {
+        use winit::keyboard::KeyCode;
+        let m = |shift, ctrl, alt| Mods { shift, ctrl, alt };
+        assert!(is_paste(KeyCode::KeyV, m(false, true, false)));
+        assert!(is_paste(KeyCode::Insert, m(true, false, false)));
+        assert!(!is_paste(KeyCode::KeyV, m(false, false, false)));
+        assert!(!is_paste(KeyCode::KeyV, m(false, true, true)));
+        assert!(!is_paste(KeyCode::Insert, m(false, true, false)));
+    }
+}

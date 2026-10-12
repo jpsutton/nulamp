@@ -5,8 +5,8 @@
 //! exposes the same browse tree ([`BrowseNode`]), track listing with [`Query`], [`Sort`] and
 //! [`Page`], playback resolution ([`PlaybackLocation`]) and optional writes (ratings, play
 //! counts, tags, playlists) announced through [`Capabilities`]. [`LocalLibrary`] indexes
-//! watch folders into SQLite; [`MockProvider`] is an in-memory remote-style provider used by
-//! tests and as a template for network providers.
+//! watch folders into SQLite; [`JellyfinProvider`] browses the music libraries of a Jellyfin
+//! server; [`MockProvider`] is an in-memory remote-style provider used by tests.
 
 mod error;
 mod facets;
@@ -14,15 +14,17 @@ mod model;
 mod provider;
 mod query;
 
+pub mod jellyfin;
 pub mod local;
 pub mod mock;
 
 pub use error::{Error, Result};
+pub use jellyfin::JellyfinProvider;
 pub use local::{ExtensionFilter, LocalLibrary, ScanHandle, ScanMode, WatchFolder};
 pub use mock::MockProvider;
 pub use model::{
-    AlbumFacet, ArtistFacet, BrowseNode, Capabilities, LibraryEvent, NodeKind, Page,
-    PlaybackLocation, PlaylistInfo, ReplayGain, ScanSummary, Track, TrackId, TrackPage,
+    AlbumFacet, ArtistFacet, BrowseNode, Capabilities, LIBRARY_SCHEME, LibraryEvent, NodeKind,
+    Page, PlaybackLocation, PlaylistInfo, ReplayGain, ScanSummary, Track, TrackId, TrackPage,
     TrackSummary,
 };
 pub use provider::{LibraryProvider, Registry, Subscribers};

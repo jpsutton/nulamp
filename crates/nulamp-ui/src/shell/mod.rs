@@ -27,6 +27,7 @@ mod dialogs;
 mod library_host;
 mod popup;
 mod remote;
+mod video_host;
 
 use crate::docking::{self, DEFAULT_SNAP};
 use crate::eq_input::{EqAction, EqContext, EqInput};
@@ -102,6 +103,14 @@ pub trait PlayerHandle {
     fn expand_location(&self, _location: &str) -> Option<Vec<nulamp_core::NewEntry>> {
         None
     }
+    /// The picture of a playlist location (09 §8); `None` when it is not a video file or
+    /// nulamp has no video support.
+    fn open_video(&self, _location: &str) -> Option<Box<dyn crate::video::VideoSource>> {
+        None
+    }
+    /// Plays the `index`-th audio stream of a video file from now on (05 §2 audio track
+    /// menu).
+    fn select_audio_track(&mut self, _location: &str, _index: usize) {}
 }
 
 /// A server asks for Basic-authentication credentials. Answer through `reply`; `None` gives up.
@@ -188,6 +197,11 @@ pub struct UiPrefs {
     /// Widths of the library's list columns (empty: defaults).
     pub lib_columns: Vec<i32>,
     pub library: LibraryPrefs,
+    /// Video window position, size and visibility (11 §1.3 `video_wx` …).
+    pub video_pos: (i32, i32),
+    pub video_size: (i32, i32),
+    pub video_visible: bool,
+    pub video: crate::video::VideoPrefs,
 }
 
 pub use nulamp_skinui::ResizeMode;
@@ -258,6 +272,8 @@ pub struct LibraryPrefs {
     pub tree_item_height: i32,
     /// Every other row of the lists has the alternate colours.
     pub alt_rows: bool,
+    /// The signed-in Jellyfin account (preferences page "Jellyfin").
+    pub jellyfin: Option<nulamp_library::jellyfin::Account>,
 }
 
 impl Default for LibraryPrefs {
@@ -277,6 +293,7 @@ impl Default for LibraryPrefs {
             tree_full_row: true,
             tree_item_height: 18,
             alt_rows: true,
+            jellyfin: None,
         }
     }
 }
@@ -342,6 +359,11 @@ impl Default for UiPrefs {
             lib_artist_w: 0,
             lib_columns: Vec::new(),
             library: LibraryPrefs::default(),
+            // Below the default main/equalizer/playlist stack (docs/decisions.md V2).
+            video_pos: (26, 377),
+            video_size: nulamp_render::video_window::DEFAULT_SIZE,
+            video_visible: false,
+            video: crate::video::VideoPrefs::default(),
         }
     }
 }
@@ -358,6 +380,8 @@ pub enum Kind {
     Playlist,
     /// The media library (a generic window, 05 §1).
     Library,
+    /// The video window (05 §2).
+    Video,
 }
 
 struct Win {
@@ -458,6 +482,7 @@ pub struct Shell<P: PlayerHandle> {
     exit: bool,
     /// The media library, when the application provides one.
     library: Option<library_host::LibraryHost>,
+    video: video_host::VideoHost,
 }
 
 impl Win {
@@ -489,6 +514,7 @@ impl<P: PlayerHandle> Shell<P> {
         pl.wheel_double = prefs.pl_wheel_double;
         pl.old_school_buttons = prefs.pl_old_school_buttons;
         let visualizer = nulamp_vis::Visualizer::new(prefs.vis);
+        let video = video_host::VideoHost::new(prefs.video_size);
         Self {
             last_status: player.status(),
             player,
@@ -547,6 +573,7 @@ impl<P: PlayerHandle> Shell<P> {
             last_blink: 0,
             exit: false,
             library: None,
+            video,
         }
     }
 
@@ -578,6 +605,10 @@ impl<P: PlayerHandle> Shell<P> {
         if let Some(p) = pos(Kind::Library) {
             self.prefs.lib_pos = p;
         }
+        if let Some(p) = pos(Kind::Video) {
+            self.prefs.video_pos = p;
+        }
+        self.prefs.video_size = (self.video.win.w, self.video.win.h);
         if let Some(lib) = &self.library {
             self.prefs.lib_size = (lib.win.w, lib.win.h);
             self.prefs.lib_tree_w = lib.win.geometry.tree_w;
@@ -616,7 +647,7 @@ impl<P: PlayerHandle> Shell<P> {
     /// only when "double size applies to the equalizer" is on (docs/decisions.md D23).
     fn scale_of(&self, kind: Kind) -> i32 {
         let doubled = match kind {
-            Kind::Main | Kind::Playlist | Kind::Library => self.prefs.double_size,
+            Kind::Main | Kind::Playlist | Kind::Library | Kind::Video => self.prefs.double_size,
             Kind::Equalizer => self.prefs.double_size && self.prefs.eq_double,
         };
         if doubled { 2 } else { 1 }
@@ -636,6 +667,7 @@ impl<P: PlayerHandle> Shell<P> {
                 Some(lib) => (lib.win.w as u32, lib.win.h as u32),
                 None => (275, 116),
             },
+            Kind::Video => (self.video.win.w as u32, self.video.win.h as u32),
         };
         let s = self.scale_of(kind);
         (w as i32 * s, h as i32 * s)
@@ -655,6 +687,7 @@ impl<P: PlayerHandle> Shell<P> {
             Kind::Equalizer => format!("{APP_NAME} Equalizer"),
             Kind::Playlist => format!("{APP_NAME} Playlist Editor"),
             Kind::Library => format!("{APP_NAME} {}", crate::library::window::TITLE),
+            Kind::Video => format!("{APP_NAME} Video"),
         };
         let mut attrs = Window::default_attributes()
             .with_title(title)
@@ -927,7 +960,10 @@ impl<P: PlayerHandle> Shell<P> {
             volume_pressed: self.main_input.volume_pressed,
             balance: s.balance,
             balance_pressed: self.main_input.balance_pressed,
-            seek: (open && s.seekable && s.length_ms.is_some()).then(|| seek_pos(&s)),
+            // The thumb shows progress whenever the length is known; dragging needs a seekable
+            // item (`MainContext`).
+            seek: (open && s.length_ms.is_some()).then(|| seek_pos(&s)),
+            seek_buffered: buffered_span(&s).filter(|_| open),
             seek_pressed: self.main_input.seek_drag.is_some(),
             seek_drag: self.main_input.seek_drag,
             shuffle: s.shuffle,
@@ -966,6 +1002,7 @@ impl<P: PlayerHandle> Shell<P> {
             Kind::Equalizer => scale(&ew::draw_eq(&self.skin, &self.eq_view()), s),
             Kind::Playlist => scale(&self.draw_playlist(), s),
             Kind::Library => scale(&self.draw_library(), s),
+            Kind::Video => self.draw_video(id),
         };
         let mask = self.shape_for(kind, &frame);
         let Some(w) = self.windows.get_mut(&id) else {
@@ -1000,7 +1037,7 @@ impl<P: PlayerHandle> Shell<P> {
             Kind::Main => r.normal.as_ref(),
             Kind::Equalizer if self.prefs.eq_shade => r.equalizer_ws.as_ref(),
             Kind::Equalizer => r.equalizer.as_ref(),
-            Kind::Playlist | Kind::Library => None,
+            Kind::Playlist | Kind::Library | Kind::Video => None,
         }?;
         Some(region::rasterize(
             polys,
@@ -1075,6 +1112,8 @@ impl<P: PlayerHandle> Shell<P> {
             .iter()
             // Compound parts dock only with each other: other windows' positions are unknown.
             .filter(|(_, w)| w.visible && (self.compound.is_none() || w.part.is_some()))
+            // A full-screen video window is not part of the layout.
+            .filter(|(_, w)| !(w.kind == Kind::Video && self.video.fullscreen))
             .map(|(id, _)| *id)
             .collect();
         ids.sort_by_key(|id| self.windows[id].kind as u8);
@@ -1109,6 +1148,14 @@ impl<P: PlayerHandle> Shell<P> {
     }
 
     fn set_visible(&mut self, kind: Kind, visible: bool) {
+        // A menu drawn on the window must go before the window (Wayland closes hidden
+        // top-level windows).
+        if !visible
+            && let Some(id) = self.ids.get(&kind)
+            && self.menus.iter().any(|m| m.owner == *id)
+        {
+            self.close_menus();
+        }
         if let Some(w) = self.ids.get(&kind).and_then(|id| self.windows.get_mut(id)) {
             w.visible = visible;
             match (w.part, &w.window, &mut self.compound) {
@@ -1132,6 +1179,7 @@ impl<P: PlayerHandle> Shell<P> {
             Kind::Equalizer => self.prefs.eq_visible = visible,
             Kind::Playlist => self.prefs.pl_visible = visible,
             Kind::Library => self.prefs.lib_visible = visible,
+            Kind::Video => self.prefs.video_visible = visible,
             Kind::Main => {}
         }
         self.request_redraw(Kind::Main);
@@ -1321,15 +1369,20 @@ impl<P: PlayerHandle> Shell<P> {
         let Some(part) = self.capture else {
             return false;
         };
-        let main = match self.windows.get(&id) {
-            Some(w) if w.part == Some(wayland::MAIN) => w.rect,
-            _ => return false,
-        };
         if let Some(level) = self.menu_level(part) {
-            let pos = self.menus[level].pos;
+            let m = &self.menus[level];
+            // Menus on the main window take its events; menus on other windows theirs.
+            let owner = match self.windows.get(&m.owner) {
+                Some(w) if w.part.is_some_and(|p| p != wayland::MAIN) => self.ids[&Kind::Main],
+                _ => m.owner,
+            };
+            if owner != id {
+                return false;
+            }
+            let (origin, pos) = (m.origin, m.pos);
             match *event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    let (x, y) = (main.x + position.x as i32, main.y + position.y as i32);
+                    let (x, y) = (origin.0 + position.x as i32, origin.1 + position.y as i32);
                     self.menu_motion(el, level, x - pos.0, y - pos.1);
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
@@ -1344,6 +1397,10 @@ impl<P: PlayerHandle> Shell<P> {
             }
             return true;
         }
+        let main = match self.windows.get(&id) {
+            Some(w) if w.part == Some(wayland::MAIN) => w.rect,
+            _ => return false,
+        };
         match *event {
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(w) = self.windows.get_mut(&part) {
@@ -1528,10 +1585,11 @@ impl<P: PlayerHandle> Shell<P> {
             Action::ToggleLibraryWindow if self.library.is_some() => {
                 let v = !self.is_visible(Kind::Library);
                 self.set_visible(Kind::Library, v);
-                if v && let Some(&lid) = self.ids.get(&Kind::Library)
-                    && let Some(win) = &self.windows[&lid].window
-                {
-                    win.focus_window();
+                if v && let Some(&lid) = self.ids.get(&Kind::Library) {
+                    match &self.windows[&lid].window {
+                        Some(win) => win.focus_window(),
+                        None => self.set_key_target(lid),
+                    }
                 }
             }
             Action::Menu { kind, x, y } => {
@@ -1607,14 +1665,20 @@ impl<P: PlayerHandle> Shell<P> {
             }
             Action::ToggleDoubleSize => {
                 self.prefs.double_size = !self.prefs.double_size;
-                for kind in [Kind::Main, Kind::Equalizer, Kind::Playlist, Kind::Library] {
+                for kind in [
+                    Kind::Main,
+                    Kind::Equalizer,
+                    Kind::Playlist,
+                    Kind::Library,
+                    Kind::Video,
+                ] {
                     self.resize_window(kind);
                 }
             }
             Action::ToggleShade => match self.kind_of(id) {
                 Some(Kind::Playlist) => self.toggle_pl_shade(),
-                // Generic windows have no windowshade mode.
-                Some(Kind::Library) => {}
+                // Generic and video windows have no windowshade mode.
+                Some(Kind::Library | Kind::Video) => {}
                 Some(Kind::Equalizer) => {
                     self.prefs.eq_shade = !self.prefs.eq_shade;
                     self.resize_window(Kind::Equalizer);
@@ -1922,10 +1986,34 @@ impl<P: PlayerHandle> Shell<P> {
         }
     }
 
+    /// The clipboard's text as one line for a text field: up to the first line break, without
+    /// control characters. `None` when the clipboard is empty or unavailable.
+    pub(super) fn clipboard_line(&mut self) -> Option<String> {
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new().ok();
+        }
+        let text = match self.clipboard.as_mut()?.get_text() {
+            Ok(t) => t,
+            Err(e) => {
+                log::info!("clipboard not available: {e}");
+                return None;
+            }
+        };
+        let line: String = text
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        (!line.is_empty()).then_some(line)
+    }
+
     /// Applies preferences from the preferences dialog.
     fn apply_prefs(&mut self, prefs: UiPrefs, pl: crate::prefs_dialog::PlaylistOptions) {
         let aot_changed = prefs.always_on_top != self.prefs.always_on_top;
         let eq_double_changed = prefs.eq_double != self.prefs.eq_double;
+        let vis_mode_changed = prefs.vis.mode != self.prefs.vis.mode;
         // Keep window-owned state that the dialog does not edit.
         let keep = self.prefs.clone();
         self.library_prefs_changed(&keep.library, &prefs.library);
@@ -1960,6 +2048,9 @@ impl<P: PlayerHandle> Shell<P> {
         self.update_pl_font();
         self.library_window_prefs_changed();
         self.visualizer.set_settings(self.prefs.vis);
+        if vis_mode_changed {
+            self.visualizer.reset();
+        }
         self.player.set_eq(&self.prefs.eq);
         self.player.set_playback_prefs(&self.prefs);
         if aot_changed {
@@ -2019,10 +2110,16 @@ impl<P: PlayerHandle> Shell<P> {
             }
             return;
         }
-        self.hidden_to_tray = [Kind::Main, Kind::Equalizer, Kind::Playlist, Kind::Library]
-            .into_iter()
-            .filter(|k| self.is_visible(*k))
-            .collect();
+        self.hidden_to_tray = [
+            Kind::Main,
+            Kind::Equalizer,
+            Kind::Playlist,
+            Kind::Library,
+            Kind::Video,
+        ]
+        .into_iter()
+        .filter(|k| self.is_visible(*k))
+        .collect();
         if self.wayland {
             self.close_windows();
             return;
@@ -2058,7 +2155,7 @@ impl<P: PlayerHandle> Shell<P> {
         };
         self.create_window(el, Kind::Main, (main.rect.x, main.rect.y), true);
         // Same order as at start-up, so the parts get the same indices and window ids.
-        for kind in [Kind::Playlist, Kind::Equalizer] {
+        for kind in [Kind::Playlist, Kind::Equalizer, Kind::Library] {
             let Some(old) = self.ids.get(&kind).and_then(|id| self.windows.remove(id)) else {
                 continue;
             };
@@ -2088,8 +2185,9 @@ impl<P: PlayerHandle> Shell<P> {
     pub(super) fn raise(&mut self) {
         for k in std::mem::take(&mut self.hidden_to_tray) {
             if self.wayland {
-                // Closed by `close_windows`; the main window brings its parts back.
-                if matches!(k, Kind::Main | Kind::Library) {
+                // Closed by `close_windows`; the main window brings its parts and the
+                // library back.
+                if matches!(k, Kind::Main | Kind::Video) {
                     self.reopen.push(k);
                 }
             } else {
@@ -2177,7 +2275,8 @@ impl<P: PlayerHandle> Shell<P> {
             thumb_pressed: self.pl.thumb_pressed,
             info: pl::info_string(&engine.playlist),
             time,
-            popup: self.pl.popup,
+            // Drawn last, over the rows and the mini visualizer.
+            popup: None,
         };
         let mut f = pw::draw_playlist_frame(&self.skin, &view);
         if self.pl.shade {
@@ -2223,6 +2322,9 @@ impl<P: PlayerHandle> Shell<P> {
                     self.visualizer.draw(&colors, &mut img, 0, 0);
                 }
                 nulamp_render::blit(&mut f, &img, 0, 0, 72, 16, self.pl.w - 223, self.pl.h - 26);
+            }
+            if let Some((menu, hi)) = self.pl.popup {
+                pw::draw_popup(&mut f, &self.skin, menu, hi, self.pl.w, self.pl.h);
             }
         }
         f
@@ -2440,6 +2542,16 @@ impl<P: PlayerHandle> Shell<P> {
                 Some(lib) if lib.win.in_grip(x, y) => CursorRole::PSize,
                 _ => CursorRole::PNormal,
             },
+            Kind::Video => {
+                let v = &self.video.win;
+                match () {
+                    _ if self.video.fullscreen => CursorRole::PNormal,
+                    _ if v.in_close(x, y) => CursorRole::PClose,
+                    _ if y < 20 => CursorRole::PtBar,
+                    _ if v.in_grip(x, y) => CursorRole::PSize,
+                    _ => CursorRole::PNormal,
+                }
+            }
         })
     }
 
@@ -2511,6 +2623,13 @@ impl<P: PlayerHandle> Shell<P> {
             self.library_mouse(id, state, button, x, y, el);
             return;
         }
+        if kind == Kind::Video {
+            if (button, state) == (MouseButton::Left, ElementState::Released) {
+                self.drag = None;
+            }
+            self.video_mouse(id, state, button, el);
+            return;
+        }
         let mods = self.mods;
         let now = self.now_ms();
         match (button, state) {
@@ -2555,7 +2674,7 @@ impl<P: PlayerHandle> Shell<P> {
                         };
                         self.handle_pl_actions(id, actions, el);
                     }
-                    Kind::Library => {}
+                    Kind::Library | Kind::Video => {}
                 }
             }
             (MouseButton::Left, ElementState::Released) => {
@@ -2574,7 +2693,7 @@ impl<P: PlayerHandle> Shell<P> {
                         let actions = self.pl.mouse_up(x, y, mods, self.player.engine_mut());
                         self.handle_pl_actions(id, actions, el);
                     }
-                    Kind::Library => {}
+                    Kind::Library | Kind::Video => {}
                 }
             }
             (MouseButton::Right, ElementState::Pressed) => match kind {
@@ -2593,7 +2712,7 @@ impl<P: PlayerHandle> Shell<P> {
                     let actions = self.pl.right_click(x, y, mods, self.player.engine_mut());
                     self.handle_pl_actions(id, actions, el);
                 }
-                Kind::Library => {}
+                Kind::Library | Kind::Video => {}
             },
             (MouseButton::Middle, st) => self.middle_held = st == ElementState::Pressed,
             _ => {}
@@ -2633,6 +2752,7 @@ impl<P: PlayerHandle> Shell<P> {
                 }
             }
             Kind::Library => self.library_mouse_move(id, x, y, el),
+            Kind::Video => self.video_mouse_move(id, x, y),
         }
         self.update_cursor(id, el);
     }
@@ -2675,12 +2795,18 @@ impl<P: PlayerHandle> Shell<P> {
         if kind == Kind::Library && self.library_key(id, code, event.text.as_deref(), el) {
             return;
         }
+        if kind == Kind::Video && self.video_key(id, code, el) {
+            self.request_redraw_all();
+            return;
+        }
         let playing = self.last_status.state == PlayState::Playing;
         let focus = match kind {
             Kind::Main => Focus::Main,
             Kind::Equalizer => Focus::Equalizer,
             Kind::Playlist => Focus::Playlist,
             Kind::Library => Focus::Other,
+            // Main-window shortcuts also work in the video window (05 §2).
+            Kind::Video => Focus::Main,
         };
         if let Some(k) = keys::resolve(focus, code, self.mods, playing) {
             self.key_action(id, k, el);
@@ -2705,6 +2831,13 @@ impl<P: PlayerHandle> Shell<P> {
             KeyAction::ToggleMainWindow => {
                 let v = !self.is_visible(Kind::Main);
                 self.set_visible(Kind::Main, v);
+            }
+            KeyAction::ToggleVideoWindow => {
+                let v = !self.is_visible(Kind::Video);
+                self.video_show(v);
+            }
+            KeyAction::VideoFullScreen => {
+                self.video_cmd(el, crate::video::VideoCmd::FullScreen);
             }
             KeyAction::ToggleManualAdvance => {
                 let on = !self.last_status.manual_advance;
@@ -3011,6 +3144,15 @@ fn seek_pos(s: &PlayerStatus) -> u32 {
     }
 }
 
+/// The downloaded part of a network stream as seek positions 0..=256; nothing once all of it
+/// is downloaded.
+fn buffered_span(s: &PlayerStatus) -> Option<(u32, u32)> {
+    let (start, end) = s.buffered_ms.filter(|&(_, end)| end != u64::MAX)?;
+    let l = s.length_ms.filter(|&l| l > 0)?;
+    let pos = |ms: u64| (ms.min(l) * 256 / l) as u32;
+    Some((pos(start), pos(end)))
+}
+
 fn builtin_cursor(shape: CursorShape) -> CursorIcon {
     match shape {
         CursorShape::Arrow => CursorIcon::Default,
@@ -3046,9 +3188,13 @@ fn present_raw(
         return;
     };
     let (bw, bh) = (size.width as usize, size.height as usize);
-    for y in 0..bh {
-        for x in 0..bw {
-            buf[y * bw + x] = frame.pixel(x as i32, y as i32);
+    if (frame.width() as usize, frame.height() as usize) == (bw, bh) {
+        buf.copy_from_slice(frame.pixels());
+    } else {
+        for y in 0..bh {
+            for x in 0..bw {
+                buf[y * bw + x] = frame.pixel(x as i32, y as i32);
+            }
         }
     }
     let _ = buf.present();
@@ -3110,17 +3256,26 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         }
         self.apply_hotkeys();
         self.update_pl_font();
-        if self.library.is_some() {
+        if self.library.is_some() && !self.wayland {
             self.create_window(el, Kind::Library, p.lib_pos, p.lib_visible);
         }
+        self.create_window(el, Kind::Video, p.video_pos, p.video_visible);
         if self.wayland {
-            // The main window comes first: the equalizer and playlist are its parts.
+            // The main window comes first: the equalizer, playlist and library are its parts.
             self.create_window(el, Kind::Main, p.main_pos, true);
         }
+        let library = (self.library.is_some() && self.wayland).then_some((
+            Kind::Library,
+            p.lib_pos,
+            p.lib_visible,
+        ));
         for (kind, pos, visible) in [
             (Kind::Playlist, p.pl_pos, p.pl_visible),
             (Kind::Equalizer, p.eq_pos, p.eq_visible),
-        ] {
+        ]
+        .into_iter()
+        .chain(library)
+        {
             if self.compound.is_some() {
                 self.create_part(kind, pos, visible);
             } else {
@@ -3132,7 +3287,7 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         }
         self.poll_player();
         self.refresh_title();
-        // Development aid: open a dialog at start-up (NULAMP_OPEN_DIALOG=about|url|jumpfile|skins).
+        // Development aid: open a dialog at start-up (NULAMP_OPEN_DIALOG=about|url|jumpfile|skins|…).
         if let Ok(which) = std::env::var("NULAMP_OPEN_DIALOG") {
             let id = self.ids[&Kind::Main];
             match which.as_str() {
@@ -3150,12 +3305,22 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
                     );
                 }
                 "library" if self.library.is_some() => self.set_visible(Kind::Library, true),
+                "video" => self.set_visible(Kind::Video, true),
                 "libprefs" => {
                     let d = crate::prefs_dialog::PrefsDialog::new(
                         self.prefs.clone(),
                         self.playlist_options(),
                     )
                     .with_page("Media Library")
+                    .wayland_native(self.wayland);
+                    self.open_dialog(el, Box::new(d));
+                }
+                "jellyfin" => {
+                    let d = crate::prefs_dialog::PrefsDialog::new(
+                        self.prefs.clone(),
+                        self.playlist_options(),
+                    )
+                    .with_page("Jellyfin")
                     .wayland_native(self.wayland);
                     self.open_dialog(el, Box::new(d));
                 }
@@ -3184,6 +3349,9 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
             // Closing the library window (for example from the window manager) hides it.
             WindowEvent::CloseRequested if self.kind_of(id) == Some(Kind::Library) => {
                 self.set_visible(Kind::Library, false);
+            }
+            WindowEvent::CloseRequested if self.kind_of(id) == Some(Kind::Video) => {
+                self.video_close();
             }
             WindowEvent::CloseRequested => {
                 self.exit = true;
@@ -3285,11 +3453,15 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         self.check_menu_focus();
         self.poll_remote(el);
         self.poll_url_expansions();
+        self.poll_dialogs();
         for kind in std::mem::take(&mut self.reopen) {
             if kind == Kind::Main {
                 self.reopen_main(el);
             } else if let Some(old) = self.ids.get(&kind).and_then(|id| self.windows.remove(id)) {
                 self.create_window(el, kind, (old.rect.x, old.rect.y), true);
+                if kind == Kind::Video {
+                    self.video_apply_fullscreen();
+                }
             }
         }
         for request in self.player.credential_requests() {
@@ -3313,6 +3485,7 @@ impl<P: PlayerHandle> ApplicationHandler for Shell<P> {
         let before = self.last_status.clone();
         self.poll_player();
         let mut dirty = self.last_status != before;
+        self.video_tick(el);
         let autoscroll = self.prefs.autoscroll && !self.prefs.shade;
         if now / marquee::STEP_MS != self.last_marquee_step {
             self.last_marquee_step = now / marquee::STEP_MS;

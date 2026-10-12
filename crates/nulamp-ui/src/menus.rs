@@ -19,6 +19,7 @@ pub struct MenuState {
     /// The media library exists (and the menu offers its window).
     pub has_library: bool,
     pub lib_visible: bool,
+    pub video_visible: bool,
     pub always_on_top: bool,
     pub double_size: bool,
     pub easymove: bool,
@@ -354,7 +355,7 @@ pub fn main_menu(s: &MenuState) -> Vec<Item> {
         Item::check(
             "Video",
             "Alt+V",
-            false,
+            s.video_visible,
             MenuCmd::Key(KeyAction::ToggleVideoWindow),
         ),
         Item::Sep,

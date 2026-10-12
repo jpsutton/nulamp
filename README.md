@@ -1,6 +1,6 @@
 # nulamp
 
-A cross-platform audio player that plays classic Winamp 2.x skins (`.wsz`).
+A cross-platform audio and video player that plays classic Winamp 2.x skins (`.wsz`).
 
 nulamp is an independent, clean-room implementation written from the specification in
 [`spec/`](spec/README.md). It is not affiliated with, and does not contain code or artwork from,
@@ -23,10 +23,15 @@ icon by [`tools/icongen`](tools/icongen).
   modules (with libopenmpt), and HTTP/SHOUTcast/Icecast streams with in-band titles. Gapless
   playback, fades, ReplayGain, a 10-band equalizer and the classic spectrum analyzer and
   oscilloscope.
+- Video: AVI, Matroska/WebM, MP4/MOV, FLV, WMV, MPEG and more through FFmpeg, in the skinned
+  video window, kept on the audio clock, with zoom, full screen, aspect ratio and audio/video
+  track choice.
 - Playlists: M3U/M3U8, PLS, XSPF, B4S, ASX, WPL, ZPL; title formatting; tag reading and writing;
   bookmarks; jump to file; queue.
-- Media library: a local SQLite library with folder watching and search, behind a provider
-  interface for other sources ([`docs/media-library.md`](docs/media-library.md)).
+- Media library: a local SQLite library with folder watching and search, plus the music,
+  movie, TV and video libraries of a Jellyfin server (10.9 or newer), behind a provider
+  interface for other sources
+  ([`docs/media-library.md`](docs/media-library.md)).
 - Plugins: a C ABI for decoders, effects, visualizations and general modules
   ([`docs/plugins.md`](docs/plugins.md), [`include/nulamp_plugin.h`](include/nulamp_plugin.h)),
   plus built-in scripted effects ([`docs/scripted-dsp.md`](docs/scripted-dsp.md)).
@@ -70,8 +75,10 @@ sudo pacman -Syu nulamp
 **Windows:** run `nulamp-<version>-windows-x86_64-setup.exe`. It installs for your user by default
 (no administrator prompt), adds a Start menu shortcut, opens `.wsz` skins with nulamp, and offers
 nulamp for audio files and playlists under *Open with* and in *Default apps* without changing your
-current defaults. The `.zip` is the same program without an installer. Builds are not code-signed
-yet, so Windows SmartScreen may warn the first time.
+current defaults. The `.zip` is the same program without an installer. Both bundle the extra
+codecs (an LGPL build of FFmpeg, and libopenmpt); the exact sources of the LGPL libraries are
+attached to each release (`*-windows-msvc-lgpl-sources.tar.gz`). Builds are not code-signed yet, so
+Windows SmartScreen may warn the first time.
 
 **Other Linux distributions:** the AppImage needs glibc 2.39 or newer and bundles the extra codecs
 (an LGPL build of FFmpeg and libopenmpt); the exact FFmpeg source is attached to each release.
@@ -85,7 +92,10 @@ chmod +x nulamp-*-x86_64.AppImage
 
 Rust 1.88 or newer, and on Linux the development packages for FreeType, fontconfig, X11/xcb,
 xkbcommon, Wayland, ALSA and D-Bus. libopenmpt is optional: without it, tracker modules are
-disabled. [`scripts/ci-deps.sh`](scripts/ci-deps.sh) lists the exact packages for Debian/Ubuntu
+disabled. So are the FFmpeg libraries (libavformat, libavcodec, libavutil, libswresample and
+libswscale, 5.1 or newer): without them, video and the formats only FFmpeg reads are disabled. On
+Windows, [`scripts/windows-codecs.sh`](scripts/windows-codecs.sh) (Git Bash, Visual Studio C++
+tools) builds both with vcpkg and prints the `FFMPEG_DIR` and `OPENMPT_LIB_DIR` to build with. [`scripts/ci-deps.sh`](scripts/ci-deps.sh) lists the exact packages for Debian/Ubuntu
 and macOS.
 
 ```bash

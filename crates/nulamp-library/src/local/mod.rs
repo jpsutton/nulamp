@@ -443,6 +443,7 @@ impl LibraryProvider for LocalLibrary {
         Ok(PlaybackLocation {
             location: path,
             headers: Vec::new(),
+            video: false,
         })
     }
 

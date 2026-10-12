@@ -11,6 +11,8 @@ pub struct AppPlayer {
     pub replaygain: std::sync::Arc<std::sync::Mutex<nulamp_eq::ReplayGainSettings>>,
     /// The network stream input (shared with the decoder registry).
     pub streams: nulamp_decoders::stream::StreamFactory,
+    /// The media library's providers, for the pictures of library videos.
+    pub library: std::sync::Arc<nulamp_library::Registry>,
     /// Login requests from network threads.
     pub logins: std::sync::mpsc::Receiver<nulamp_ui::shell::CredentialRequest>,
     /// Remote-control requests from plugins, for the shell.
@@ -47,6 +49,57 @@ pub fn cd_entries(location: &str) -> Option<Vec<nulamp_core::NewEntry>> {
 /// The "add anything" rule (10 §2.5) including audio CDs.
 pub fn expand_item(item: &str, supported: &dyn Fn(&str) -> bool) -> Vec<nulamp_core::NewEntry> {
     cd_entries(item).unwrap_or_else(|| nulamp_ui::files::add_anything(item, true, false, supported))
+}
+
+/// The picture of a video file (09 §8) as the video window sees it.
+struct VideoAdapter(nulamp_decoders::video::VideoPlayer);
+
+impl nulamp_ui::video::VideoSource for VideoAdapter {
+    fn status(&self) -> nulamp_ui::video::VideoStatus {
+        use nulamp_decoders::video::VideoState;
+        use nulamp_ui::video::{VideoMeta, VideoStatus};
+        match self.0.state() {
+            VideoState::Opening => VideoStatus::Opening,
+            VideoState::Ready(i) => VideoStatus::Ready(VideoMeta {
+                width: i.width,
+                height: i.height,
+                aspect: i.aspect,
+                fps: i.fps,
+                codec: i.codec,
+                streams: i.streams,
+                current: i.current,
+                audio_streams: i.audio_streams,
+                audio_current: i.audio_current,
+            }),
+            VideoState::Failed(_) => VideoStatus::NoVideo,
+        }
+    }
+
+    fn set_clock(&self, position_ms: u64, playing: bool) {
+        self.0.set_clock(position_ms, playing);
+    }
+
+    fn set_output(&self, width: u32, height: u32, flip: bool) {
+        self.0.set_output(width, height, flip);
+    }
+
+    fn select_stream(&self, index: usize) {
+        self.0.select_stream(index);
+    }
+
+    fn seq(&self) -> u64 {
+        self.0.frame().0
+    }
+
+    fn blit(&self, frame: &mut nulamp_ui::video::Frame, area: (i32, i32, u32, u32)) -> bool {
+        match self.0.frame().1 {
+            Some(p) => {
+                nulamp_ui::video::blit_centred(frame, area, p.width, p.height, &p.pixels);
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// Forwards login requests from network threads to the user interface and waits for the
@@ -129,6 +182,32 @@ impl PlayerHandle for AppPlayer {
 
     fn expand_location(&self, location: &str) -> Option<Vec<nulamp_core::NewEntry>> {
         cd_entries(location)
+    }
+
+    fn open_video(&self, location: &str) -> Option<Box<dyn nulamp_ui::video::VideoSource>> {
+        use nulamp_decoders::video;
+        if !video::available() {
+            return None;
+        }
+        let is_video = match nulamp_library::TrackId::from_location(location) {
+            // A library track: its provider tells videos apart without a request.
+            Some(id) => self
+                .library
+                .resolve_playback(&id)
+                .is_ok_and(|target| target.video),
+            None => video::is_video_location(location),
+        };
+        if !is_video {
+            return None;
+        }
+        // The picture shares the demuxer the sound decoder opened for this entry.
+        Some(Box::new(VideoAdapter(video::VideoPlayer::open(location))))
+    }
+
+    fn select_audio_track(&mut self, location: &str, index: usize) {
+        nulamp_decoders::set_audio_track(location, Some(index));
+        let at = self.player.status().position_ms;
+        self.player.reopen_heard(at);
     }
 
     fn status(&self) -> PlayerStatus {

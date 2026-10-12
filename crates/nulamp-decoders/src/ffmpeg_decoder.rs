@@ -1,5 +1,6 @@
 //! Decoder for formats the built-in decoders lack (09 §1): Windows Media Audio, WavPack,
-//! Monkey's Audio, Musepack and TTA, through the system FFmpeg libraries. It is also the
+//! Monkey's Audio, Musepack and TTA, and the sound of video files (silence for a video without
+//! audio), through the system FFmpeg libraries. It is also the
 //! fallback for local files another decoder fails to open (for example MP4 files Symphonia
 //! cannot read), see [`crate::Registry::open`].
 //!
@@ -7,10 +8,15 @@
 //! headers, so this side only sees opaque handles and plain structs. Output keeps the source
 //! sample rate and channel count; the engine resamples.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{CStr, CString, c_char, c_int};
 use std::ptr::NonNull;
+use std::sync::Mutex;
 
+use std::sync::Arc;
+
+use crate::demux::{self, Session};
+use crate::ffmpeg_io::Io;
 use crate::symphonia_decoder::local_path;
 use crate::{DecodeError, Decoder, DecoderFactory, FileTags, ReadStatus, StreamInfo};
 
@@ -38,11 +44,24 @@ mod ffi {
     unsafe extern "C" {
         pub fn nlff_open(
             path: *const c_char,
+            io: *const crate::ffmpeg_io::NlIo,
             decode: c_int,
+            audio: c_int,
             info: *mut NlffInfo,
             err: *mut c_char,
             err_len: c_int,
         ) -> *mut Nlff;
+        pub fn nlff_open_demux(
+            d: *mut crate::demux::NlDemux,
+            pull: crate::demux::NlPull,
+            opaque: *mut c_void,
+            audio: c_int,
+            info: *mut NlffInfo,
+            err: *mut c_char,
+            err_len: c_int,
+        ) -> *mut Nlff;
+        pub fn nlff_stream(h: *const Nlff) -> c_int;
+        pub fn nlff_reset(h: *mut Nlff, target: i64);
         pub fn nlff_close(h: *mut Nlff);
         pub fn nlff_read(
             h: *mut Nlff,
@@ -68,7 +87,34 @@ const EXTENSIONS: &[(&str, &str)] = &[
     ("ape", "Monkey's Audio Files"),
     ("mpc;mp+;mpp", "Musepack Files"),
     ("tta", "TTA Files"),
+    // Video files the built-in decoders do not claim (09 §1); their picture is shown by
+    // `crate::video`.
+    (
+        "avi;mkv;m4v;mov;flv;nsv;wmv;mpg;mpeg;m2v;ogv",
+        "Video Files",
+    ),
 ];
+
+/// Audio streams chosen for files (location → 0-based index among the file's audio streams).
+static AUDIO_TRACKS: Mutex<Option<HashMap<String, usize>>> = Mutex::new(None);
+
+/// Chooses the audio stream of a file with several (the video window's audio track menu,
+/// 05 §2). The FFmpeg decoder then opens the file, whatever its extension, the next time it is
+/// played. `None` returns to the default stream.
+pub fn set_audio_track(location: &str, index: Option<usize>) {
+    let mut map = AUDIO_TRACKS.lock().unwrap_or_else(|e| e.into_inner());
+    let map = map.get_or_insert_with(HashMap::new);
+    match index {
+        Some(i) => map.insert(location.to_string(), i),
+        None => map.remove(location),
+    };
+}
+
+/// The audio stream chosen for a file with [`set_audio_track`].
+pub fn audio_track(location: &str) -> Option<usize> {
+    let map = AUDIO_TRACKS.lock().unwrap_or_else(|e| e.into_inner());
+    map.as_ref()?.get(location).copied()
+}
 
 /// The licence of the libavcodec in use, for example "LGPL version 2.1 or later".
 pub fn license() -> String {
@@ -87,17 +133,19 @@ unsafe impl Send for Handle {}
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        // SAFETY: created by nlff_open and closed once.
+        // SAFETY: created by nlff_open or nlff_open_demux and closed once, before its session.
         unsafe { ffi::nlff_close(self.0.as_ptr()) };
     }
 }
 
 impl Handle {
     fn open(location: &str, decode: bool) -> Result<(Self, StreamInfo, Option<u32>), DecodeError> {
+        let audio = audio_track(location);
         let path = local_path(location).ok_or_else(|| DecodeError::Unsupported(location.into()))?;
         if !std::path::Path::new(&path).is_file() {
             return Err(DecodeError::NotFound(location.into()));
         }
+        let audio = audio.map_or(-1, |i| i as c_int);
         let c_path = CString::new(path).map_err(|e| DecodeError::Open(e.to_string()))?;
         // SAFETY: plain-data struct; the shim fills it in.
         let mut info: ffi::NlffInfo = unsafe { std::mem::zeroed() };
@@ -106,12 +154,50 @@ impl Handle {
         let h = unsafe {
             ffi::nlff_open(
                 c_path.as_ptr(),
+                std::ptr::null(),
                 decode as c_int,
+                audio,
                 &mut info,
                 err.as_mut_ptr(),
                 err.len() as c_int,
             )
         };
+        Self::finish(h, &info, &err)
+    }
+
+    /// Decodes the sound of `session`, which the decoder keeps alive.
+    fn open_demux(
+        session: &Arc<Session>,
+        audio: Option<usize>,
+    ) -> Result<(Self, StreamInfo, Option<u32>), DecodeError> {
+        let audio = audio.map_or(-1, |i| i as c_int);
+        // SAFETY: plain-data struct; the shim fills it in.
+        let mut info: ffi::NlffInfo = unsafe { std::mem::zeroed() };
+        let mut err = [0 as c_char; 256];
+        let d = session.demux();
+        // SAFETY: valid demuxer under its lock; the pull callback's session outlives the
+        // handle (the decoder holds it); out buffers of the given sizes.
+        let h = unsafe {
+            ffi::nlff_open_demux(
+                d.as_ptr(),
+                demux::pull_audio,
+                demux::opaque(session),
+                audio,
+                &mut info,
+                err.as_mut_ptr(),
+                err.len() as c_int,
+            )
+        };
+        drop(d);
+        Self::finish(h, &info, &err)
+    }
+
+    /// The handle `h` from the shim with its stream information, or the shim's error.
+    fn finish(
+        h: *mut ffi::Nlff,
+        info: &ffi::NlffInfo,
+        err: &[c_char],
+    ) -> Result<(Self, StreamInfo, Option<u32>), DecodeError> {
         let Some(h) = NonNull::new(h) else {
             // SAFETY: the shim writes a NUL-terminated message (the buffer starts zeroed).
             let msg = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy();
@@ -182,15 +268,54 @@ impl DecoderFactory for FfmpegFactory {
         true
     }
 
+    /// Local video files open here, whatever their extension, so their picture can share the
+    /// demuxer (decision V10); so do local files with a chosen audio stream
+    /// ([`set_audio_track`]).
+    fn claims(&self, location: &str) -> bool {
+        local_path(location).is_some()
+            && (audio_track(location).is_some() || crate::video::is_video_location(location))
+    }
+
     fn open(&self, location: &str) -> Result<Box<dyn Decoder>, DecodeError> {
+        if crate::video::is_video_location(location) {
+            let path =
+                local_path(location).ok_or_else(|| DecodeError::Unsupported(location.into()))?;
+            if !std::path::Path::new(&path).is_file() {
+                return Err(DecodeError::NotFound(location.into()));
+            }
+            return Ok(Box::new(open_video(
+                location,
+                &path,
+                None,
+                audio_track(location),
+            )?));
+        }
         let (handle, info, kbps) = Handle::open(location, true)?;
-        Ok(Box::new(FfmpegDecoder {
-            handle,
-            info,
-            file_kbps: kbps,
-            recent: VecDeque::new(),
-            pos: 0,
-        }))
+        Ok(Box::new(FfmpegDecoder::new(handle, info, kbps, None)))
+    }
+}
+
+/// Decodes the sound of a video file through a demuxer it shares with the picture
+/// ([`crate::demux`]), registered under `key` (the playlist location) for the video window.
+/// Reads `path`, or `io` when given (`path` is then only a name). `audio` picks the audio
+/// stream as [`set_audio_track`] does. Blocks while FFmpeg reads the container's headers.
+pub(crate) fn open_video(
+    key: &str,
+    path: &str,
+    io: Option<Io>,
+    audio: Option<usize>,
+) -> Result<FfmpegDecoder, DecodeError> {
+    let session = Session::open(key, path, io).map_err(DecodeError::Open)?;
+    match Handle::open_demux(&session, audio) {
+        Ok((handle, info, kbps)) => {
+            // SAFETY: valid handle.
+            session.set_audio_stream(unsafe { ffi::nlff_stream(handle.0.as_ptr()) });
+            Ok(FfmpegDecoder::new(handle, info, kbps, Some(session)))
+        }
+        Err(e) => {
+            session.close();
+            Err(e)
+        }
     }
 }
 
@@ -282,7 +407,10 @@ fn map_tag(key: &str, value: &str) -> Option<(&'static str, String)> {
 
 /// An open FFmpeg stream.
 pub struct FfmpegDecoder {
+    /// Declared before `session`: the handle reads the session's demuxer.
     handle: Handle,
+    /// The demuxer shared with the picture of a video file.
+    session: Option<Arc<Session>>,
     info: StreamInfo,
     /// Container bit rate, used until packets have been read.
     file_kbps: Option<u32>,
@@ -290,6 +418,33 @@ pub struct FfmpegDecoder {
     recent: VecDeque<(u64, u64)>,
     /// Sample frame position of the next block.
     pos: u64,
+}
+
+impl FfmpegDecoder {
+    fn new(
+        handle: Handle,
+        info: StreamInfo,
+        file_kbps: Option<u32>,
+        session: Option<Arc<Session>>,
+    ) -> Self {
+        Self {
+            handle,
+            session,
+            info,
+            file_kbps,
+            recent: VecDeque::new(),
+            pos: 0,
+        }
+    }
+}
+
+impl Drop for FfmpegDecoder {
+    fn drop(&mut self) {
+        // The picture lets go of the demuxer; a reopened track gets a new one.
+        if let Some(s) = &self.session {
+            s.close();
+        }
+    }
 }
 
 impl Decoder for FfmpegDecoder {
@@ -336,10 +491,17 @@ impl Decoder for FfmpegDecoder {
         if let Some(len) = self.info.length_ms {
             target = target.min(len * rate / 1000);
         }
-        // SAFETY: valid handle.
-        let r = unsafe { ffi::nlff_seek(self.handle.0.as_ptr(), target as i64) };
-        if r < 0 {
-            return Err(DecodeError::Seek(format!("FFmpeg error {r}")));
+        if let Some(s) = &self.session {
+            s.seek(target * 1000 / rate.max(1))
+                .map_err(|r| DecodeError::Seek(format!("FFmpeg error {r}")))?;
+            // SAFETY: valid handle.
+            unsafe { ffi::nlff_reset(self.handle.0.as_ptr(), target as i64) };
+        } else {
+            // SAFETY: valid handle.
+            let r = unsafe { ffi::nlff_seek(self.handle.0.as_ptr(), target as i64) };
+            if r < 0 {
+                return Err(DecodeError::Seek(format!("FFmpeg error {r}")));
+            }
         }
         self.pos = target;
         self.recent.clear();

@@ -177,7 +177,9 @@ fn merge(provider: &str, old: Option<Vec<TreeNode>>, new: Vec<BrowseNode>) -> Ve
 fn icon_of(n: &TreeNode) -> TreeIcon {
     match n.node.kind {
         NodeKind::Root => TreeIcon::Folder,
-        NodeKind::Category | NodeKind::Other => TreeIcon::Folder,
+        NodeKind::Category | NodeKind::Other | NodeKind::Series | NodeKind::Season => {
+            TreeIcon::Folder
+        }
         NodeKind::Artist => TreeIcon::Person,
         NodeKind::Album => TreeIcon::Disc,
         NodeKind::Genre | NodeKind::Year => TreeIcon::Tag,
@@ -1046,6 +1048,19 @@ mod tests {
         );
         v.list_secs = Some(0.0123);
         assert_eq!(v.status_text(), "1000 items [1:02:05] in 0.012 sec.");
+        v.on_summary(
+            1,
+            TrackSummary {
+                count: 1000,
+                length_ms: 0,
+            },
+        );
+        v.list_secs = Some(0.0123);
+        assert_eq!(
+            v.status_text(),
+            "1000 items in 0.012 sec.",
+            "no length known"
+        );
     }
 
     #[test]

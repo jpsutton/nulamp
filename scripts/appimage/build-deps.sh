@@ -2,7 +2,7 @@
 # Builds the libraries bundled in the Linux AppImage into $PREFIX (default ./appimage-deps):
 #
 # - FFmpeg as an LGPL-only build (no --enable-gpl, no --enable-nonfree) with just the decoders,
-#   demuxers and parsers nulamp's FFmpeg decoder uses. Ubuntu's FFmpeg packages are GPL builds,
+#   demuxers and parsers nulamp's FFmpeg decoder and video window use, and libswscale. Ubuntu's FFmpeg packages are GPL builds,
 #   which nulamp must not bundle.
 # - libopenmpt (BSD-3-Clause) without mpg123 (LGPL) and libvorbis, so it brings no other
 #   bundled libraries.
@@ -28,14 +28,18 @@ tar -xf "$work/ffmpeg.tar.xz" -C "$work"
 decoders="aac,aac_latm,alac,ape,flac,mp1,mp1float,mp2,mp2float,mp3,mp3float,mp3adu,mpc7,mpc8,\
 opus,tta,vorbis,wavpack,wmalossless,wmapro,wmav1,wmav2,wmavoice,\
 pcm_alaw,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_mulaw,pcm_s16be,pcm_s16le,pcm_s24be,\
-pcm_s24le,pcm_s32be,pcm_s32le,pcm_s8,pcm_u8,adpcm_ima_wav,adpcm_ms,gsm,gsm_ms"
-demuxers="aac,aiff,ape,asf,flac,mov,mp3,mpc,mpc8,ogg,tta,wav,wv"
-parsers="aac,aac_latm,flac,mpegaudio,opus,vorbis"
+pcm_s24le,pcm_s32be,pcm_s32le,pcm_s8,pcm_u8,adpcm_ima_wav,adpcm_ms,gsm,gsm_ms,ac3,eac3,\
+h264,hevc,mpeg4,h263,msmpeg4v1,msmpeg4v2,msmpeg4v3,mpeg1video,mpeg2video,vp8,vp9,theora,\
+wmv1,wmv2,wmv3,vc1,flv,vp6,vp6a,vp6f,mjpeg"
+demuxers="aac,aiff,ape,asf,flac,mov,mp3,mpc,mpc8,ogg,tta,wav,wv,\
+avi,matroska,flv,mpegps,mpegts,mpegvideo,m4v,h264,hevc,nsv"
+parsers="aac,aac_latm,flac,mpegaudio,opus,vorbis,ac3,\
+h264,hevc,mpeg4video,mpegvideo,h263,vp8,vp9,vc1,mjpeg"
 (
   cd "$work/ffmpeg-${FFMPEG_VERSION}"
   ./configure --prefix="$PREFIX" --enable-shared --disable-static \
     --disable-programs --disable-doc --disable-network --disable-autodetect \
-    --disable-avdevice --disable-avfilter --disable-swscale \
+    --disable-avdevice --disable-avfilter \
     --disable-everything --enable-protocol=file \
     --enable-decoder="$decoders" --enable-demuxer="$demuxers" --enable-parser="$parsers" \
     > "$work/ffmpeg-configure.log"

@@ -60,6 +60,8 @@ pub enum MenuCmd {
     Plugins,
     /// Media-library menus.
     Lib(crate::library::LibCmd),
+    /// Video window menu.
+    Video(crate::video::VideoCmd),
     None,
 }
 
