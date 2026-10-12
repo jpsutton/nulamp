@@ -152,6 +152,7 @@ impl<P: PlayerHandle> Shell<P> {
         };
         let now = Instant::now();
         let mut dirty = lib.view.tick(now);
+        dirty |= lib.view.update_throbber(now);
         let mut collected = Vec::new();
         for r in lib.service.poll() {
             dirty = true;

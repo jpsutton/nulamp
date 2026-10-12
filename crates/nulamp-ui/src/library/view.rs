@@ -21,6 +21,12 @@ pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const MAX_PAGES: usize = 24;
 /// Provider change events refresh the views at most this often (scans send many).
 pub const REFRESH_INTERVAL: Duration = Duration::from_millis(1000);
+/// Loading that takes longer than this shows the throbber.
+pub const THROBBER_DELAY: Duration = Duration::from_millis(150);
+/// Time per throbber frame.
+const THROBBER_FRAME: Duration = Duration::from_millis(120);
+/// Throbber frames (ASCII, so every font draws them).
+const THROBBER: [char; 4] = ['|', '/', '-', '\\'];
 /// How long a status-line message stays.
 pub const MESSAGE_TIME: Duration = Duration::from_secs(8);
 
@@ -231,6 +237,13 @@ pub struct LibraryView {
     pub album_sort: (usize, bool),
     artists_token: u64,
     albums_token: u64,
+    /// A request for the artist or album pane is on its way.
+    artists_pending: bool,
+    albums_pending: bool,
+    /// Since when something has been loading, and the throbber frame to show (after
+    /// [`THROBBER_DELAY`]).
+    pending_since: Option<Instant>,
+    throbber: Option<usize>,
     /// The artist and album panes changed.
     pub panes_dirty: bool,
     /// Text of the search box (applied after [`SEARCH_DEBOUNCE`]).
@@ -281,6 +294,10 @@ impl LibraryView {
             album_sort: (0, false),
             artists_token: 0,
             albums_token: 0,
+            artists_pending: false,
+            albums_pending: false,
+            pending_since: None,
+            throbber: None,
             panes_dirty: true,
             search: String::new(),
             search_edited: None,
@@ -525,6 +542,7 @@ impl LibraryView {
     fn request_artists(&mut self) {
         if let Some(spec) = &self.spec {
             self.artists_token += 1;
+            self.artists_pending = true;
             self.out.push(Request::Artists {
                 spec: spec.clone(),
                 token: self.artists_token,
@@ -535,6 +553,7 @@ impl LibraryView {
     fn request_albums(&mut self) {
         if let Some(spec) = &self.spec {
             self.albums_token += 1;
+            self.albums_pending = true;
             self.out.push(Request::Albums {
                 spec: spec.clone(),
                 token: self.albums_token,
@@ -546,6 +565,7 @@ impl LibraryView {
         if token != self.artists_token {
             return;
         }
+        self.artists_pending = false;
         match result {
             Ok(list) => self.artists = list,
             Err(e) => {
@@ -570,6 +590,7 @@ impl LibraryView {
         if token != self.albums_token {
             return;
         }
+        self.albums_pending = false;
         match result {
             Ok(list) => self.albums = list,
             Err(e) => {
@@ -816,6 +837,34 @@ impl LibraryView {
         changed
     }
 
+    /// What is still loading, for the status line.
+    fn pending(&self) -> Vec<&'static str> {
+        let mut v = Vec::new();
+        if self.spec.is_some() && (self.total.is_none() || self.summary.is_none()) {
+            v.push("tracks");
+        }
+        if self.artists_pending {
+            v.push("artists");
+        }
+        if self.albums_pending {
+            v.push("albums");
+        }
+        v
+    }
+
+    /// Advances the throbber (call it every tick); true when its frame changed.
+    pub fn update_throbber(&mut self, now: Instant) -> bool {
+        let frame = if self.pending().is_empty() {
+            self.pending_since = None;
+            None
+        } else {
+            let since = *self.pending_since.get_or_insert(now);
+            now.checked_duration_since(since + THROBBER_DELAY)
+                .map(|d| (d.as_millis() / THROBBER_FRAME.as_millis()) as usize % THROBBER.len())
+        };
+        std::mem::replace(&mut self.throbber, frame) != frame
+    }
+
     // ----- Provider events -----
 
     /// A provider event. Returns true when the status line changed.
@@ -908,6 +957,22 @@ impl LibraryView {
                 format!("{items}{length}{took}")
             }
         };
+        if let Some(frame) = self.throbber {
+            let what = self.pending();
+            if !what.is_empty() {
+                let list = match what[..] {
+                    [a] => a.to_string(),
+                    [ref head @ .., last] => format!("{} and {last}", head.join(", ")),
+                    [] => String::new(),
+                };
+                let note = format!("{} Loading {list}…", THROBBER[frame]);
+                s = if count.is_some() {
+                    format!("{s}  ·  {note}")
+                } else {
+                    note
+                };
+            }
+        }
         if let Some(m) = &self.message {
             s.push_str("  ·  ");
             s.push_str(m);
@@ -1423,5 +1488,49 @@ mod tests {
         );
         v.list_secs = Some(1.5);
         assert_eq!(v.status_text(), "2 items [2:05] in 1.500 sec.");
+    }
+
+    #[test]
+    fn slow_loading_shows_a_throbber_in_the_status() {
+        let mut v = view();
+        let (a, b) = facet_tokens(&v.take_requests());
+        let t0 = Instant::now();
+        // Quick answers never show it.
+        assert!(!v.update_throbber(t0));
+        assert_eq!(v.status_text(), "Loading…");
+        // Still waiting after the delay: the tracks, artists and albums are named.
+        assert!(v.update_throbber(t0 + THROBBER_DELAY));
+        assert_eq!(v.status_text(), "| Loading tracks, artists and albums…");
+        assert!(!v.update_throbber(t0 + THROBBER_DELAY + Duration::from_millis(50)));
+        assert!(v.update_throbber(t0 + THROBBER_DELAY + THROBBER_FRAME));
+        assert!(v.status_text().starts_with("/ Loading"));
+        // Parts drop out as their answers arrive; the count shows once known.
+        v.on_artists(a.unwrap(), Ok(vec![]));
+        v.on_page(1, 0, Ok(page(0, 3, 3)));
+        v.on_summary(
+            1,
+            TrackSummary {
+                count: 3,
+                length_ms: 0,
+            },
+        );
+        v.list_secs = Some(0.5);
+        let t1 = t0 + THROBBER_DELAY + THROBBER_FRAME * 2;
+        v.update_throbber(t1);
+        assert_eq!(
+            v.status_text(),
+            "3 items in 0.500 sec.  ·  - Loading albums…"
+        );
+        // Answers for older requests do not end the wait.
+        v.on_albums(b.unwrap() + 7, Ok(vec![]));
+        assert!(v.status_text().contains("Loading albums"));
+        v.on_albums(b.unwrap(), Ok(vec![]));
+        assert!(v.update_throbber(t1 + THROBBER_FRAME));
+        assert_eq!(v.status_text(), "3 items in 0.500 sec.");
+        // A new wait starts without the throbber again.
+        v.select_artist(Some("x".into()));
+        let t2 = t1 + Duration::from_secs(5);
+        v.update_throbber(t2);
+        assert!(!v.status_text().contains("Loading tracks"));
     }
 }
