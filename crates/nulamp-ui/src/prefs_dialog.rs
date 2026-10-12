@@ -587,7 +587,9 @@ impl Dialog for PrefsDialog {
     }
 
     fn size(&self) -> (i32, i32) {
-        (475, 319)
+        // Tall enough for the Classic skins page: twelve check boxes and
+        // the snap distance row above the OK/Cancel/Apply buttons.
+        (475, 343)
     }
 
     fn form(&mut self) -> &mut Form {
@@ -689,6 +691,36 @@ mod tests {
                 _ => panic!("expected preferences"),
             },
             _ => panic!("expected a result"),
+        }
+    }
+
+    #[test]
+    fn no_page_reaches_the_buttons() {
+        for name in PAGES {
+            let d = PrefsDialog::new(UiPrefs::default(), pl()).with_page(name);
+            let buttons = d.form.widgets.iter().filter(|w| {
+                matches!(
+                    w,
+                    Widget::Button {
+                        id: OK | CANCEL | APPLY,
+                        ..
+                    }
+                )
+            });
+            let top = buttons.map(|w| w.rect().y).min().unwrap();
+            for w in &d.form.widgets {
+                if matches!(
+                    w,
+                    Widget::Button {
+                        id: OK | CANCEL | APPLY,
+                        ..
+                    }
+                ) {
+                    continue;
+                }
+                let r = w.rect();
+                assert!(r.y + r.h < top, "{name}: {w:?} reaches the buttons");
+            }
         }
     }
 
