@@ -3,7 +3,7 @@
 //! The list rows are drawn by the caller (they need the system font) into the list area.
 
 use crate::frame::{Frame, blit, blit_stretch};
-use nulamp_skin::fonts::text_cell;
+use nulamp_skin::fonts::{text_bmp_string, text_cell};
 use nulamp_skin::{Skin, SkinBitmap as B};
 
 pub const MIN_SIZE: (i32, i32) = (275, 116);
@@ -273,7 +273,7 @@ pub fn draw_playlist_frame(skin: &Skin, v: &PlFrameView) -> Frame {
     draw_mini_time(&mut f, skin, v.time, w - 86, h - 15);
 
     if let Some((menu, hi)) = v.popup {
-        draw_popup(&mut f, p, menu, hi, w, h);
+        draw_popup(&mut f, skin, menu, hi, w, h);
     }
     f
 }
@@ -324,7 +324,10 @@ fn draw_mini_time(f: &mut Frame, skin: &Skin, t: MiniTime, x: i32, y: i32) {
     digit(f, seconds % 10, x + 27);
 }
 
-fn draw_popup(f: &mut Frame, p: &Frame, menu: PopupMenu, hi: Option<usize>, w: i32, h: i32) {
+/// Draws an open bottom-bar pop-up menu (04 §6.1). Callers that draw the list rows or the
+/// mini visualizer over the frame draw the pop-up after them, so it stays on top.
+pub fn draw_popup(f: &mut Frame, skin: &Skin, menu: PopupMenu, hi: Option<usize>, w: i32, h: i32) {
+    let p = skin.bitmap(B::Pledit);
     let (bar_sx, bar_h, bar_dx, items_x, items) = menu.layout(w);
     blit(f, p, bar_sx, 111, 3, bar_h, bar_dx, h - 30 - (bar_h - 18));
     for (row, &(sx, sy)) in items.iter().enumerate() {
@@ -375,7 +378,7 @@ fn draw_shade(skin: &Skin, v: &PlFrameView) -> Frame {
 pub fn draw_shade_text_bitmap(f: &mut Frame, skin: &Skin, w: i32, title: &str, time: &str) {
     let time_x = w - 29 - 5 * time.chars().count() as i32;
     let max_chars = ((time_x - 4) / 5).max(0) as usize;
-    let mut chars: Vec<char> = title.to_uppercase().chars().collect();
+    let mut chars: Vec<char> = text_bmp_string(&title.to_uppercase()).chars().collect();
     if chars.len() > max_chars {
         chars.truncate(max_chars);
         if let Some(last) = chars.last_mut() {

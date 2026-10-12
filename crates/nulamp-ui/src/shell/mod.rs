@@ -2162,7 +2162,8 @@ impl<P: PlayerHandle> Shell<P> {
             thumb_pressed: self.pl.thumb_pressed,
             info: pl::info_string(&engine.playlist),
             time,
-            popup: self.pl.popup,
+            // Drawn last, over the rows and the mini visualizer.
+            popup: None,
         };
         let mut f = pw::draw_playlist_frame(&self.skin, &view);
         if self.pl.shade {
@@ -2208,6 +2209,9 @@ impl<P: PlayerHandle> Shell<P> {
                     self.visualizer.draw(&colors, &mut img, 0, 0);
                 }
                 nulamp_render::blit(&mut f, &img, 0, 0, 72, 16, self.pl.w - 223, self.pl.h - 26);
+            }
+            if let Some((menu, hi)) = self.pl.popup {
+                pw::draw_popup(&mut f, &self.skin, menu, hi, self.pl.w, self.pl.h);
             }
         }
         f

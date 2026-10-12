@@ -832,7 +832,7 @@ pub fn draw_rows(
     engine: &Engine,
 ) {
     use nulamp_render::playlist_window::draw_text_bmp_colored;
-    use nulamp_skin::fonts::text_can_draw;
+    use nulamp_skin::fonts::text_bmp_string;
     use nulamp_text::Direction;
     let p = &engine.playlist;
     let colors = &skin.pledit;
@@ -876,7 +876,7 @@ pub fn draw_rows(
             text.push_str(&format!("[{}] ", q + 1));
         }
         text.push_str(&e.title);
-        if ui.bitmap_font && text.chars().all(text_can_draw) {
+        if ui.bitmap_font {
             let gy = top + (ui.row_h - 6 * s) / 2;
             let mut right = x1;
             if let Some(d) = &duration {
@@ -887,7 +887,7 @@ pub fn draw_rows(
                 }
             }
             let max_chars = ((right - x0) / (5 * s)).max(0) as usize;
-            let mut chars: Vec<char> = text.chars().collect();
+            let mut chars: Vec<char> = text_bmp_string(&text).chars().collect();
             if chars.len() > max_chars {
                 chars.truncate(max_chars);
                 if let Some(last) = chars.last_mut() {
