@@ -150,7 +150,7 @@ fn done(shared: &Shared, error: Option<DecodeError>) {
 }
 
 /// Whether the stream is Ogg Opus, which Symphonia cannot decode: its first page names the
-/// codec. Leaves the source at the start.
+/// codec. Leaves the source at the start, Opus or not.
 fn is_opus(source: &mut RingSource) -> bool {
     let mut head = [0u8; 128];
     let mut n = 0;
@@ -161,7 +161,8 @@ fn is_opus(source: &mut RingSource) -> bool {
         }
     }
     let opus = head[..n].starts_with(b"OggS") && head[..n].windows(8).any(|w| w == b"OpusHead");
-    opus && source.seek(SeekFrom::Start(0)).is_ok()
+    // The peek must not leave the probe starting mid-page, so rewind whatever the codec.
+    source.seek(SeekFrom::Start(0)).is_ok() && opus
 }
 
 /// Opens an Ogg Opus stream with the Opus decoder, from the spool.
