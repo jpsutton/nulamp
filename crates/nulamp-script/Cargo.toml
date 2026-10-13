@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-nulamp-audio = { version = "0.6.0", path = "../nulamp-audio" }
+nulamp-audio = { version = "0.7.0", path = "../nulamp-audio" }
 thiserror = "2.0.21"
 
 [lints]
