@@ -9,6 +9,7 @@
 //! server; [`MockProvider`] is an in-memory remote-style provider used by tests.
 
 mod error;
+pub(crate) mod facets;
 mod model;
 mod provider;
 mod query;
@@ -22,8 +23,9 @@ pub use jellyfin::JellyfinProvider;
 pub use local::{ExtensionFilter, LocalLibrary, ScanHandle, ScanMode, WatchFolder};
 pub use mock::MockProvider;
 pub use model::{
-    BrowseNode, Capabilities, LIBRARY_SCHEME, LibraryEvent, NodeKind, Page, PlaybackLocation,
-    PlaylistInfo, ReplayGain, ScanSummary, Track, TrackId, TrackPage, TrackSummary,
+    AlbumFacet, ArtistFacet, BrowseNode, Capabilities, LIBRARY_SCHEME, LibraryEvent, NodeKind,
+    Page, PlaybackLocation, PlaylistInfo, ReplayGain, ScanSummary, Track, TrackId, TrackPage,
+    TrackSummary,
 };
 pub use provider::{LibraryProvider, Registry, Subscribers};
 pub use query::{CmpOp, NumField, Query, Sort, SortKey, Term, TextField, fold, tokenize};

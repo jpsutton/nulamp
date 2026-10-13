@@ -27,8 +27,8 @@ pub use client::{authorization, new_device_id, normalize_url};
 
 use crate::error::{Error, Result};
 use crate::model::{
-    BrowseNode, Capabilities, LibraryEvent, NodeKind, Page, PlaybackLocation, Track, TrackId,
-    TrackPage, TrackSummary,
+    AlbumFacet, ArtistFacet, BrowseNode, Capabilities, LibraryEvent, NodeKind, Page,
+    PlaybackLocation, Track, TrackId, TrackPage, TrackSummary,
 };
 use crate::provider::{LibraryProvider, Subscribers};
 use crate::query::{Query, Sort, SortKey};
@@ -99,6 +99,9 @@ const CHUNK: u64 = 2000;
 
 /// How long a full listing is reused.
 const CACHE_TTL: Duration = Duration::from_secs(300);
+/// Listings with more tracks than this get no artist and album panes (they would have to be
+/// downloaded whole).
+const FACET_LIMIT: u64 = 20_000;
 
 /// Full listings kept.
 const CACHE_SIZE: usize = 4;
@@ -725,6 +728,27 @@ impl JellyfinProvider {
         Ok(list)
     }
 
+    /// The full listing the artist and album panes group, from the cache when it is at hand.
+    /// `None` for a listing too big to download just for the panes.
+    fn facet_tracks(&self, node: &BrowseNode, query: &Query) -> Result<Option<Arc<Vec<Track>>>> {
+        let scope = self.scope(node)?;
+        let cached = self
+            .cache()
+            .iter()
+            .any(|c| c.node == node.id && c.at.elapsed() < CACHE_TTL);
+        if let Scope::Items(params) = &scope
+            && !cached
+            && query.is_empty()
+        {
+            let (_, total) = self.query_page(params, None, Page::new(0, 1))?;
+            if total > FACET_LIMIT {
+                return Ok(None);
+            }
+        }
+        self.filtered(node, &scope, query, Sort::default())
+            .map(Some)
+    }
+
     /// Whether the server can list this page itself.
     fn server_side(scope: &Scope, query: &Query, sort: Sort) -> bool {
         match scope {
@@ -1021,6 +1045,20 @@ impl LibraryProvider for JellyfinProvider {
             count: list.len() as u64,
             length_ms: list.iter().map(|t| t.length_ms).sum(),
         })
+    }
+
+    fn artist_facets(&self, node: &BrowseNode, query: &Query) -> Result<Vec<ArtistFacet>> {
+        Ok(self
+            .facet_tracks(node, query)?
+            .map(|t| crate::facets::artists(&t))
+            .unwrap_or_default())
+    }
+
+    fn album_facets(&self, node: &BrowseNode, query: &Query) -> Result<Vec<AlbumFacet>> {
+        Ok(self
+            .facet_tracks(node, query)?
+            .map(|t| crate::facets::albums(&t))
+            .unwrap_or_default())
     }
 
     fn track(&self, id: &TrackId) -> Result<Option<Track>> {

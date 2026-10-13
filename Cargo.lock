@@ -1984,6 +1984,7 @@ dependencies = [
  "arboard",
  "global-hotkey",
  "ksni",
+ "libc",
  "log",
  "memmap2",
  "nulamp-core",

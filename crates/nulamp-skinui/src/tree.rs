@@ -17,6 +17,107 @@ pub const INDENT: i32 = 12;
 const BOX: i32 = 9;
 const DOUBLE_CLICK_MS: u128 = 450;
 
+/// Picture beside a row's label (shown when [`TreeView::icons`] is on).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TreeIcon {
+    #[default]
+    None,
+    Folder,
+    Person,
+    Disc,
+    Tag,
+    Star,
+    List,
+}
+
+/// Width of an icon.
+const ICON_W: i32 = 9;
+
+impl TreeIcon {
+    /// 9×9 picture, one row per entry, the lowest 9 bits from the left edge.
+    fn bitmap(self) -> [u16; 9] {
+        match self {
+            TreeIcon::None => [0; 9],
+            TreeIcon::Folder => [
+                0b000000000,
+                0b011110000,
+                0b100001000,
+                0b111111111,
+                0b100000001,
+                0b100000001,
+                0b100000001,
+                0b100000001,
+                0b111111111,
+            ],
+            TreeIcon::Person => [
+                0b000111000,
+                0b001000100,
+                0b001000100,
+                0b000111000,
+                0b000000000,
+                0b011111110,
+                0b100000001,
+                0b100000001,
+                0b100000001,
+            ],
+            TreeIcon::Disc => [
+                0b001111100,
+                0b010000010,
+                0b100111001,
+                0b101000101,
+                0b101010101,
+                0b101000101,
+                0b100111001,
+                0b010000010,
+                0b001111100,
+            ],
+            TreeIcon::Tag => [
+                0b000111100,
+                0b000100100,
+                0b000100100,
+                0b000100100,
+                0b001100100,
+                0b011100100,
+                0b011100110,
+                0b001100000,
+                0b000000000,
+            ],
+            TreeIcon::Star => [
+                0b000010000,
+                0b000010000,
+                0b100010001,
+                0b010111010,
+                0b001111100,
+                0b011111110,
+                0b010101010,
+                0b100010001,
+                0b000000000,
+            ],
+            TreeIcon::List => [
+                0b000000000,
+                0b110111111,
+                0b000000000,
+                0b110111111,
+                0b000000000,
+                0b110111111,
+                0b000000000,
+                0b110111111,
+                0b000000000,
+            ],
+        }
+    }
+
+    fn draw(self, frame: &mut Frame, x: i32, y: i32, color: u32) {
+        for (dy, bits) in self.bitmap().into_iter().enumerate() {
+            for dx in 0..ICON_W {
+                if bits & (1 << (ICON_W - 1 - dx)) != 0 {
+                    frame.fill_rect(x + dx, y + dy as i32, 1, 1, color);
+                }
+            }
+        }
+    }
+}
+
 /// One visible row of a tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeRow {
@@ -24,6 +125,7 @@ pub struct TreeRow {
     pub label: String,
     pub expandable: bool,
     pub expanded: bool,
+    pub icon: TreeIcon,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +146,12 @@ pub struct TreeView {
     pub rows: Vec<TreeRow>,
     pub selected: Option<usize>,
     pub scroll: ScrollBar,
+    /// Draw each row's [`TreeIcon`].
+    pub icons: bool,
+    /// The selection bar spans the whole row; off, it covers the label only.
+    pub full_row: bool,
+    /// Row height in pixels; 0 uses the text height.
+    pub item_height: i32,
     row_h: i32,
     last_click: Option<(usize, Instant)>,
 }
@@ -55,6 +163,9 @@ impl TreeView {
             rows: Vec::new(),
             selected: None,
             scroll: ScrollBar::default(),
+            icons: false,
+            full_row: true,
+            item_height: 0,
             row_h: 14,
             last_click: None,
         };
@@ -65,6 +176,10 @@ impl TreeView {
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
         self.layout();
+    }
+
+    pub fn row_height(&self) -> i32 {
+        self.row_h
     }
 
     pub fn set_row_height(&mut self, h: i32) {
@@ -224,7 +339,8 @@ impl TreeView {
         text: &mut dyn UiText,
         focused: bool,
     ) {
-        self.set_row_height(text.line_height());
+        let line = text.line_height();
+        self.set_row_height(self.item_height.max(line));
         let c = &skin.genex;
         let r = self.rect;
         let (x, y) = (ox + r.x, oy + r.y);
@@ -248,34 +364,50 @@ impl TreeView {
         {
             let ry = y + 1 + (k - first) as i32 * self.row_h;
             let sel = self.selected == Some(k);
+            let bx = ox + self.rect.x + 3 + row.depth as i32 * INDENT;
+            let by = ry + (self.row_h - BOX) / 2;
+            let mut tx = bx + BOX + 4;
+            let icon_x = tx;
+            if self.icons {
+                tx += ICON_W + 4;
+            }
+            let right = x + 1 + inner_w;
+            let shown = text.fit(&row.label, right - tx - 2);
             let fg = if sel {
                 let (bg, fg) = if focused {
                     (c.selbar_bg_active, c.selbar_text_active)
                 } else {
                     (c.selbar_bg_inactive, c.selbar_text_inactive)
                 };
-                frame.fill_rect(x + 1, ry, inner_w, self.row_h, bg);
+                if self.full_row {
+                    frame.fill_rect(x + 1, ry, inner_w, self.row_h, bg);
+                } else {
+                    let bar_w = (text.measure(&shown) + 4).min(right - tx + 2);
+                    frame.fill_rect(tx - 2, ry, bar_w, self.row_h, bg);
+                }
                 fg
             } else {
                 c.item_fg
             };
-            let bx = ox + self.rect.x + 3 + row.depth as i32 * INDENT;
-            let by = ry + (self.row_h - BOX) / 2;
+            // The box and icon sit on the selection bar only when it spans the row.
+            let deco = if sel && self.full_row { fg } else { c.item_fg };
             if row.expandable {
                 frame_rect(frame, bx, by, BOX, BOX, c.divider);
-                frame.fill_rect(bx + 2, by + 4, BOX - 4, 1, fg);
+                frame.fill_rect(bx + 2, by + 4, BOX - 4, 1, deco);
                 if !row.expanded {
-                    frame.fill_rect(bx + 4, by + 2, 1, BOX - 4, fg);
+                    frame.fill_rect(bx + 4, by + 2, 1, BOX - 4, deco);
                 }
             }
-            let tx = bx + BOX + 4;
-            let right = x + 1 + inner_w;
-            let shown = text.fit(&row.label, right - tx - 2);
+            if self.icons {
+                let iy = ry + (self.row_h - ICON_W) / 2;
+                row.icon.draw(frame, icon_x, iy, deco);
+            }
+            let ty = ry + (self.row_h - line) / 2;
             text.draw(
                 frame,
                 &shown,
                 tx,
-                ry,
+                ty,
                 fg,
                 (x + 1, ry, right, ry + self.row_h),
             );
@@ -297,6 +429,7 @@ mod tests {
             label: label.into(),
             expandable,
             expanded,
+            icon: TreeIcon::None,
         }
     }
 

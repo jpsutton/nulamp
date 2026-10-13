@@ -497,3 +497,22 @@ mod tests {
         assert!(c.contains(Capabilities::NONE));
     }
 }
+
+/// One row of an artist pane: an artist (the `artist` tag, `""` when untagged) of the tracks
+/// in a listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtistFacet {
+    pub name: String,
+    /// Distinct albums of the artist in the listing.
+    pub albums: u64,
+    pub tracks: u64,
+}
+
+/// One row of an album pane: an album (`""` when untagged) of the tracks in a listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlbumFacet {
+    pub name: String,
+    /// Earliest year of the album's tracks.
+    pub year: Option<i32>,
+    pub tracks: u64,
+}

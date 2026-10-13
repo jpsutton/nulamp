@@ -901,3 +901,54 @@ fn summary_and_remove_tracks() {
     scan(&lib, ScanMode::Incremental);
     assert_eq!(search(&lib, "hunter").len(), 1);
 }
+
+#[test]
+fn facets_group_artists_and_albums() {
+    use nulamp_library::{Term, TextField};
+    let fx = Fixture::new();
+    let lib = fx.scanned();
+    let root = BrowseNode::root();
+    let artists = lib.artist_facets(&root, &Query::all()).unwrap();
+    let got: Vec<_> = artists
+        .iter()
+        .map(|a| (a.name.as_str(), a.albums, a.tracks))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("Björk", 1, 1),
+            ("Someone", 1, 1),
+            ("The Beatles", 2, 4),
+            ("", 1, 1)
+        ],
+        "untagged last"
+    );
+    let albums = lib.album_facets(&root, &Query::all()).unwrap();
+    let got: Vec<_> = albums
+        .iter()
+        .map(|a| (a.name.as_str(), a.year, a.tracks))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("Abbey Road", Some(1969), 3),
+            ("Hey Jude", Some(1968), 1),
+            ("Hits 2005", Some(2005), 1),
+            ("Homogenic", Some(1997), 1),
+            ("", None, 1)
+        ]
+    );
+    // An exact artist term narrows the albums; the empty value selects untagged tracks.
+    let artist = |name: &str| {
+        Query::all().and(Term::Text {
+            field: TextField::Artist,
+            value: name.into(),
+            exact: true,
+        })
+    };
+    let beatles = lib.album_facets(&root, &artist("the beatles")).unwrap();
+    assert_eq!(beatles.len(), 2);
+    let none = lib.album_facets(&root, &artist("")).unwrap();
+    assert_eq!(none.len(), 1);
+    assert_eq!(lib.summary(&root, &artist("")).unwrap().count, 1);
+}

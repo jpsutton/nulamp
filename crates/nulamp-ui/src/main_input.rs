@@ -409,7 +409,7 @@ impl MainInput {
                     _ => None,
                 });
             }
-            Some(Drag::About) if hit(x, y, 253, 265, 91, 105) => acts.push(Action::About),
+            Some(Drag::About) if hit(x, y, 253, 265, 91, 105) => acts.push(Action::Bolt),
             Some(Drag::Clutter(i)) => {
                 acts.push(Action::ReleaseMessage);
                 if clutter_at(x, y) == Some(i) {
@@ -721,7 +721,7 @@ mod tests {
             click(&mut m, 243, 60, Mods::NONE),
             vec![Action::TogglePlaylistWindow]
         );
-        assert_eq!(click(&mut m, 260, 100, Mods::NONE), vec![Action::About]);
+        assert_eq!(click(&mut m, 260, 100, Mods::NONE), vec![Action::Bolt]);
         assert_eq!(
             click(&mut m, 250, 5, Mods::SHIFT),
             vec![Action::Minimize { to_tray: true }]

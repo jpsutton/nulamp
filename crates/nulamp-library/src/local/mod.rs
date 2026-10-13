@@ -21,8 +21,8 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::{Error, Result};
 use crate::model::{
-    BrowseNode, Capabilities, LibraryEvent, Page, PlaybackLocation, PlaylistInfo, ScanSummary,
-    Track, TrackId, TrackPage, TrackSummary,
+    AlbumFacet, ArtistFacet, BrowseNode, Capabilities, LibraryEvent, Page, PlaybackLocation,
+    PlaylistInfo, ScanSummary, Track, TrackId, TrackPage, TrackSummary,
 };
 use crate::provider::{LibraryProvider, Subscribers};
 use crate::query::{Query, Sort};
@@ -397,6 +397,14 @@ impl LibraryProvider for LocalLibrary {
 
     fn summary(&self, node: &BrowseNode, query: &Query) -> Result<TrackSummary> {
         browse::summary(&self.conn(), node, query)
+    }
+
+    fn artist_facets(&self, node: &BrowseNode, query: &Query) -> Result<Vec<ArtistFacet>> {
+        browse::artist_facets(&self.conn(), node, query)
+    }
+
+    fn album_facets(&self, node: &BrowseNode, query: &Query) -> Result<Vec<AlbumFacet>> {
+        browse::album_facets(&self.conn(), node, query)
     }
 
     fn track(&self, id: &TrackId) -> Result<Option<Track>> {

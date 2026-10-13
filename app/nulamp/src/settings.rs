@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use nulamp_skin::ini::Ini;
 use nulamp_ui::UiPrefs;
+use nulamp_ui::shell::{ActivateAction, ResizeMode};
 use nulamp_vis::{AnalyzerStyle, RefreshRate, ScopeStyle, Speed, VisMode};
 
 /// Player state stored with the preferences.
@@ -131,6 +132,8 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
         ("lib_height", p.lib_size.1.to_string()),
         ("lib_visible", b(p.lib_visible)),
         ("lib_tree_width", p.lib_tree_w.to_string()),
+        ("lib_pane_height", p.lib_pane_h.to_string()),
+        ("lib_artist_width", p.lib_artist_w.to_string()),
         (
             "lib_columns",
             p.lib_columns
@@ -150,6 +153,30 @@ pub fn to_ini(p: &UiPrefs, st: &PlayerState) -> String {
         ),
         ("library_rescan_on_start", b(p.library.rescan_on_start)),
         ("library_watch", b(p.library.watch)),
+        ("library_activate", p.library.activate.name().to_string()),
+        ("library_play_all_media", b(p.library.play_all_media)),
+        (
+            "library_play_all_playlists",
+            b(p.library.play_all_playlists),
+        ),
+        (
+            "library_resize_mode",
+            match p.library.resize_mode {
+                ResizeMode::Selected => "selected",
+                ResizeMode::WithNext => "with-next",
+            }
+            .to_string(),
+        ),
+        ("library_save_ratings", b(p.library.save_ratings_to_file)),
+        ("library_group_buttons", b(p.library.group_buttons)),
+        ("library_bolt", b(p.library.bolt_opens_library)),
+        ("library_tree_icons", b(p.library.tree_icons)),
+        ("library_tree_full_row", b(p.library.tree_full_row)),
+        (
+            "library_tree_item_height",
+            p.library.tree_item_height.to_string(),
+        ),
+        ("library_alt_rows", b(p.library.alt_rows)),
         // Video window keys as named in 11 §1.3.
         ("video_wx", p.video_pos.0.to_string()),
         ("video_wy", p.video_pos.1.to_string()),
@@ -413,6 +440,8 @@ pub fn from_ini(text: &str) -> (UiPrefs, PlayerState) {
     }
     p.lib_visible = flag("lib_visible", p.lib_visible);
     set_i!(p.lib_tree_w, "lib_tree_width", i32);
+    set_i!(p.lib_pane_h, "lib_pane_height", i32);
+    set_i!(p.lib_artist_w, "lib_artist_width", i32);
     if let Some(c) = get("lib_columns") {
         p.lib_columns = c
             .split(',')
@@ -433,6 +462,25 @@ pub fn from_ini(text: &str) -> (UiPrefs, PlayerState) {
     }
     p.library.rescan_on_start = flag("library_rescan_on_start", p.library.rescan_on_start);
     p.library.watch = flag("library_watch", p.library.watch);
+    if let Some(a) = get("library_activate").and_then(|v| ActivateAction::from_name(v.trim())) {
+        p.library.activate = a;
+    }
+    p.library.play_all_media = flag("library_play_all_media", p.library.play_all_media);
+    p.library.play_all_playlists = flag("library_play_all_playlists", p.library.play_all_playlists);
+    match get("library_resize_mode").as_deref().map(str::trim) {
+        Some("selected") => p.library.resize_mode = ResizeMode::Selected,
+        Some("with-next") => p.library.resize_mode = ResizeMode::WithNext,
+        _ => {}
+    }
+    p.library.save_ratings_to_file = flag("library_save_ratings", p.library.save_ratings_to_file);
+    p.library.group_buttons = flag("library_group_buttons", p.library.group_buttons);
+    p.library.bolt_opens_library = flag("library_bolt", p.library.bolt_opens_library);
+    p.library.tree_icons = flag("library_tree_icons", p.library.tree_icons);
+    p.library.tree_full_row = flag("library_tree_full_row", p.library.tree_full_row);
+    if let Some(n) = num("library_tree_item_height") {
+        p.library.tree_item_height = n.clamp(0, 40) as i32;
+    }
+    p.library.alt_rows = flag("library_alt_rows", p.library.alt_rows);
     p.library.jellyfin = jellyfin_account(&get);
     set_i!(p.video_pos.0, "video_wx", i32);
     set_i!(p.video_pos.1, "video_wy", i32);
@@ -583,11 +631,25 @@ mod tests {
         p.library.folders = vec![("/music".into(), true), ("/mnt/share/a|b c".into(), false)];
         p.library.rescan_on_start = false;
         p.library.watch = false;
+        p.library.activate = ActivateAction::PlayNext;
+        p.library.play_all_media = false;
+        p.library.play_all_playlists = false;
+        p.library.resize_mode = ResizeMode::WithNext;
+        p.library.save_ratings_to_file = false;
+        p.library.group_buttons = false;
+        p.library.bolt_opens_library = true;
+        p.library.tree_icons = false;
+        p.library.tree_full_row = false;
+        p.library.tree_item_height = 24;
+        p.library.alt_rows = false;
+        p.lib_pane_h = 120;
+        p.lib_artist_w = 210;
         let (p2, _) = from_ini(&to_ini(&p, &PlayerState::default()));
         assert_eq!(p2.lib_pos, (400, -20));
         assert_eq!(p2.lib_size, (600, 377));
         assert!(p2.lib_visible);
         assert_eq!(p2.lib_tree_w, 150);
+        assert_eq!((p2.lib_pane_h, p2.lib_artist_w), (120, 210));
         assert_eq!(p2.lib_columns, [30, 120, 160, 1]);
         assert_eq!(p2.library, p.library);
         // An empty folder list stays empty.
