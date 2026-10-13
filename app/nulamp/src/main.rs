@@ -1,5 +1,9 @@
 //! nulamp: a cross-platform player for classic skins.
 
+// On Windows this is a GUI program: no console window opens at start. `console` below attaches
+// to the parent console (a terminal that started nulamp) or, with /CONSOLE, opens a new one.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod import;
 mod library_input;
 mod player;
@@ -81,7 +85,26 @@ fn install_skin(path: &str, skins_dir: &std::path::Path) -> String {
     }
 }
 
+/// Gives a GUI-subsystem process its console back for log output and `/?`: the console of the
+/// terminal that started it, or a new window when `/CONSOLE` is among the arguments.
+#[cfg(windows)]
+fn attach_console() {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AllocConsole, AttachConsole};
+    let want_window = std::env::args()
+        .skip(1)
+        .any(|a| a.eq_ignore_ascii_case("/console") || a.eq_ignore_ascii_case("--console"));
+    // SAFETY: plain Win32 calls without pointers; failure only means there is no console.
+    unsafe {
+        let attached = AttachConsole(ATTACH_PARENT_PROCESS) != 0;
+        if want_window && !attached {
+            AllocConsole();
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    attach_console();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     nulamp_meta::set_external_reader(titles::external_tags);
     if let Some(license) = nulamp_decoders::ffmpeg_license() {

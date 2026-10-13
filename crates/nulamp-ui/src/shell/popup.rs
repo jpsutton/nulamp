@@ -187,11 +187,16 @@ impl<P: PlayerHandle> Shell<P> {
                 pos.1 = (pos.1 - lh).max(mp.y);
             }
         }
-        #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(unused_mut))]
+        #[cfg_attr(
+            not(any(windows, all(unix, not(target_os = "macos")))),
+            allow(unused_mut)
+        )]
         let mut attrs = Window::default_attributes()
             .with_title("menu")
             .with_decorations(false)
             .with_resizable(false)
+            // Shown after the first frame is drawn: an unpainted window flashes on screen.
+            .with_visible(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
             .with_inner_size(PhysicalSize::new(lw as u32, lh as u32))
             .with_position(PhysicalPosition::new(pos.0, pos.1));
@@ -201,6 +206,12 @@ impl<P: PlayerHandle> Shell<P> {
             attrs = attrs
                 .with_name(super::APP_NAME, super::APP_NAME)
                 .with_x11_window_type(vec![WindowType::PopupMenu]);
+        }
+        #[cfg(windows)]
+        {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            // No task bar button for a menu.
+            attrs = attrs.with_skip_taskbar(true);
         }
         let window = match el.create_window(attrs) {
             Ok(w) => w,
@@ -215,9 +226,8 @@ impl<P: PlayerHandle> Shell<P> {
             return;
         };
         log::debug!("menu opened at {pos:?} ({}x{})", layout.w, layout.h);
-        window.focus_window();
         self.menus.push(MenuWin {
-            window: Some(window),
+            window: Some(window.clone()),
             surface: Some(surface),
             part: None,
             items,
@@ -231,6 +241,8 @@ impl<P: PlayerHandle> Shell<P> {
         });
         let last = self.menus.len() - 1;
         self.draw_menu(last);
+        window.set_visible(true);
+        window.focus_window();
     }
 
     pub(super) fn close_menus(&mut self) {

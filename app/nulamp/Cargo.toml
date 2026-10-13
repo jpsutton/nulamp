@@ -56,6 +56,9 @@ nulamp-tf = { version = "0.6.0", path = "../../crates/nulamp-tf" }
 nulamp-ui = { version = "0.6.0", path = "../../crates/nulamp-ui" }
 nulamp-vis = { version = "0.6.0", path = "../../crates/nulamp-vis" }
 
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+
 [features]
 # Audio CD playback through libcdio. Off by default: libcdio is GPL-3.0-or-later, so a binary
 # built with this feature must be distributed under the GPL (docs/decisions.md CD1).
