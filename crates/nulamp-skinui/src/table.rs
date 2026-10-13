@@ -36,6 +36,16 @@ impl Column {
     }
 }
 
+/// What dragging a header border does to the other columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResizeMode {
+    /// Only the dragged column changes; the table gets wider or narrower.
+    #[default]
+    Selected,
+    /// The next column gives or takes the width, so the total stays the same.
+    WithNext,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableEvent {
     /// A header was clicked; the table's sort state is already updated.
@@ -72,6 +82,8 @@ enum Drag {
         col: usize,
         grab_x: i32,
         start_w: i32,
+        /// Width of the next column when the drag started (0: none).
+        next_w: i32,
     },
     Rows {
         row: usize,
@@ -99,6 +111,9 @@ pub struct Table {
     pub hscroll: ScrollBar,
     /// Sorted column and direction (descending), shown in the header.
     pub sort: Option<(usize, bool)>,
+    /// Every other row has the alternate colours.
+    pub alt_rows: bool,
+    pub resize_mode: ResizeMode,
     row_h: i32,
     drag: Option<Drag>,
     last_click: Option<(usize, Instant)>,
@@ -117,6 +132,8 @@ impl Table {
             scroll: ScrollBar::default(),
             hscroll: ScrollBar::horizontal(Rect::default(), H_STEP),
             sort: None,
+            alt_rows: true,
+            resize_mode: ResizeMode::Selected,
             row_h: 14,
             drag: None,
             last_click: None,
@@ -287,6 +304,7 @@ impl Table {
                     col,
                     grab_x: x,
                     start_w: self.columns[col].width,
+                    next_w: self.columns.get(col + 1).map_or(0, |c| c.width),
                 });
                 return None;
             }
@@ -338,12 +356,22 @@ impl Table {
                 col,
                 grab_x,
                 start_w,
+                next_w,
             } => {
-                let (col, w) = (*col, (*start_w + x - *grab_x).max(MIN_COL_W));
+                let (col, next_w) = (*col, *next_w);
+                let mut w = (*start_w + x - *grab_x).max(MIN_COL_W);
+                let shared = self.resize_mode == ResizeMode::WithNext && next_w > 0;
+                if shared {
+                    // The next column keeps at least its minimum width.
+                    w = w.min(*start_w + next_w - MIN_COL_W);
+                }
                 if self.columns[col].width == w {
                     return None;
                 }
                 self.columns[col].width = w;
+                if shared {
+                    self.columns[col + 1].width = *start_w + next_w - w;
+                }
                 self.layout();
                 Some(TableEvent::ColumnResized(col))
             }
@@ -574,7 +602,7 @@ impl Table {
                 };
                 buf.fill_rect(0, ry, b.w, self.row_h, bg);
                 fg
-            } else if row % 2 == 1 {
+            } else if self.alt_rows && row % 2 == 1 {
                 buf.fill_rect(0, ry, b.w, self.row_h, c.alt_row_bg);
                 c.alt_row_fg
             } else {
@@ -699,6 +727,28 @@ mod tests {
         assert_eq!(t.sort, None);
         // Column 1 now starts at x = 1 + 16.
         assert_eq!(t.header_hit(17 + 40, 5), Some(HeaderHit::Border(1)));
+    }
+
+    #[test]
+    fn resizing_with_the_next_column_keeps_the_total_width() {
+        let mut t = table(5);
+        t.resize_mode = ResizeMode::WithNext;
+        let now = Instant::now();
+        t.mouse_down(40, 5, false, false, now);
+        assert_eq!(t.mouse_move(55, 5), Some(TableEvent::ColumnResized(0)));
+        assert_eq!((t.columns[0].width, t.columns[1].width), (55, 25));
+        assert_eq!(t.content_width(), 120);
+        // The neighbour stops at its minimum width.
+        t.mouse_move(500, 5);
+        assert_eq!((t.columns[0].width, t.columns[1].width), (64, MIN_COL_W));
+        t.mouse_move(-500, 5);
+        assert_eq!((t.columns[0].width, t.columns[1].width), (MIN_COL_W, 64));
+        t.mouse_up(0, 5);
+        // The last column has no neighbour and resizes alone.
+        let end: i32 = t.columns.iter().map(|c| c.width).sum::<i32>() + 1;
+        t.mouse_down(end, 5, false, false, now);
+        t.mouse_move(end + 10, 5);
+        assert_eq!(t.content_width(), 120 + 10);
     }
 
     #[test]

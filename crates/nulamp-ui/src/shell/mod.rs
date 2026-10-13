@@ -190,6 +190,10 @@ pub struct UiPrefs {
     pub lib_visible: bool,
     /// Width of the library's tree pane.
     pub lib_tree_w: i32,
+    /// Height of the library's artist and album panes.
+    pub lib_pane_h: i32,
+    /// Width of the artist pane (0: half of the right side).
+    pub lib_artist_w: i32,
     /// Widths of the library's list columns (empty: defaults).
     pub lib_columns: Vec<i32>,
     pub library: LibraryPrefs,
@@ -200,7 +204,45 @@ pub struct UiPrefs {
     pub video: crate::video::VideoPrefs,
 }
 
-/// Media-library options (preferences page "Media Library").
+pub use nulamp_skinui::ResizeMode;
+
+/// What double-click or Enter does with library rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActivateAction {
+    #[default]
+    Play,
+    Enqueue,
+    PlayNext,
+}
+
+impl ActivateAction {
+    pub const ALL: [ActivateAction; 3] = [Self::Play, Self::Enqueue, Self::PlayNext];
+
+    /// Name in the settings file.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Play => "play",
+            Self::Enqueue => "enqueue",
+            Self::PlayNext => "play-next",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|a| a.name() == s)
+    }
+
+    /// Text of the preferences choice.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Play => "Plays selected item(s)",
+            Self::Enqueue => "Enqueues selected item(s)",
+            Self::PlayNext => "Plays selected item(s) next",
+        }
+    }
+}
+
+/// Media-library options (preferences pages "Media Library", "Library Options", "Library
+/// Tree" and "Library Appearance").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibraryPrefs {
     /// Watch folders: (path, include subfolders).
@@ -208,6 +250,28 @@ pub struct LibraryPrefs {
     pub rescan_on_start: bool,
     /// Follow file changes in the watch folders while running.
     pub watch: bool,
+    /// Double-click or Enter on library rows.
+    pub activate: ActivateAction,
+    /// Playing a double-clicked row of a track list plays the whole list from that row.
+    pub play_all_media: bool,
+    /// The same for the track list of a stored playlist.
+    pub play_all_playlists: bool,
+    /// What dragging a column border does to the other columns.
+    pub resize_mode: ResizeMode,
+    /// A rating set in the library is also written to the file's tag when the provider
+    /// keeps ratings only in its database.
+    pub save_ratings_to_file: bool,
+    /// One Play button with a menu arrow instead of separate Play and Enqueue buttons.
+    pub group_buttons: bool,
+    /// The lightning bolt of the main window opens the media library, not the About box.
+    pub bolt_opens_library: bool,
+    pub tree_icons: bool,
+    /// The tree's selection bar spans the whole row.
+    pub tree_full_row: bool,
+    /// Tree row height in pixels.
+    pub tree_item_height: i32,
+    /// Every other row of the lists has the alternate colours.
+    pub alt_rows: bool,
     /// The signed-in Jellyfin account (preferences page "Jellyfin").
     pub jellyfin: Option<nulamp_library::jellyfin::Account>,
 }
@@ -218,6 +282,17 @@ impl Default for LibraryPrefs {
             folders: Vec::new(),
             rescan_on_start: true,
             watch: true,
+            activate: ActivateAction::Play,
+            play_all_media: true,
+            play_all_playlists: true,
+            resize_mode: ResizeMode::Selected,
+            save_ratings_to_file: true,
+            group_buttons: true,
+            bolt_opens_library: false,
+            tree_icons: true,
+            tree_full_row: true,
+            tree_item_height: 18,
+            alt_rows: true,
             jellyfin: None,
         }
     }
@@ -280,6 +355,8 @@ impl Default for UiPrefs {
             lib_size: crate::library::window::DEFAULT_SIZE,
             lib_visible: false,
             lib_tree_w: crate::library::window::DEFAULT_TREE_W,
+            lib_pane_h: crate::library::window::DEFAULT_PANE_H,
+            lib_artist_w: 0,
             lib_columns: Vec::new(),
             library: LibraryPrefs::default(),
             // Below the default main/equalizer/playlist stack (docs/decisions.md V2).
@@ -534,7 +611,9 @@ impl<P: PlayerHandle> Shell<P> {
         self.prefs.video_size = (self.video.win.w, self.video.win.h);
         if let Some(lib) = &self.library {
             self.prefs.lib_size = (lib.win.w, lib.win.h);
-            self.prefs.lib_tree_w = lib.win.tree_w;
+            self.prefs.lib_tree_w = lib.win.geometry.tree_w;
+            self.prefs.lib_pane_h = lib.win.geometry.pane_h;
+            self.prefs.lib_artist_w = lib.win.geometry.artist_w;
             self.prefs.lib_columns = lib.win.column_widths();
         }
         self.prefs.pl_size = (
@@ -1539,6 +1618,18 @@ impl<P: PlayerHandle> Shell<P> {
                     self.open_dialog(el, Box::new(crate::dialogs::FileInfoDialog::new(&loc)));
                 }
             }
+            Action::Bolt => {
+                if self.prefs.library.bolt_opens_library && self.library.is_some() {
+                    self.set_visible(Kind::Library, true);
+                    if let Some(&lid) = self.ids.get(&Kind::Library)
+                        && let Some(win) = &self.windows[&lid].window
+                    {
+                        win.focus_window();
+                    }
+                } else {
+                    self.handle_action(id, Action::About, el);
+                }
+            }
             Action::About => {
                 let d = crate::dialogs::AboutDialog::new(APP_NAME, env!("CARGO_PKG_VERSION"));
                 self.open_dialog(el, Box::new(d));
@@ -1934,6 +2025,8 @@ impl<P: PlayerHandle> Shell<P> {
             lib_size: keep.lib_size,
             lib_visible: keep.lib_visible,
             lib_tree_w: keep.lib_tree_w,
+            lib_pane_h: keep.lib_pane_h,
+            lib_artist_w: keep.lib_artist_w,
             lib_columns: keep.lib_columns,
             eq_visible: keep.eq_visible,
             pl_visible: keep.pl_visible,
@@ -1953,6 +2046,7 @@ impl<P: PlayerHandle> Shell<P> {
         self.pl.wheel_double = pl.wheel_double;
         self.pl.old_school_buttons = pl.old_school_buttons;
         self.update_pl_font();
+        self.library_window_prefs_changed();
         self.visualizer.set_settings(self.prefs.vis);
         if vis_mode_changed {
             self.visualizer.reset();

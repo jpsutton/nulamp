@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::error::{Error, Result};
 use crate::model::{
-    BrowseNode, Capabilities, LibraryEvent, Page, PlaybackLocation, PlaylistInfo, Track, TrackId,
-    TrackPage, TrackSummary,
+    AlbumFacet, ArtistFacet, BrowseNode, Capabilities, LibraryEvent, Page, PlaybackLocation,
+    PlaylistInfo, Track, TrackId, TrackPage, TrackSummary,
 };
 use crate::query::{Query, Sort};
 
@@ -46,6 +46,21 @@ pub trait LibraryProvider: Send + Sync {
             count: page.total,
             length_ms: page.tracks.iter().map(|t| t.length_ms).sum(),
         })
+    }
+
+    /// The artists of the tracks below `node` that match `query`, sorted by name (untagged
+    /// last), for the artist pane. The default lists every matching track; providers
+    /// override it with a cheaper query.
+    fn artist_facets(&self, node: &BrowseNode, query: &Query) -> Result<Vec<ArtistFacet>> {
+        let page = self.tracks(node, query, Sort::default(), Page::all())?;
+        Ok(crate::facets::artists(&page.tracks))
+    }
+
+    /// The albums of the tracks below `node` that match `query`, sorted by name (untagged
+    /// last), for the album pane.
+    fn album_facets(&self, node: &BrowseNode, query: &Query) -> Result<Vec<AlbumFacet>> {
+        let page = self.tracks(node, query, Sort::default(), Page::all())?;
+        Ok(crate::facets::albums(&page.tracks))
     }
 
     /// One track, `None` when it no longer exists.

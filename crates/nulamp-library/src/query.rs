@@ -263,14 +263,18 @@ impl Term {
                 field,
                 value,
                 exact,
-            } => field.value(track).is_some_and(|v| {
-                let v = fold(v);
-                if *exact {
-                    v == *value
-                } else {
-                    v.contains(value.as_str())
+            } => match field.value(track) {
+                Some(v) => {
+                    let v = fold(v);
+                    if *exact {
+                        v == *value
+                    } else {
+                        v.contains(value.as_str())
+                    }
                 }
-            }),
+                // An untagged field equals the empty text.
+                None => *exact && value.is_empty(),
+            },
             Term::Number { field, op, value } => {
                 field.value(track).is_some_and(|v| op.test(v, *value))
             }
@@ -460,7 +464,7 @@ fn term_sql(term: &Term, params: &mut Vec<Value>) -> String {
             exact: true,
         } => {
             params.push(Value::Text(value.clone()));
-            format!("nl_fold({}) = ?", field.column())
+            format!("nl_fold(COALESCE({}, '')) = ?", field.column())
         }
         Term::Number { field, op, value } => {
             params.push(Value::Integer(*value));

@@ -430,6 +430,17 @@ pub fn library_context(playlists: &[(String, String)], caps: Capabilities) -> Ve
     items
 }
 
+/// Menu of the Play button's arrow: act on the selection, or on everything without one.
+pub fn library_play_menu() -> Vec<Item> {
+    use crate::library::Purpose::*;
+    let auto = |p| MenuCmd::Lib(LibCmd::Auto(p));
+    vec![
+        Item::cmd("Play", auto(Play)),
+        Item::cmd("Enqueue", auto(Enqueue)),
+        Item::cmd("Play next", auto(PlayNext)),
+    ]
+}
+
 /// Menu of a media-library tree node: act on everything the node lists.
 pub fn library_tree_menu(caps: Capabilities) -> Vec<Item> {
     use crate::library::Purpose::*;

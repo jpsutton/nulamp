@@ -29,6 +29,8 @@ pub struct Invocation {
     pub enqueue: bool,
     /// `/NEW`: start a new instance.
     pub new_instance: bool,
+    /// `/CONSOLE`: keep a console window with the log output (Windows).
+    pub console: bool,
     /// The last transport-type switch. Ignored when files are given.
     pub command: Option<Request>,
     /// `/BOOKMARK <file>`.
@@ -114,6 +116,7 @@ Usage: nulamp [switches] [files, folders, URLs]
 Switches (case-insensitive, before files; /NAME or --name):
   /ADD                 append the files; do not clear or play
   /NEW                 start a new instance
+  /CONSOLE             Windows: open a console window with the log output
   /PLAY /PAUSE /STOP /PREV /NEXT /PLAYPAUSE
   /STOPFADE /STOPAFTER stop with fade-out; toggle stop after current
   /FWD /REV            seek +5 s / -5 s
@@ -154,6 +157,7 @@ fn lookup(name: &str) -> Option<Switch> {
     Some(match name {
         "add" => Plain(|i| i.enqueue = true),
         "new" => Plain(|i| i.new_instance = true),
+        "console" => Plain(|i| i.console = true),
         "startmin" => Plain(|i| i.start = StartMode::Minimized),
         "startmax" => Plain(|i| i.start = StartMode::Maximized),
         "safe" => Plain(|i| i.safe = true),

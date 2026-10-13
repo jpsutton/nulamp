@@ -5,7 +5,7 @@ use nulamp_skinui::{Form, FormEvent, Rect, Widget};
 use crate::dialogs::{Dialog, DialogResult, Outcome};
 use crate::prefs_jellyfin::{Change, JellyfinPage};
 use crate::prefs_skins::SkinsPage;
-use crate::shell::UiPrefs;
+use crate::shell::{ActivateAction, ResizeMode, UiPrefs};
 use crate::wayland_limits;
 
 /// Playlist options that live in the playlist window state.
@@ -19,7 +19,7 @@ pub struct PlaylistOptions {
     pub old_school_buttons: bool,
 }
 
-const PAGES: [&str; 10] = [
+const PAGES: [&str; 13] = [
     "Classic skins",
     "Playlist",
     "Playback",
@@ -28,14 +28,22 @@ const PAGES: [&str; 10] = [
     "Skins",
     "Crossfade",
     "Media Library",
+    "Library Options",
+    "Library Tree",
+    "Library Appearance",
     "Jellyfin",
     "Video",
 ];
 const VIS_PAGE: usize = 4;
 const SKINS_PAGE: usize = 5;
 const LIBRARY_PAGE: usize = 7;
-const JELLYFIN_PAGE: usize = 8;
-const VIDEO_PAGE: usize = 9;
+const LIBRARY_OPTIONS_PAGE: usize = 8;
+const LIBRARY_TREE_PAGE: usize = 9;
+/// Choice buttons of the library options page: each click shows the next value.
+const ACTIVATE: u32 = 400;
+const RESIZE: u32 = 401;
+const JELLYFIN_PAGE: usize = 11;
+const VIDEO_PAGE: usize = 12;
 const PAGE_LIST: u32 = 1;
 const OK: u32 = 2;
 const CANCEL: u32 = 3;
@@ -181,6 +189,36 @@ fn page_options(page: usize) -> Vec<CheckOpt> {
             ),
             opt!("Watch the folders for changes", p.library.watch),
         ],
+        LIBRARY_OPTIONS_PAGE => vec![
+            opt!(
+                "Play all items from the selected one in playlists",
+                p.library.play_all_playlists
+            ),
+            opt!(
+                "Play search results from the selected one",
+                p.library.play_all_media
+            ),
+            opt!(
+                "Save ratings to file for compatible formats",
+                p.library.save_ratings_to_file
+            ),
+            opt!(
+                "Group Play and Enqueue into a single button",
+                p.library.group_buttons
+            ),
+            opt!(
+                "Lightning bolt opens Media Library, not About",
+                p.library.bolt_opens_library
+            ),
+        ],
+        LIBRARY_TREE_PAGE => vec![
+            opt!("Show icons next to the tree items", p.library.tree_icons),
+            opt!("Highlight full tree item", p.library.tree_full_row),
+        ],
+        10 => vec![opt!(
+            "Use alternating row colors in list views",
+            p.library.alt_rows
+        )],
         VIDEO_PAGE => vec![
             opt!("Show the picture of video files", p.video.enabled),
             opt!("Open the window when a video starts", p.video.open_on_start),
@@ -206,6 +244,14 @@ fn page_options(page: usize) -> Vec<CheckOpt> {
             ),
         ],
         _ => vec![],
+    }
+}
+
+/// Text of a column-resizing choice.
+fn resize_label(m: ResizeMode) -> &'static str {
+    match m {
+        ResizeMode::Selected => "Resize only the selected column",
+        ResizeMode::WithNext => "Resize the selected and the next column",
     }
 }
 
@@ -264,6 +310,63 @@ impl PrefsDialog {
     /// Whether an option is greyed out in this dialog.
     fn unavailable(&self, o: &CheckOpt) -> Option<&'static str> {
         o.wayland.filter(|_| self.wayland_native)
+    }
+
+    /// The choices at the top of the library options page; returns the y below them.
+    fn choice_widgets(&self, widgets: &mut Vec<Widget>, x: i32, y: i32, w: i32) -> i32 {
+        let l = &self.prefs.library;
+        let mut y = y;
+        for (id, title, value) in [
+            (
+                ACTIVATE,
+                "Double click or Enter in the library:",
+                l.activate.label(),
+            ),
+            (
+                RESIZE,
+                "When resizing a column:",
+                resize_label(l.resize_mode),
+            ),
+        ] {
+            widgets.push(Widget::Label {
+                rect: Rect::new(x, y, w, 14),
+                text: title.into(),
+            });
+            widgets.push(Widget::Button {
+                rect: Rect::new(x, y + 16, w, 18),
+                id,
+                label: value.into(),
+                default: false,
+            });
+            y += 42;
+        }
+        y
+    }
+
+    /// Cycles a choice of the library options page.
+    fn choice_event(&mut self, ev: &FormEvent) -> Option<Outcome> {
+        let l = &mut self.prefs.library;
+        match ev {
+            FormEvent::Clicked(ACTIVATE) => {
+                let all = ActivateAction::ALL;
+                let i = all.iter().position(|a| *a == l.activate).unwrap_or(0);
+                l.activate = all[(i + 1) % all.len()];
+            }
+            FormEvent::Clicked(RESIZE) => {
+                l.resize_mode = match l.resize_mode {
+                    ResizeMode::Selected => ResizeMode::WithNext,
+                    ResizeMode::WithNext => ResizeMode::Selected,
+                };
+            }
+            _ => return None,
+        }
+        self.collect();
+        self.build();
+        self.form.focus_id(match ev {
+            FormEvent::Clicked(id) => *id,
+            _ => PAGE_LIST,
+        });
+        Some(Outcome::Keep)
     }
 
     /// Media-library page controls below the check boxes, from `y`.
@@ -377,15 +480,20 @@ impl PrefsDialog {
             first: 0,
         }];
         let x = 134;
+        let top = if self.page == LIBRARY_OPTIONS_PAGE {
+            self.choice_widgets(&mut widgets, x, 6, cw - x - 6)
+        } else {
+            6
+        };
         for (i, o) in page_options(self.page).iter().enumerate() {
             widgets.push(Widget::Check {
-                rect: Rect::new(x, 6 + i as i32 * 20, cw - x - 6, 16),
+                rect: Rect::new(x, top + i as i32 * 20, cw - x - 6, 16),
                 id: OPT + i as u32,
                 label: o.label.into(),
                 on: (o.get)(&self.prefs, &self.pl),
             });
         }
-        let mut y = 6 + page_options(self.page).len() as i32 * 20 + 6;
+        let mut y = top + page_options(self.page).len() as i32 * 20 + 6;
         if self.page == LIBRARY_PAGE {
             self.library_widgets(&mut widgets, x, y, cw - x - 6, ch - 32);
         }
@@ -465,6 +573,12 @@ impl PrefsDialog {
             6 => num(
                 "Crossfade length (ms):",
                 self.prefs.crossfade_ms.to_string(),
+                NUM,
+                &mut widgets,
+            ),
+            LIBRARY_TREE_PAGE => num(
+                "Tree item height (default is 18):",
+                self.prefs.library.tree_item_height.to_string(),
                 NUM,
                 &mut widgets,
             ),
@@ -573,6 +687,11 @@ impl PrefsDialog {
                     self.prefs.crossfade_ms = v.min(20_000);
                 }
             }
+            LIBRARY_TREE_PAGE => {
+                if let Ok(v) = text.trim().parse::<i32>() {
+                    self.prefs.library.tree_item_height = v.clamp(10, 40);
+                }
+            }
             VIDEO_PAGE => {
                 if let Some(a) = crate::video::parse_aspect(&text) {
                     self.prefs.video.aspect = a;
@@ -624,7 +743,7 @@ impl Dialog for PrefsDialog {
     }
 
     fn handle(&mut self, ev: FormEvent) -> Outcome {
-        if let Some(o) = self.library_event(&ev) {
+        if let Some(o) = self.library_event(&ev).or_else(|| self.choice_event(&ev)) {
             return o;
         }
         if self.page == VIS_PAGE && crate::prefs_vis::event(&mut self.form, &ev) {
@@ -975,6 +1094,75 @@ mod tests {
             },
             _ => panic!("expected OK result"),
         }
+    }
+
+    #[test]
+    fn library_option_pages() {
+        let mut d = PrefsDialog::new(UiPrefs::default(), pl()).with_page("Library Options");
+        assert_eq!(d.page, LIBRARY_OPTIONS_PAGE);
+        // The choices cycle through their values.
+        assert!(matches!(
+            d.handle(FormEvent::Clicked(ACTIVATE)),
+            Outcome::Keep
+        ));
+        d.handle(FormEvent::Clicked(RESIZE));
+        assert_eq!(d.prefs.library.activate, ActivateAction::Enqueue);
+        assert_eq!(d.prefs.library.resize_mode, ResizeMode::WithNext);
+        d.handle(FormEvent::Clicked(ACTIVATE));
+        d.handle(FormEvent::Clicked(ACTIVATE));
+        assert_eq!(
+            d.prefs.library.activate,
+            ActivateAction::Play,
+            "wraps around"
+        );
+        // The buttons show the current value.
+        match d.form.find(RESIZE) {
+            Some(Widget::Button { label, .. }) => {
+                assert_eq!(label, resize_label(ResizeMode::WithNext));
+            }
+            other => panic!("{other:?}"),
+        }
+        // The check boxes: both play-all switches and the buttons are on by default.
+        let on: Vec<bool> = (0..5).map(|i| d.form.checked(OPT + i)).collect();
+        assert_eq!(on, [true, true, true, true, false]);
+        // Turn "Group the buttons" off and the lightning bolt option on.
+        for i in [3, 4] {
+            if let Some(Widget::Check { on, .. }) = d.form.find_mut(OPT + i) {
+                *on = !*on;
+            }
+        }
+        // Another page and back keeps the choices.
+        d.handle(FormEvent::Selected(PAGE_LIST, 9));
+        d.handle(FormEvent::Selected(PAGE_LIST, 8));
+        assert_eq!(d.prefs.library.resize_mode, ResizeMode::WithNext);
+        let p = result(d.handle(FormEvent::Clicked(OK)));
+        assert!(!p.library.group_buttons && p.library.bolt_opens_library);
+        assert!(p.library.play_all_media && p.library.save_ratings_to_file);
+        assert_eq!(p.library.resize_mode, ResizeMode::WithNext);
+    }
+
+    #[test]
+    fn library_tree_and_appearance_pages() {
+        let mut d = PrefsDialog::new(UiPrefs::default(), pl()).with_page("Library Tree");
+        assert!(d.form.checked(OPT) && d.form.checked(OPT + 1));
+        if let Some(Widget::Check { on, .. }) = d.form.find_mut(OPT + 1) {
+            *on = false;
+        }
+        d.form.set_text(NUM, "26");
+        d.handle(FormEvent::Selected(PAGE_LIST, 10));
+        assert!(d.form.checked(OPT));
+        if let Some(Widget::Check { on, .. }) = d.form.find_mut(OPT) {
+            *on = false;
+        }
+        let p = result(d.handle(FormEvent::Clicked(APPLY)));
+        assert!(p.library.tree_icons && !p.library.tree_full_row);
+        assert_eq!(p.library.tree_item_height, 26);
+        assert!(!p.library.alt_rows);
+        // The height stays in range.
+        d.handle(FormEvent::Selected(PAGE_LIST, 9));
+        d.form.set_text(NUM, "400");
+        let p = result(d.handle(FormEvent::Clicked(OK)));
+        assert_eq!(p.library.tree_item_height, 40);
     }
 
     #[test]

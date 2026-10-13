@@ -13,7 +13,7 @@ use winit::window::WindowId;
 
 use super::{Kind, PlayerHandle, Shell, show_in_folder};
 use crate::library::{
-    Heard, LibAction, LibCmd, LibraryService, LibraryView, LibraryWindow, MediaLibrary,
+    Geometry, Heard, LibAction, LibCmd, LibraryService, LibraryView, LibraryWindow, MediaLibrary,
     PlayTracker, Purpose, Request, Response,
 };
 use crate::shell::LibraryPrefs;
@@ -48,11 +48,16 @@ impl<P: PlayerHandle> Shell<P> {
     pub fn with_library(mut self, lib: MediaLibrary) -> Self {
         let service = LibraryService::start(lib.clone());
         let view = LibraryView::new(&service.providers);
-        let win = LibraryWindow::new(
+        let mut win = LibraryWindow::new(
             self.prefs.lib_size,
-            self.prefs.lib_tree_w,
+            Geometry {
+                tree_w: self.prefs.lib_tree_w,
+                pane_h: self.prefs.lib_pane_h,
+                artist_w: self.prefs.lib_artist_w,
+            },
             &self.prefs.lib_columns,
         );
+        win.apply_prefs(&self.prefs.library);
         let p = &self.prefs.library;
         service.send(Request::SyncFolders {
             folders: p.folders.clone(),
@@ -107,6 +112,15 @@ impl<P: PlayerHandle> Shell<P> {
         }
     }
 
+    /// The preferences dialog changed the library window's options.
+    pub(super) fn library_window_prefs_changed(&mut self) {
+        let p = self.prefs.library.clone();
+        if let Some(lib) = self.library.as_mut() {
+            lib.win.apply_prefs(&p);
+            lib.win.sync(&mut lib.view);
+        }
+    }
+
     /// Replaces the Jellyfin provider, then restarts the worker and the view on the new set
     /// of providers (the window keeps its layout).
     fn library_set_jellyfin(&mut self, account: Option<&nulamp_library::jellyfin::Account>) {
@@ -138,6 +152,7 @@ impl<P: PlayerHandle> Shell<P> {
         };
         let now = Instant::now();
         let mut dirty = lib.view.tick(now);
+        dirty |= lib.view.update_throbber(now);
         let mut collected = Vec::new();
         for r in lib.service.poll() {
             dirty = true;
@@ -156,6 +171,8 @@ impl<P: PlayerHandle> Shell<P> {
                     generation,
                     summary,
                 } => lib.view.on_summary(generation, summary),
+                Response::Artists { token, result } => lib.view.on_artists(token, result),
+                Response::Albums { token, result } => lib.view.on_albums(token, result),
                 Response::Collected { purpose, items } => collected.push((purpose, items)),
                 Response::Event { event, .. } => {
                     if event == LibraryEvent::PlaylistsChanged {
@@ -302,14 +319,15 @@ impl<P: PlayerHandle> Shell<P> {
                     self.library_act(ranges, p);
                 }
                 LibAction::All(p) => {
-                    // Before the first page arrived the size is unknown: the worker reads
-                    // until the listing ends.
-                    let total = self
-                        .library
-                        .as_ref()
-                        .and_then(|lib| lib.view.total)
-                        .unwrap_or(usize::MAX);
+                    let total = self.library_total();
                     self.library_act(vec![(0, total)], p);
+                }
+                LibAction::PlayAllFrom(row) => {
+                    let total = self.library_total();
+                    self.library_act(vec![(0, total)], Purpose::PlayFrom(row));
+                }
+                LibAction::PlayMenu { x, y } => {
+                    self.open_items_at(el, id, crate::menus::library_play_menu(), x, y);
                 }
                 LibAction::ContextMenu { x, y } => {
                     let Some(lib) = &self.library else { continue };
@@ -344,6 +362,15 @@ impl<P: PlayerHandle> Shell<P> {
         }
         self.library_flush();
         self.request_redraw(Kind::Library);
+    }
+
+    /// Rows of the listing; before the first page arrived the size is unknown, and the
+    /// worker reads until the listing ends.
+    fn library_total(&self) -> usize {
+        self.library
+            .as_ref()
+            .and_then(|lib| lib.view.total)
+            .unwrap_or(usize::MAX)
     }
 
     /// Fetches the rows of `ranges` for an action; the action runs when they arrive.
@@ -397,6 +424,17 @@ impl<P: PlayerHandle> Shell<P> {
         let act = match cmd {
             LibCmd::Selection(p) => LibAction::Selection(p),
             LibCmd::All(p) => LibAction::All(p),
+            LibCmd::Auto(p) => {
+                let none = self
+                    .library
+                    .as_ref()
+                    .is_some_and(|lib| lib.win.table.sel.is_empty());
+                if none {
+                    LibAction::All(p)
+                } else {
+                    LibAction::Selection(p)
+                }
+            }
             LibCmd::SelectAll => {
                 if let Some(lib) = self.library.as_mut() {
                     lib.win.table.select_all();
@@ -432,6 +470,14 @@ impl<P: PlayerHandle> Shell<P> {
                 let i = self.player.engine().playlist.current_index();
                 self.player.command(Command::PlayIndex(i));
             }
+            Purpose::PlayFrom(row) => {
+                let e = self.player.engine_mut();
+                e.clear();
+                e.append(entries());
+                let n = self.player.engine().playlist.len();
+                self.player
+                    .command(Command::PlayIndex(row.min(n.saturating_sub(1))));
+            }
             Purpose::Enqueue => {
                 self.player.engine_mut().append(entries());
             }
@@ -452,6 +498,7 @@ impl<P: PlayerHandle> Shell<P> {
             Purpose::Rate(stars) => self.library_send(Request::SetRating {
                 tracks: items.into_iter().map(|(t, _)| t).collect(),
                 stars,
+                write_file: self.prefs.library.save_ratings_to_file,
             }),
             Purpose::Remove => {
                 let titles: Vec<String> = items

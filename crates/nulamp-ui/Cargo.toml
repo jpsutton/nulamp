@@ -10,19 +10,19 @@ rust-version.workspace = true
 arboard = { version = "3.6", default-features = false }
 global-hotkey = "0.8"
 log = "0.4.34"
-nulamp-core = { version = "0.6.0", path = "../nulamp-core" }
-nulamp-eq = { version = "0.6.0", path = "../nulamp-eq" }
-nulamp-icon = { version = "0.6.0", path = "../nulamp-icon" }
-nulamp-library = { version = "0.6.0", path = "../nulamp-library" }
-nulamp-meta = { version = "0.6.0", path = "../nulamp-meta" }
-nulamp-pixelfont = { version = "0.6.0", path = "../nulamp-pixelfont" }
-nulamp-playlist = { version = "0.6.0", path = "../nulamp-playlist" }
-nulamp-remote = { version = "0.6.0", path = "../nulamp-remote" }
-nulamp-render = { version = "0.6.0", path = "../nulamp-render" }
-nulamp-skin = { version = "0.6.0", path = "../nulamp-skin" }
-nulamp-skinui = { version = "0.6.0", path = "../nulamp-skinui" }
-nulamp-text = { version = "0.6.0", path = "../nulamp-text" }
-nulamp-vis = { version = "0.6.0", path = "../nulamp-vis" }
+nulamp-core = { version = "0.7.0", path = "../nulamp-core" }
+nulamp-eq = { version = "0.7.0", path = "../nulamp-eq" }
+nulamp-icon = { version = "0.7.0", path = "../nulamp-icon" }
+nulamp-library = { version = "0.7.0", path = "../nulamp-library" }
+nulamp-meta = { version = "0.7.0", path = "../nulamp-meta" }
+nulamp-pixelfont = { version = "0.7.0", path = "../nulamp-pixelfont" }
+nulamp-playlist = { version = "0.7.0", path = "../nulamp-playlist" }
+nulamp-remote = { version = "0.7.0", path = "../nulamp-remote" }
+nulamp-render = { version = "0.7.0", path = "../nulamp-render" }
+nulamp-skin = { version = "0.7.0", path = "../nulamp-skin" }
+nulamp-skinui = { version = "0.7.0", path = "../nulamp-skinui" }
+nulamp-text = { version = "0.7.0", path = "../nulamp-text" }
+nulamp-vis = { version = "0.7.0", path = "../nulamp-vis" }
 rand = "0.9"
 raw-window-handle = "0.6"
 rfd = "0.17.2"
@@ -33,6 +33,9 @@ winit = "0.30"
 [lints]
 workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 x11rb = { version = "0.13", features = ["shape", "allow-unsafe-code"] }
 memmap2 = "0.9"
@@ -42,7 +45,13 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }

@@ -9,7 +9,9 @@ use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
 
 use crate::error::{Error, Result};
-use crate::model::{BrowseNode, NodeKind, Page, Track, TrackPage, TrackSummary};
+use crate::model::{
+    AlbumFacet, ArtistFacet, BrowseNode, NodeKind, Page, Track, TrackPage, TrackSummary,
+};
 use crate::query::{Query, Sort, SortKey, fold};
 use crate::{enc_segment, split_id};
 
@@ -357,6 +359,61 @@ pub(crate) fn summary(conn: &Connection, node: &BrowseNode, query: &Query) -> Re
         count: count(n),
         length_ms: count(ms),
     })
+}
+
+/// Artists of the tracks below `node` matching `query`.
+pub(crate) fn artist_facets(
+    conn: &Connection,
+    node: &BrowseNode,
+    query: &Query,
+) -> Result<Vec<ArtistFacet>> {
+    let node = parse(&node.id)?;
+    let Some(sel) = select(&node, query) else {
+        return Ok(Vec::new());
+    };
+    let mut st = conn.prepare(&format!(
+        "SELECT MIN(COALESCE(t.artist, '')) AS name,
+                COUNT(DISTINCT nl_fold(COALESCE(t.album, ''))), COUNT(*)
+         FROM {}{} GROUP BY nl_fold(COALESCE(t.artist, ''))
+         ORDER BY (name = '') ASC, name COLLATE nl_natural",
+        sel.from, sel.filter
+    ))?;
+    let rows = st.query_map(params_from_iter(sel.params.iter()), |r| {
+        Ok(ArtistFacet {
+            name: r.get(0)?,
+            albums: count(r.get(1)?),
+            tracks: count(r.get(2)?),
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Albums of the tracks below `node` matching `query`.
+pub(crate) fn album_facets(
+    conn: &Connection,
+    node: &BrowseNode,
+    query: &Query,
+) -> Result<Vec<AlbumFacet>> {
+    let node = parse(&node.id)?;
+    let Some(sel) = select(&node, query) else {
+        return Ok(Vec::new());
+    };
+    let mut st = conn.prepare(&format!(
+        "SELECT MIN(COALESCE(t.album, '')) AS name, MIN(t.year_num), COUNT(*)
+         FROM {}{} GROUP BY nl_fold(COALESCE(t.album, ''))
+         ORDER BY (name = '') ASC, name COLLATE nl_natural",
+        sel.from, sel.filter
+    ))?;
+    let rows = st.query_map(params_from_iter(sel.params.iter()), |r| {
+        Ok(AlbumFacet {
+            name: r.get(0)?,
+            year: r
+                .get::<_, Option<i64>>(1)?
+                .and_then(|y| i32::try_from(y).ok()),
+            tracks: count(r.get(2)?),
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// Tracks below `node` matching `query`.
