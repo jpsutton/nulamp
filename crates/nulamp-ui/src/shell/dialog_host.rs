@@ -71,6 +71,8 @@ impl<P: PlayerHandle> Shell<P> {
                 .with_title(format!("{} - {}", dialog.title(), super::APP_NAME))
                 .with_decorations(false)
                 .with_resizable(false)
+                // Shown after the first frame is drawn: an unpainted window flashes on screen.
+                .with_visible(false)
                 .with_inner_size(PhysicalSize::new(w as u32, h as u32))
                 .with_position(PhysicalPosition::new(mx.max(0), my.max(0))),
         );
@@ -89,8 +91,8 @@ impl<P: PlayerHandle> Shell<P> {
         let Ok(surface) = softbuffer::Surface::new(context, window.clone()) else {
             return;
         };
-        window.focus_window();
         let id = window.id();
+        let shown = window.clone();
         self.dialogs.insert(
             id,
             DialogWin {
@@ -103,6 +105,8 @@ impl<P: PlayerHandle> Shell<P> {
             },
         );
         self.draw_dialog(id);
+        shown.set_visible(true);
+        shown.focus_window();
     }
 
     /// Lets dialogs take the results of background work; redraws the ones that changed.
