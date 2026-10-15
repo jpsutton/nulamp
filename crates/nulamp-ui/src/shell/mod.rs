@@ -2189,6 +2189,16 @@ impl<P: PlayerHandle> Shell<P> {
 
     /// Shows or hides a window without changing its saved visibility.
     fn show_os_window(&mut self, kind: Kind, visible: bool) {
+        if visible
+            && let Some(id) = self.ids.get(&kind).copied()
+            && self
+                .windows
+                .get(&id)
+                .is_some_and(|w| w.part.is_none() && w.window.is_some())
+        {
+            // Paint before showing, so the window does not flash unpainted.
+            self.redraw(id);
+        }
         let Some(w) = self.ids.get(&kind).and_then(|id| self.windows.get(id)) else {
             return;
         };
