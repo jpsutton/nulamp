@@ -173,7 +173,7 @@ jobs:
           path: dist/*.deb
 
   arch:
-    name: Build (Arch Linux package and repository)
+    name: Build (Arch Linux package)
     needs: [version]
     runs-on: ubuntu-latest
     container: archlinux:base-devel
@@ -214,3 +214,15 @@ jobs:
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
           files: dist/*
+      # jpsutton/arch-repo checks for new releases hourly; this makes it publish now.
+      # Best effort: needs a token that can write to that repository.
+      - name: Update the pacman repository
+        env:
+          ARCH_REPO_DISPATCH_TOKEN: ${{ secrets.ARCH_REPO_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$ARCH_REPO_DISPATCH_TOKEN" ]; then
+            echo "::notice::ARCH_REPO_DISPATCH_TOKEN is not set; jpsutton/arch-repo picks up the release within the hour"
+            exit 0
+          fi
+          GH_TOKEN=$ARCH_REPO_DISPATCH_TOKEN gh api repos/jpsutton/arch-repo/dispatches -f event_type=package-released \
+            || echo "::warning::could not notify jpsutton/arch-repo; it picks up the release within the hour"
