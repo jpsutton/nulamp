@@ -46,7 +46,7 @@ icon by [`tools/icongen`](tools/icongen).
 an AppImage for other Linux distributions, and builds for Windows and macOS. Release files are
 signed with the nulamp release key ([`packaging/nulamp-signing-key.asc`](packaging/nulamp-signing-key.asc),
 fingerprint `928D 2737 FE5D 5FA5 0DC6  EBAC E5F8 0263 48A3 8A7F`): `SHA256SUMS.asc` covers every
-file, and the Arch packages and repository are signed directly.
+file, and the Arch packages are signed directly.
 
 To check a download, fetch `SHA256SUMS` and `SHA256SUMS.asc` from the same release, then:
 
@@ -62,13 +62,22 @@ sha256sum --check --ignore-missing SHA256SUMS
 sudo apt install ./nulamp_*ubuntu$(. /etc/os-release; echo $VERSION_ID)_amd64.deb
 ```
 
-**Arch Linux:** add the nulamp repository (it always serves the latest release) and trust its key:
+**Arch Linux:** nulamp is in the signed [jpsutton pacman repository](https://github.com/jpsutton/arch-repo),
+which always serves the latest release. Its setup script adds the repository, trusts its key (after
+checking the fingerprint) and removes the old `[nulamp]` repository, which no longer gets updates:
 
 ```bash
-curl -sSfLo /tmp/nulamp.asc https://raw.githubusercontent.com/jpsutton/nulamp/staging/packaging/nulamp-signing-key.asc
-sudo pacman-key --add /tmp/nulamp.asc
-sudo pacman-key --lsign-key 928D2737FE5D5FA50DC6EBACE5F8026348A38A7F
-printf '\n[nulamp]\nServer = https://github.com/jpsutton/nulamp/releases/latest/download\n' | sudo tee -a /etc/pacman.conf
+curl -fsSLO https://jpsutton.github.io/arch-repo/setup.sh
+bash setup.sh --install nulamp
+```
+
+To set it up by hand (and remove an old `[nulamp]` section from `/etc/pacman.conf`):
+
+```bash
+curl -sSfLo /tmp/jpsutton.asc https://jpsutton.github.io/arch-repo/jpsutton-signing-key.asc
+sudo pacman-key --add /tmp/jpsutton.asc
+sudo pacman-key --lsign-key 8476350364502FEDD331B66BEDB90079E3C73E41
+printf '\n[jpsutton]\nServer = https://jpsutton.github.io/arch-repo/$arch\n' | sudo tee -a /etc/pacman.conf
 sudo pacman -Syu nulamp
 ```
 

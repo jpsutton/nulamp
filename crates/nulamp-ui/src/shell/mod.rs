@@ -693,7 +693,9 @@ impl<P: PlayerHandle> Shell<P> {
             .with_title(title)
             .with_decorations(false)
             .with_resizable(false)
-            .with_visible(visible)
+            // A visible window is created hidden and shown after its first frame is drawn
+            // (below): an unpainted window flashes on screen.
+            .with_visible(false)
             .with_inner_size(PhysicalSize::new(rect.w as u32, rect.h as u32))
             .with_position(PhysicalPosition::new(rect.x, rect.y));
         attrs = with_app_icon(attrs);
@@ -735,7 +737,14 @@ impl<P: PlayerHandle> Shell<P> {
             (Some(surface), None)
         };
         let id = window.id();
-        self.insert_win(id, kind, Some(window), surface, part, rect, visible);
+        let compound_part = part.is_some();
+        self.insert_win(id, kind, Some(window.clone()), surface, part, rect, visible);
+        if visible {
+            if !compound_part {
+                self.redraw(id);
+            }
+            window.set_visible(true);
+        }
     }
 
     /// The software presenter's connection, created on first use.
@@ -1155,6 +1164,16 @@ impl<P: PlayerHandle> Shell<P> {
             && self.menus.iter().any(|m| m.owner == *id)
         {
             self.close_menus();
+        }
+        if visible
+            && let Some(id) = self.ids.get(&kind).copied()
+            && self
+                .windows
+                .get(&id)
+                .is_some_and(|w| w.part.is_none() && w.window.is_some())
+        {
+            // Paint before showing, so the window does not flash unpainted.
+            self.redraw(id);
         }
         if let Some(w) = self.ids.get(&kind).and_then(|id| self.windows.get_mut(id)) {
             w.visible = visible;
@@ -2170,6 +2189,16 @@ impl<P: PlayerHandle> Shell<P> {
 
     /// Shows or hides a window without changing its saved visibility.
     fn show_os_window(&mut self, kind: Kind, visible: bool) {
+        if visible
+            && let Some(id) = self.ids.get(&kind).copied()
+            && self
+                .windows
+                .get(&id)
+                .is_some_and(|w| w.part.is_none() && w.window.is_some())
+        {
+            // Paint before showing, so the window does not flash unpainted.
+            self.redraw(id);
+        }
         let Some(w) = self.ids.get(&kind).and_then(|id| self.windows.get(id)) else {
             return;
         };
